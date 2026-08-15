@@ -136,14 +136,21 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
   });
 
   useEffect(() => {
-    if (data?.list) {
+    if (data?.list && data.list.length > 0) {
       data.list.forEach((item) => {
         if (item.symbol && item.name) {
           registerRuntimeStockName(item.symbol, item.name);
         }
       });
+      // Auto-select #1 stock at the top of active screen list if no symbol is selected
+      if (!selectedSymbol && onSelectSymbol) {
+        const topItem = data.list[0];
+        if (topItem && topItem.symbol) {
+          onSelectSymbol(topItem.symbol, topItem);
+        }
+      }
     }
-  }, [data?.list]);
+  }, [data?.list, selectedSymbol, onSelectSymbol]);
 
   // Extract unpriced symbols for non-blocking async background quote fetching
   const unpricedSymbolsKey = useMemo(() => {

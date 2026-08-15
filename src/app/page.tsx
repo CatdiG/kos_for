@@ -21,7 +21,7 @@ async function fetchInvestorTrend(symbol: string, period: TrendPeriod): Promise<
 }
 
 export default function DashboardPage() {
-  const [symbol, setSymbol] = useState<string>('005930');
+  const [symbol, setSymbol] = useState<string>('');
   const [period, setPeriod] = useState<TrendPeriod>('60d');
   const [selectedStockItem, setSelectedStockItem] = useState<RankingItem | undefined>();
 
@@ -35,6 +35,7 @@ export default function DashboardPage() {
   } = useQuery<InvestorTrendResponse>({
     queryKey: ['investorTrend', symbol, period],
     queryFn: () => fetchInvestorTrend(symbol, period),
+    enabled: Boolean(symbol),
     placeholderData: (previousData) => previousData,
   });
 
