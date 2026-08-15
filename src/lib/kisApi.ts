@@ -18,85 +18,111 @@ declare global {
   var __kisTokenPromise__: Promise<string | null> | undefined;
 }
 
-// Persistent Token File Storage for Serverless Container / Instance Sharing
-function getPersistentTokenPath(): string {
-  const tmpDir = os.tmpdir() || '/tmp';
-  return path.join(tmpDir, 'kis_access_token_v2.json');
-}
+// =================================================================
+// External Shared Storage (Vercel KV / Upstash Redis REST API) & Distributed Lock
+// =================================================================
 
-function getPersistentTokenLockPath(): string {
-  const tmpDir = os.tmpdir() || '/tmp';
-  return path.join(tmpDir, 'kis_access_token_v2.lock');
-}
-
-function readPersistentTokenCache(appKeyHash: string): TokenCacheData | null {
-  try {
-    // 1. In-memory check first (fastest)
-    const now = Date.now();
-    if (globalThis.__kisTokenCache__ && globalThis.__kisTokenCache__.expires_at > now + 60000 && globalThis.__kisTokenCache__.app_key_hash === appKeyHash) {
-      return globalThis.__kisTokenCache__;
-    }
-
-    // 2. Cross-instance persistent file check (/tmp/kis_access_token_v2.json)
-    const filePath = getPersistentTokenPath();
-    if (fs.existsSync(filePath)) {
-      const fileData = fs.readFileSync(filePath, 'utf8');
-      const cache: TokenCacheData = JSON.parse(fileData);
-      if (cache && cache.access_token && cache.expires_at > now + 60000 && cache.app_key_hash === appKeyHash) {
-        console.log('[KIS Persistent Token Hit] /tmp 디스크 파일 저장소에서 유효한 KIS 접근 토큰 재사용 (Vercel 인스턴스 공유)');
-        globalThis.__kisTokenCache__ = cache; // Warm up in-memory cache
-        return cache;
-      }
-    }
-  } catch (e) {
-    // Ignore file read exceptions
+function getKvConfig() {
+  const url = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL;
+  const token = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN;
+  if (url && token && url.trim() !== '' && token.trim() !== '') {
+    return { url: url.replace(/\/$/, ''), token };
   }
   return null;
 }
 
-function savePersistentTokenCache(cache: TokenCacheData) {
+async function kvGetTokenCache(appKeyHash: string): Promise<TokenCacheData | null> {
+  const now = Date.now();
+  // 1. Fast in-memory check (0ms)
+  if (globalThis.__kisTokenCache__ && globalThis.__kisTokenCache__.expires_at > now + 60000 && globalThis.__kisTokenCache__.app_key_hash === appKeyHash) {
+    return globalThis.__kisTokenCache__;
+  }
+
+  // 2. Vercel KV / Upstash Redis REST API Shared Check
+  const cfg = getKvConfig();
+  if (!cfg) return null;
+
   try {
-    globalThis.__kisTokenCache__ = cache;
-    const filePath = getPersistentTokenPath();
-    fs.writeFileSync(filePath, JSON.stringify(cache), 'utf8');
-    console.log('[KIS Persistent Token Saved] /tmp 디스크 파일 저장소에 KIS 접근 토큰 저장 완료');
+    const res = await fetch(`${cfg.url}/get/kis_token_${appKeyHash}`, {
+      headers: { Authorization: `Bearer ${cfg.token}` },
+      cache: 'no-store',
+    });
+    if (res.ok) {
+      const json = await res.json();
+      const rawVal = json.result;
+      if (rawVal) {
+        const cache: TokenCacheData = typeof rawVal === 'string' ? JSON.parse(rawVal) : rawVal;
+        if (cache && cache.access_token && cache.expires_at > now + 60000) {
+          console.log('[KIS External KV Hit] Vercel KV / Upstash Redis 외부 공유 저장소에서 유효한 접근 토큰 획득 (전 인스턴스 100% 공유)');
+          globalThis.__kisTokenCache__ = cache;
+          return cache;
+        }
+      }
+    }
   } catch (e) {
-    console.warn('[KIS Persistent Token Save Failed]', e);
+    console.warn('[KIS External KV Read Warning]', e);
+  }
+  return null;
+}
+
+async function kvSaveTokenCache(cache: TokenCacheData): Promise<void> {
+  globalThis.__kisTokenCache__ = cache;
+  const cfg = getKvConfig();
+  if (!cfg) return;
+
+  try {
+    const ttlSec = Math.max(Math.floor((cache.expires_at - Date.now()) / 1000) - 300, 3600);
+    const jsonStr = JSON.stringify(cache);
+    const res = await fetch(`${cfg.url}/set/kis_token_${cache.app_key_hash}/${encodeURIComponent(jsonStr)}/EX/${ttlSec}`, {
+      headers: { Authorization: `Bearer ${cfg.token}` },
+      cache: 'no-store',
+    });
+    if (res.ok) {
+      console.log(`[KIS External KV Saved] Vercel KV / Upstash Redis 외부 저장소에 토큰 저장을 완료했습니다 (TTL: ${ttlSec}초).`);
+    }
+  } catch (e) {
+    console.warn('[KIS External KV Save Warning]', e);
   }
 }
 
-function isTokenFetchLocked(): boolean {
+async function kvAcquireDistributedLock(lockKey: string, ttlSec: number = 10): Promise<boolean> {
+  const cfg = getKvConfig();
+  if (!cfg) return true; // Fallback to memory lock if KV not configured
+
   try {
-    const lockPath = getPersistentTokenLockPath();
-    if (fs.existsSync(lockPath)) {
-      const stats = fs.statSync(lockPath);
-      // Lock expires automatically after 10 seconds to prevent deadlocks
-      if (Date.now() - stats.mtimeMs < 10000) {
-        return true;
+    // Atomic SET NX with TTL (Only sets if key does NOT exist)
+    const res = await fetch(`${cfg.url}/set/${lockKey}/locked/NX/EX/${ttlSec}`, {
+      headers: { Authorization: `Bearer ${cfg.token}` },
+      cache: 'no-store',
+    });
+    if (res.ok) {
+      const json = await res.json();
+      const isLocked = json.result === 'OK';
+      if (isLocked) {
+        console.log(`[KIS Distributed Lock Acquired] ${lockKey} 분산 락 획득 성공`);
       }
+      return isLocked;
     }
-  } catch (e) {}
-  return false;
+  } catch (e) {
+    console.warn('[KIS Distributed Lock Warning]', e);
+  }
+  return true;
 }
 
-function setTokenFetchLock() {
-  try {
-    const lockPath = getPersistentTokenLockPath();
-    fs.writeFileSync(lockPath, JSON.stringify({ lockedAt: Date.now() }), 'utf8');
-  } catch (e) {}
-}
+async function kvReleaseDistributedLock(lockKey: string): Promise<void> {
+  const cfg = getKvConfig();
+  if (!cfg) return;
 
-function releaseTokenFetchLock() {
   try {
-    const lockPath = getPersistentTokenLockPath();
-    if (fs.existsSync(lockPath)) {
-      fs.unlinkSync(lockPath);
-    }
+    await fetch(`${cfg.url}/del/${lockKey}`, {
+      headers: { Authorization: `Bearer ${cfg.token}` },
+      cache: 'no-store',
+    });
   } catch (e) {}
 }
 
 /**
- * KIS OAuth 2.0 Access Token 발급 및 Persistent File / Lock 기반 서블릿 공유 캐싱
+ * KIS OAuth 2.0 Access Token 발급 및 외부 공유 저장소(Vercel KV / Upstash Redis) 캐싱
  */
 export async function getKisAccessToken(): Promise<string | null> {
   const appKey = process.env.KIS_APPKEY;
@@ -114,31 +140,32 @@ export async function getKisAccessToken(): Promise<string | null> {
 
   const appKeyHash = `${appKey.slice(0, 6)}_${isVirtual ? 'vts' : 'real'}`;
 
-  // 1. Persistent Shared Storage Check (In-memory & /tmp Disk File)
-  const existingToken = readPersistentTokenCache(appKeyHash);
+  // 1. External Shared KV Store / Memory Check
+  const existingToken = await kvGetTokenCache(appKeyHash);
   if (existingToken) {
     return existingToken.access_token;
   }
 
-  // 2. Cross-Instance Race Condition Guard (Lock Check & Wait)
-  if (isTokenFetchLocked() || globalThis.__kisTokenPromise__) {
-    console.log('[KIS OAuth Race Guard] 다른 서버리스 인스턴스/요청에서 토큰 발급 중... 1.2초 대기 후 공유 저장소 확인');
-    await new Promise((r) => setTimeout(r, 1200));
-    const tokenAfterWait = readPersistentTokenCache(appKeyHash);
-    if (tokenAfterWait) return tokenAfterWait.access_token;
-  }
-
-  // 3. Promise Lock & Persistent Lock Set
+  // 2. Cross-Instance Race Guard (Promise Lock + KV Atomic Lock Check)
   if (globalThis.__kisTokenPromise__) {
     return globalThis.__kisTokenPromise__;
   }
 
   globalThis.__kisTokenPromise__ = (async () => {
-    setTokenFetchLock();
+    const lockKey = `kis_lock_${appKeyHash}`;
+    const gotLock = await kvAcquireDistributedLock(lockKey, 10);
+
+    if (!gotLock) {
+      console.log('[KIS Race Guard] 다른 Vercel 인스턴스가 토큰 발급 중입니다. 1.2초 대기 후 외부 저장소에서 읽어옵니다.');
+      await new Promise((r) => setTimeout(r, 1200));
+      const tokenAfterWait = await kvGetTokenCache(appKeyHash);
+      if (tokenAfterWait) return tokenAfterWait.access_token;
+    }
+
     try {
       for (let attempt = 1; attempt <= 3; attempt++) {
-        // Double check persistent store right before network call
-        const doubleCheck = readPersistentTokenCache(appKeyHash);
+        // Double check shared store right before network call
+        const doubleCheck = await kvGetTokenCache(appKeyHash);
         if (doubleCheck) return doubleCheck.access_token;
 
         try {
@@ -161,11 +188,11 @@ export async function getKisAccessToken(): Promise<string | null> {
             const errorText = await res.text();
             console.error(`[KIS OAuth Error ${res.status}]`, errorText);
 
-            const fallbackToken = readPersistentTokenCache(appKeyHash);
+            const fallbackToken = await kvGetTokenCache(appKeyHash);
             if (fallbackToken) return fallbackToken.access_token;
 
             if ((errorText.includes('EGW00133') || errorText.includes('초과')) && attempt < 3) {
-              console.warn(`[KIS OAuth EGW00133 Backoff ${attempt}/3] 1000ms 대기 후 공유 저장소 대기...`);
+              console.warn(`[KIS OAuth EGW00133 Backoff ${attempt}/3] 1000ms 대기 후 토큰 재발급...`);
               await new Promise((r) => setTimeout(r, 1000 * attempt));
               continue;
             }
@@ -183,8 +210,8 @@ export async function getKisAccessToken(): Promise<string | null> {
               app_key_hash: appKeyHash,
             };
 
-            savePersistentTokenCache(tokenCache);
-            console.log(`[KIS OAuth Success] 새로운 Access Token 발급 및 /tmp 파일 저장 완료 (유효기간: ${expiresInSec}초)`);
+            await kvSaveTokenCache(tokenCache);
+            console.log(`[KIS OAuth Success] 새로운 Access Token 발급 및 외부 공유 저장소 저장 완료 (유효기간: ${expiresInSec}초)`);
             return data.access_token;
           } else {
             console.error('[KIS OAuth Error]', data.error_description || data.msg1 || data.error_code || 'Access token missing');
@@ -203,7 +230,7 @@ export async function getKisAccessToken(): Promise<string | null> {
       }
       return null;
     } finally {
-      releaseTokenFetchLock();
+      await kvReleaseDistributedLock(lockKey);
       globalThis.__kisTokenPromise__ = undefined;
     }
   })();
