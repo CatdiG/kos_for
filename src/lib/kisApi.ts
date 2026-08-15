@@ -80,10 +80,21 @@ async function kvCommand(command: (string | number)[]): Promise<any> {
   return null;
 }
 
+const TOKEN_CACHE_KEY = Symbol.for('kis_token_cache_v2');
+
+function getGlobalTokenCache(): TokenCacheData | null {
+  return (globalThis as any)[TOKEN_CACHE_KEY] || null;
+}
+
+function setGlobalTokenCache(cache: TokenCacheData): void {
+  (globalThis as any)[TOKEN_CACHE_KEY] = cache;
+}
+
 async function kvGetTokenCache(appKeyHash: string, allowExpired: boolean = false): Promise<TokenCacheData | null> {
   const now = Date.now();
-  if (globalThis.__kisTokenCache__ && (allowExpired || globalThis.__kisTokenCache__.expires_at > now) && globalThis.__kisTokenCache__.app_key_hash === appKeyHash) {
-    return globalThis.__kisTokenCache__;
+  const mem = getGlobalTokenCache();
+  if (mem && (allowExpired || mem.expires_at > now) && mem.app_key_hash === appKeyHash) {
+    return mem;
   }
 
   const rawVal = await kvCommand(['GET', `kis_token_${appKeyHash}`]);
@@ -92,16 +103,16 @@ async function kvGetTokenCache(appKeyHash: string, allowExpired: boolean = false
       const cache: TokenCacheData = typeof rawVal === 'string' ? JSON.parse(rawVal) : rawVal;
       if (cache && cache.access_token && (allowExpired || cache.expires_at > now)) {
         console.log('[KIS External KV Hit] Vercel KV / Upstash Redis 외부 공유 저장소에서 토큰 획득 성공');
-        globalThis.__kisTokenCache__ = cache;
+        setGlobalTokenCache(cache);
         return cache;
       }
     } catch (e) {}
   }
-  return globalThis.__kisTokenCache__ || null;
+  return getGlobalTokenCache();
 }
 
 async function kvSaveTokenCache(cache: TokenCacheData): Promise<void> {
-  globalThis.__kisTokenCache__ = cache;
+  setGlobalTokenCache(cache);
   const ttlSec = Math.max(Math.floor((cache.expires_at - Date.now()) / 1000) - 300, 3600);
   const jsonStr = JSON.stringify(cache);
   const result = await kvCommand(['SET', `kis_token_${cache.app_key_hash}`, jsonStr, 'EX', ttlSec]);
@@ -181,6 +192,12 @@ export async function getKisAccessToken(): Promise<string | null> {
   }
 
   const appKeyHash = `${appKey.slice(0, 6)}_${isVirtual ? 'vts' : 'real'}`;
+
+  // 0. HMR / Dev-server safe Fast Memory Check (0ms)
+  const fastMem = getGlobalTokenCache();
+  if (fastMem && fastMem.access_token && fastMem.expires_at > Date.now() && fastMem.app_key_hash === appKeyHash) {
+    return fastMem.access_token;
+  }
 
   // 1. External Shared KV Store / Memory Check
   const existingToken = await kvGetTokenCache(appKeyHash);
