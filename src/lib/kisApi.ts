@@ -156,6 +156,42 @@ async function kvSetJson(key: string, data: any, ttlSec: number = 300): Promise<
   }
 }
 
+async function kvMgetJson<T>(keys: string[]): Promise<Record<string, T | null>> {
+  const result: Record<string, T | null> = {};
+  if (!keys || keys.length === 0) return result;
+
+  const cfg = getKvConfig();
+  if (!cfg) return result;
+
+  try {
+    const keysPath = keys.map((k) => encodeURIComponent(k)).join('/');
+    const res = await fetch(`${cfg.url}/mget/${keysPath}`, {
+      headers: { Authorization: `Bearer ${cfg.token}` },
+      cache: 'no-store',
+    });
+    if (res.ok) {
+      const json = await res.json();
+      if (Array.isArray(json.result)) {
+        json.result.forEach((rawVal: any, idx: number) => {
+          const k = keys[idx];
+          if (rawVal !== null && rawVal !== undefined) {
+            try {
+              result[k] = typeof rawVal === 'string' ? JSON.parse(rawVal) : rawVal;
+            } catch (e) {
+              result[k] = rawVal;
+            }
+          } else {
+            result[k] = null;
+          }
+        });
+      }
+    }
+  } catch (e) {
+    console.warn('[KV MGET Error]', e);
+  }
+  return result;
+}
+
 /**
  * KIS OAuth 2.0 Access Token 발급 및 외부 공유 저장소(Vercel KV / Upstash Redis) 캐싱
  */
@@ -1030,7 +1066,29 @@ export function getCreditBatchTimeLabel(): string {
 /**
  * 랭킹 종목 리스트에 대해 로컬 배치 캐시의 신용가능 여부 즉시 병합 (0ms, 불변 객체 생성)
  */
-export function mergeCreditStatusToRanking(items: RankingItem[]): RankingItem[] {
+export async function mergeCreditStatusToRanking(items: RankingItem[]): Promise<RankingItem[]> {
+  if (!items || items.length === 0) return items;
+
+  // Identify symbols missing from memory cache
+  const missingSymbols: string[] = [];
+  items.forEach((item) => {
+    if (!creditBatchStore.has(item.symbol) && !creditStatusCache.has(item.symbol)) {
+      missingSymbols.push(item.symbol);
+    }
+  });
+
+  // Single-roundtrip Redis MGET call for all 30 symbols
+  if (missingSymbols.length > 0) {
+    const keys = missingSymbols.map((sym) => `kv_credit_${sym}`);
+    const redisMap = await kvMgetJson<boolean>(keys);
+    missingSymbols.forEach((sym) => {
+      const val = redisMap[`kv_credit_${sym}`];
+      if (val !== null && val !== undefined) {
+        creditStatusCache.set(sym, { isCredit: val, timestamp: Date.now() });
+      }
+    });
+  }
+
   return items.map((item) => {
     let isCreditAvailable: boolean | undefined = item.isCreditAvailable;
     if (creditBatchStore.has(item.symbol)) {
@@ -1221,8 +1279,8 @@ async function executeKisForeignInstitutionRankingFetch(
       };
     });
 
-    // 실시간 KIS 네트워크 호출 100% 제거: 로컬 일별 배치 스토어에서 신용가능 여부 즉시 병합 (0ms)
-    mergeCreditStatusToRanking(list);
+    // 100% 배치 스토어 및 Redis MGET 단일 왕복 병합 (0ms~10ms)
+    await mergeCreditStatusToRanking(list);
 
     // 1주일(1w)/1개월(1m) 탭이거나 당일 가집계 값이 0인 경구 KIS 원본 종목별 실매매 동향(FHKST01010900)으로 보정
     if (period !== '1d' || list.every((item) => item.netBuyAmt === 0)) {
@@ -1492,7 +1550,7 @@ export async function fetchOverlapRankingData(
     rank: index + 1,
   }));
 
-  const mergedList = mergeCreditStatusToRanking(finalOverlapItems);
+  const mergedList = await mergeCreditStatusToRanking(finalOverlapItems);
 
   return {
     type: 'overlap',
@@ -1645,8 +1703,8 @@ export async function fetchConsecutive3dOverlapRankingData(
     item.rank = idx + 1;
   });
 
-  // 100% 로컬 배치 캐시에서 신용가능 여부 동기 즉시 병합 (0ms)
-  mergeCreditStatusToRanking(results);
+  // 100% 로컬 배치 캐시 및 Redis MGET 단일 왕복 병합 (0ms~10ms)
+  await mergeCreditStatusToRanking(results);
 
   return {
     type: 'overlap',
@@ -1856,7 +1914,7 @@ async function executeKisSurgingStocksFetch(
   ).catch(() => {});
 
   // 3. Final merge with updated cache values
-  const mergedList = mergeCreditStatusToRanking(items);
+  const mergedList = await mergeCreditStatusToRanking(items);
 
   return {
     type: 'surging',
@@ -1998,7 +2056,7 @@ export async function fetchKisSurgingOverlap(
       registerRuntimeStockName(item.symbol, item.name);
     });
 
-    const mergedList = mergeCreditStatusToRanking(list);
+    const mergedList = await mergeCreditStatusToRanking(list);
 
     return {
       type: 'surging',
@@ -2200,7 +2258,7 @@ export async function fetchKisComprehensiveScoreRanking(
       registerRuntimeStockName(item.symbol, item.name);
     });
 
-    const mergedList = mergeCreditStatusToRanking(scoredItems);
+    const mergedList = await mergeCreditStatusToRanking(scoredItems);
 
     return {
       type: 'comprehensive' as RankingType,
