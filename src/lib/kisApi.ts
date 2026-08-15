@@ -24,9 +24,7 @@ declare global {
 // =================================================================
 
 import { Redis as UpstashRedis } from '@upstash/redis';
-import IORedis from 'ioredis';
 
-const REDIS_CLIENT_KEY = Symbol.for('kis_ioredis_client');
 const UPSTASH_CLIENT_KEY = Symbol.for('kis_upstash_client');
 
 function getUpstashClient(): UpstashRedis | null {
@@ -51,30 +49,6 @@ function getUpstashClient(): UpstashRedis | null {
   } catch (e) {}
 
   return null;
-}
-
-function getIORedisClient(): IORedis | null {
-  if ((globalThis as any)[REDIS_CLIENT_KEY]) {
-    return (globalThis as any)[REDIS_CLIENT_KEY];
-  }
-  const redisUrl = process.env.REDIS_URL || process.env.KV_URL;
-  if (!redisUrl || typeof redisUrl !== 'string' || redisUrl.trim() === '') {
-    return null;
-  }
-  try {
-    const client = new IORedis(redisUrl.trim(), {
-      connectTimeout: 2000,
-      commandTimeout: 1500,
-      maxRetriesPerRequest: 1,
-      lazyConnect: true,
-      enableOfflineQueue: false,
-      tls: redisUrl.startsWith('rediss://') ? { rejectUnauthorized: false } : undefined,
-    });
-    (globalThis as any)[REDIS_CLIENT_KEY] = client;
-    return client;
-  } catch (e) {
-    return null;
-  }
 }
 
 const TOKEN_CACHE_KEY = Symbol.for('kis_token_cache_v2');
@@ -124,7 +98,7 @@ async function kvGetTokenCache(appKeyHash: string, allowExpired: boolean = false
     return fileCache;
   }
 
-  // 3. Upstash Redis Official SDK Lookup
+  // 3. Upstash Redis Official REST SDK Lookup
   const upstash = getUpstashClient();
   if (upstash) {
     try {
@@ -132,25 +106,7 @@ async function kvGetTokenCache(appKeyHash: string, allowExpired: boolean = false
       if (rawVal) {
         const cache: TokenCacheData = typeof rawVal === 'string' ? JSON.parse(rawVal) : rawVal;
         if (cache && cache.access_token && (allowExpired || cache.expires_at > now)) {
-          console.log('[KIS Redis Hit] Upstash Redis에서 유효한 접근 토큰 획득 성공 (신규 발급 0건)');
-          setGlobalTokenCache(cache);
-          saveLocalFileTokenCache(cache);
-          return cache;
-        }
-      }
-    } catch (e) {}
-  }
-
-  // 4. ioredis TCP Store Check (100% works with REDIS_URL)
-  const ioredis = getIORedisClient();
-  if (ioredis) {
-    try {
-      if (ioredis.status === 'wait') await ioredis.connect();
-      const rawVal = await ioredis.get(`kis_token_${appKeyHash}`);
-      if (rawVal) {
-        const cache: TokenCacheData = JSON.parse(rawVal);
-        if (cache && cache.access_token && (allowExpired || cache.expires_at > now)) {
-          console.log('[KIS TCP Redis Hit] ioredis에서 유효한 접근 토큰 획득 성공 (신규 발급 0건)');
+          console.log('[KIS Redis Hit] Upstash Redis REST에서 유효한 접근 토큰 획득 성공 (신규 발급 0건)');
           setGlobalTokenCache(cache);
           saveLocalFileTokenCache(cache);
           return cache;
@@ -169,22 +125,12 @@ async function kvSaveTokenCache(cache: TokenCacheData): Promise<void> {
   const ttlSec = Math.max(Math.floor((cache.expires_at - Date.now()) / 1000) - 300, 3600);
   const jsonStr = JSON.stringify(cache);
 
-  // 1. Upstash Redis Official SDK Save
+  // Upstash Redis Official REST SDK Save
   const upstash = getUpstashClient();
   if (upstash) {
     try {
       await upstash.set(`kis_token_${cache.app_key_hash}`, jsonStr, { ex: ttlSec });
-      console.log(`[KIS Redis Saved] Upstash Redis 공유 저장소에 토큰 저장 완료 (TTL: ${ttlSec}초).`);
-    } catch (e) {}
-  }
-
-  // 2. ioredis TCP Save Fallback
-  const ioredis = getIORedisClient();
-  if (ioredis) {
-    try {
-      if (ioredis.status === 'wait') await ioredis.connect();
-      await ioredis.set(`kis_token_${cache.app_key_hash}`, jsonStr, 'EX', ttlSec);
-      console.log(`[KIS TCP Redis Saved] ioredis TCP 공유 저장소에 토큰 저장 완료 (TTL: ${ttlSec}초).`);
+      console.log(`[KIS Redis Saved] Upstash Redis REST 공유 저장소에 토큰 저장 완료 (TTL: ${ttlSec}초).`);
     } catch (e) {}
   }
 }
@@ -197,14 +143,6 @@ async function kvAcquireDistributedLock(lockKey: string, ttlSec: number = 10): P
       if (res === 'OK') return true;
     } catch (e) {}
   }
-  const ioredis = getIORedisClient();
-  if (ioredis) {
-    try {
-      if (ioredis.status === 'wait') await ioredis.connect();
-      const res = await ioredis.set(lockKey, 'locked', 'EX', ttlSec, 'NX');
-      if (res === 'OK') return true;
-    } catch (e) {}
-  }
   return true;
 }
 
@@ -212,10 +150,6 @@ async function kvReleaseDistributedLock(lockKey: string): Promise<void> {
   const upstash = getUpstashClient();
   if (upstash) {
     try { await upstash.del(lockKey); } catch (e) {}
-  }
-  const ioredis = getIORedisClient();
-  if (ioredis) {
-    try { if (ioredis.status === 'wait') await ioredis.connect(); await ioredis.del(lockKey); } catch (e) {}
   }
 }
 
@@ -227,14 +161,6 @@ async function kvGetJson<T>(key: string): Promise<T | null> {
       if (rawVal !== null && rawVal !== undefined) return rawVal;
     } catch (e) {}
   }
-  const ioredis = getIORedisClient();
-  if (ioredis) {
-    try {
-      if (ioredis.status === 'wait') await ioredis.connect();
-      const rawVal = await ioredis.get(key);
-      if (rawVal) return JSON.parse(rawVal);
-    } catch (e) {}
-  }
   return null;
 }
 
@@ -243,10 +169,6 @@ async function kvSetJson(key: string, data: any, ttlSec: number = 300): Promise<
   const upstash = getUpstashClient();
   if (upstash) {
     try { await upstash.set(key, jsonStr, { ex: ttlSec }); } catch (e) {}
-  }
-  const ioredis = getIORedisClient();
-  if (ioredis) {
-    try { if (ioredis.status === 'wait') await ioredis.connect(); await ioredis.set(key, jsonStr, 'EX', ttlSec); } catch (e) {}
   }
 }
 
@@ -258,29 +180,6 @@ async function kvMgetJson<T>(keys: string[]): Promise<Record<string, T | null>> 
   if (upstash) {
     try {
       const rawList = await upstash.mget<any[]>(...keys);
-      if (Array.isArray(rawList)) {
-        rawList.forEach((rawVal: any, idx: number) => {
-          const k = keys[idx];
-          if (rawVal !== null && rawVal !== undefined) {
-            try {
-              result[k] = typeof rawVal === 'string' ? JSON.parse(rawVal) : rawVal;
-            } catch (e) {
-              result[k] = rawVal;
-            }
-          } else {
-            result[k] = null;
-          }
-        });
-        return result;
-      }
-    } catch (e) {}
-  }
-
-  const ioredis = getIORedisClient();
-  if (ioredis) {
-    try {
-      if (ioredis.status === 'wait') await ioredis.connect();
-      const rawList = await ioredis.mget(...keys);
       if (Array.isArray(rawList)) {
         rawList.forEach((rawVal: any, idx: number) => {
           const k = keys[idx];
