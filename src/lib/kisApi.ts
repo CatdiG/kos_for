@@ -18,8 +18,85 @@ declare global {
   var __kisTokenPromise__: Promise<string | null> | undefined;
 }
 
+// Persistent Token File Storage for Serverless Container / Instance Sharing
+function getPersistentTokenPath(): string {
+  const tmpDir = os.tmpdir() || '/tmp';
+  return path.join(tmpDir, 'kis_access_token_v2.json');
+}
+
+function getPersistentTokenLockPath(): string {
+  const tmpDir = os.tmpdir() || '/tmp';
+  return path.join(tmpDir, 'kis_access_token_v2.lock');
+}
+
+function readPersistentTokenCache(appKeyHash: string): TokenCacheData | null {
+  try {
+    // 1. In-memory check first (fastest)
+    const now = Date.now();
+    if (globalThis.__kisTokenCache__ && globalThis.__kisTokenCache__.expires_at > now + 60000 && globalThis.__kisTokenCache__.app_key_hash === appKeyHash) {
+      return globalThis.__kisTokenCache__;
+    }
+
+    // 2. Cross-instance persistent file check (/tmp/kis_access_token_v2.json)
+    const filePath = getPersistentTokenPath();
+    if (fs.existsSync(filePath)) {
+      const fileData = fs.readFileSync(filePath, 'utf8');
+      const cache: TokenCacheData = JSON.parse(fileData);
+      if (cache && cache.access_token && cache.expires_at > now + 60000 && cache.app_key_hash === appKeyHash) {
+        console.log('[KIS Persistent Token Hit] /tmp 디스크 파일 저장소에서 유효한 KIS 접근 토큰 재사용 (Vercel 인스턴스 공유)');
+        globalThis.__kisTokenCache__ = cache; // Warm up in-memory cache
+        return cache;
+      }
+    }
+  } catch (e) {
+    // Ignore file read exceptions
+  }
+  return null;
+}
+
+function savePersistentTokenCache(cache: TokenCacheData) {
+  try {
+    globalThis.__kisTokenCache__ = cache;
+    const filePath = getPersistentTokenPath();
+    fs.writeFileSync(filePath, JSON.stringify(cache), 'utf8');
+    console.log('[KIS Persistent Token Saved] /tmp 디스크 파일 저장소에 KIS 접근 토큰 저장 완료');
+  } catch (e) {
+    console.warn('[KIS Persistent Token Save Failed]', e);
+  }
+}
+
+function isTokenFetchLocked(): boolean {
+  try {
+    const lockPath = getPersistentTokenLockPath();
+    if (fs.existsSync(lockPath)) {
+      const stats = fs.statSync(lockPath);
+      // Lock expires automatically after 10 seconds to prevent deadlocks
+      if (Date.now() - stats.mtimeMs < 10000) {
+        return true;
+      }
+    }
+  } catch (e) {}
+  return false;
+}
+
+function setTokenFetchLock() {
+  try {
+    const lockPath = getPersistentTokenLockPath();
+    fs.writeFileSync(lockPath, JSON.stringify({ lockedAt: Date.now() }), 'utf8');
+  } catch (e) {}
+}
+
+function releaseTokenFetchLock() {
+  try {
+    const lockPath = getPersistentTokenLockPath();
+    if (fs.existsSync(lockPath)) {
+      fs.unlinkSync(lockPath);
+    }
+  } catch (e) {}
+}
+
 /**
- * KIS OAuth 2.0 Access Token 발급 및 순수 메모리(globalThis) 캐싱 (100% Zero File I/O)
+ * KIS OAuth 2.0 Access Token 발급 및 Persistent File / Lock 기반 서블릿 공유 캐싱
  */
 export async function getKisAccessToken(): Promise<string | null> {
   const appKey = process.env.KIS_APPKEY;
@@ -36,86 +113,99 @@ export async function getKisAccessToken(): Promise<string | null> {
   }
 
   const appKeyHash = `${appKey.slice(0, 6)}_${isVirtual ? 'vts' : 'real'}`;
-  const now = Date.now();
 
-  // 1. 메모리 캐시(globalThis) 검증 (60초 안전 버퍼)
-  if (globalThis.__kisTokenCache__ && globalThis.__kisTokenCache__.expires_at > now + 60000) {
-    return globalThis.__kisTokenCache__.access_token;
+  // 1. Persistent Shared Storage Check (In-memory & /tmp Disk File)
+  const existingToken = readPersistentTokenCache(appKeyHash);
+  if (existingToken) {
+    return existingToken.access_token;
   }
 
-  // 2. 동시 요청 시 중복 토큰 발급 방지 (Promise Lock)
+  // 2. Cross-Instance Race Condition Guard (Lock Check & Wait)
+  if (isTokenFetchLocked() || globalThis.__kisTokenPromise__) {
+    console.log('[KIS OAuth Race Guard] 다른 서버리스 인스턴스/요청에서 토큰 발급 중... 1.2초 대기 후 공유 저장소 확인');
+    await new Promise((r) => setTimeout(r, 1200));
+    const tokenAfterWait = readPersistentTokenCache(appKeyHash);
+    if (tokenAfterWait) return tokenAfterWait.access_token;
+  }
+
+  // 3. Promise Lock & Persistent Lock Set
   if (globalThis.__kisTokenPromise__) {
     return globalThis.__kisTokenPromise__;
   }
 
-  // 3. 신규 토큰 발급 요청 (Promise Lock 및 EGW00133 백오프 재시도 적용)
   globalThis.__kisTokenPromise__ = (async () => {
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      try {
-        console.log(`[KIS OAuth Request] KIS API 접근 토큰 발급 요청 중... (시도 ${attempt}/3)`);
-        const res = await fetch(`${baseUrl}/oauth2/tokenP`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json; charset=utf-8',
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-          },
-          body: JSON.stringify({
-            grant_type: 'client_credentials',
-            appkey: appKey,
-            appsecret: appSecret,
-          }),
-          cache: 'no-store',
-        });
+    setTokenFetchLock();
+    try {
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        // Double check persistent store right before network call
+        const doubleCheck = readPersistentTokenCache(appKeyHash);
+        if (doubleCheck) return doubleCheck.access_token;
 
-        if (!res.ok) {
-          const errorText = await res.text();
-          console.error(`[KIS OAuth Error ${res.status}]`, errorText);
+        try {
+          console.log(`[KIS OAuth Request] KIS API 접근 토큰 신규 발급 요청 중... (시도 ${attempt}/3)`);
+          const res = await fetch(`${baseUrl}/oauth2/tokenP`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json; charset=utf-8',
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+            },
+            body: JSON.stringify({
+              grant_type: 'client_credentials',
+              appkey: appKey,
+              appsecret: appSecret,
+            }),
+            cache: 'no-store',
+          });
 
-          if (globalThis.__kisTokenCache__?.access_token) {
-            console.warn('[KIS OAuth Fallback] 토큰 발급 제한(EGW00133)으로 메모리 저장 토큰을 비상 재사용합니다.');
-            return globalThis.__kisTokenCache__.access_token;
+          if (!res.ok) {
+            const errorText = await res.text();
+            console.error(`[KIS OAuth Error ${res.status}]`, errorText);
+
+            const fallbackToken = readPersistentTokenCache(appKeyHash);
+            if (fallbackToken) return fallbackToken.access_token;
+
+            if ((errorText.includes('EGW00133') || errorText.includes('초과')) && attempt < 3) {
+              console.warn(`[KIS OAuth EGW00133 Backoff ${attempt}/3] 1000ms 대기 후 공유 저장소 대기...`);
+              await new Promise((r) => setTimeout(r, 1000 * attempt));
+              continue;
+            }
+
+            return null;
           }
 
-          if ((errorText.includes('EGW00133') || errorText.includes('초과')) && attempt < 3) {
-            console.warn(`[KIS OAuth EGW00133 Backoff ${attempt}/3] 800ms 대기 후 토큰 재발급...`);
-            await new Promise((r) => setTimeout(r, 800 * attempt));
-            continue;
+          const data: any = await res.json();
+          if (data.access_token) {
+            const expiresInSec = data.expires_in || 86400;
+            const expiresAt = Date.now() + expiresInSec * 1000;
+            const tokenCache: TokenCacheData = {
+              access_token: data.access_token,
+              expires_at: expiresAt,
+              app_key_hash: appKeyHash,
+            };
+
+            savePersistentTokenCache(tokenCache);
+            console.log(`[KIS OAuth Success] 새로운 Access Token 발급 및 /tmp 파일 저장 완료 (유효기간: ${expiresInSec}초)`);
+            return data.access_token;
+          } else {
+            console.error('[KIS OAuth Error]', data.error_description || data.msg1 || data.error_code || 'Access token missing');
+            if (attempt < 3) {
+              await new Promise((r) => setTimeout(r, 1000 * attempt));
+              continue;
+            }
           }
-
-          return null;
-        }
-
-        const data: any = await res.json();
-        if (data.access_token) {
-          const expiresInSec = data.expires_in || 86400;
-          const expiresAt = Date.now() + expiresInSec * 1000;
-          const tokenCache: TokenCacheData = {
-            access_token: data.access_token,
-            expires_at: expiresAt,
-            app_key_hash: appKeyHash,
-          };
-
-          globalThis.__kisTokenCache__ = tokenCache;
-          console.log(`[KIS OAuth Success] 새로운 Access Token 발급 성공 (유효기간: ${expiresInSec}초)`);
-          return data.access_token;
-        } else {
-          console.error('[KIS OAuth Error]', data.error_description || data.msg1 || data.error_code || 'Access token missing');
+        } catch (error) {
+          console.error('[KIS OAuth Exception]', error);
           if (attempt < 3) {
-            await new Promise((r) => setTimeout(r, 800 * attempt));
+            await new Promise((r) => setTimeout(r, 1000 * attempt));
             continue;
           }
         }
-      } catch (error) {
-        console.error('[KIS OAuth Exception]', error);
-        if (attempt < 3) {
-          await new Promise((r) => setTimeout(r, 800 * attempt));
-          continue;
-        }
-      } finally {
-        globalThis.__kisTokenPromise__ = undefined;
       }
+      return null;
+    } finally {
+      releaseTokenFetchLock();
+      globalThis.__kisTokenPromise__ = undefined;
     }
-    return null;
   })();
 
   return globalThis.__kisTokenPromise__;
