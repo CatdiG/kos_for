@@ -23,12 +23,36 @@ declare global {
 // External Shared Storage (Vercel KV / Upstash Redis REST API) & Distributed Lock
 // =================================================================
 
+function parseRedisUrl(redisUrl: string) {
+  if (!redisUrl || typeof redisUrl !== 'string') return null;
+  try {
+    const cleanUrl = redisUrl.trim().replace(/^rediss?:\/\//i, '');
+    const [authPart, hostPart] = cleanUrl.split('@');
+    if (!authPart || !hostPart) return null;
+    const token = authPart.includes(':') ? authPart.split(':')[1] : authPart;
+    const host = hostPart.split(':')[0];
+    if (token && host) {
+      return {
+        url: `https://${host}`,
+        token,
+      };
+    }
+  } catch (e) {}
+  return null;
+}
+
 function getKvConfig() {
   const url = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL;
   const token = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN;
   if (url && token && url.trim() !== '' && token.trim() !== '') {
     return { url: url.replace(/\/$/, ''), token };
   }
+
+  if (process.env.REDIS_URL) {
+    const parsed = parseRedisUrl(process.env.REDIS_URL);
+    if (parsed) return parsed;
+  }
+
   return null;
 }
 
