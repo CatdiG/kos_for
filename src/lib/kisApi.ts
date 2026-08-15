@@ -282,109 +282,85 @@ export async function getKisAccessToken(): Promise<string | null> {
 
   const appKeyHash = `${appKey.slice(0, 6)}_${isVirtual ? 'vts' : 'real'}`;
 
-  // 0. Triple-layered Fast Memory & Local File Check (0ms)
-  const fastMem = getGlobalTokenCache() || getLocalFileTokenCache(appKeyHash);
-  if (fastMem && fastMem.access_token && fastMem.expires_at > Date.now() && (!fastMem.app_key_hash || fastMem.app_key_hash === appKeyHash)) {
-    setGlobalTokenCache(fastMem);
-    console.log('[KIS Token Cache Hit] 24시간 유효 저장 토큰 사용 중 (신규 발급 0건, 0ms)');
-    return fastMem.access_token;
-  }
-
-  // 1. External Shared KV Store / Memory Check
+  // 1. Fast Memory & Local File & Redis Check (0ms)
   const existingToken = await kvGetTokenCache(appKeyHash);
-  if (existingToken) {
+  if (existingToken && existingToken.access_token && existingToken.expires_at > Date.now()) {
     return existingToken.access_token;
   }
 
-  // 2. Cross-Instance Race Guard (Promise Lock + KV Atomic Lock Check)
+  // 2. Promise Lock for concurrent requests within the same process
   if (globalThis.__kisTokenPromise__) {
     return globalThis.__kisTokenPromise__;
   }
 
   globalThis.__kisTokenPromise__ = (async () => {
-    const lockKey = `kis_lock_${appKeyHash}`;
-    const gotLock = await kvAcquireDistributedLock(lockKey, 10);
-
-    if (!gotLock) {
-      console.log('[KIS Race Guard] 다른 Vercel 인스턴스가 토큰 발급 중입니다. 1.2초 대기 후 외부 저장소에서 읽어옵니다.');
-      await new Promise((r) => setTimeout(r, 1200));
-      const tokenAfterWait = await kvGetTokenCache(appKeyHash);
-      if (tokenAfterWait) return tokenAfterWait.access_token;
-    }
-
     try {
-      for (let attempt = 1; attempt <= 3; attempt++) {
-        // Double check shared store right before network call
-        const doubleCheck = await kvGetTokenCache(appKeyHash);
-        if (doubleCheck) return doubleCheck.access_token;
-
-        try {
-          console.log(`[KIS OAuth Request] KIS API 접근 토큰 신규 발급 요청 중... (시도 ${attempt}/3)`);
-          const res = await fetch(`${baseUrl}/oauth2/tokenP`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json; charset=utf-8',
-              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-            },
-            body: JSON.stringify({
-              grant_type: 'client_credentials',
-              appkey: appKey,
-              appsecret: appSecret,
-            }),
-            cache: 'no-store',
-          });
-
-          if (!res.ok) {
-            const errorText = await res.text();
-            console.error(`[KIS OAuth Error ${res.status}]`, errorText);
-            globalThis.__lastKisOAuthError__ = `[KIS OAuth HTTP ${res.status}] ${errorText}`;
-
-            const fallbackToken = await kvGetTokenCache(appKeyHash, true);
-            if (fallbackToken) return fallbackToken.access_token;
-
-            if ((errorText.includes('EGW00133') || errorText.includes('초과')) && attempt < 3) {
-              console.warn(`[KIS OAuth EGW00133 Backoff ${attempt}/3] 1000ms 대기 후 토큰 재발급...`);
-              await new Promise((r) => setTimeout(r, 1000 * attempt));
-              continue;
-            }
-
-            return null;
-          }
-
-          const data: any = await res.json();
-          if (data.access_token) {
-            const expiresInSec = data.expires_in || 86400;
-            const expiresAt = Date.now() + expiresInSec * 1000;
-            const tokenCache: TokenCacheData = {
-              access_token: data.access_token,
-              expires_at: expiresAt,
-              app_key_hash: appKeyHash,
-            };
-
-            await kvSaveTokenCache(tokenCache);
-            console.log(`[KIS OAuth Success] 새로운 Access Token 발급 및 외부 공유 저장소 저장 완료 (유효기간: ${expiresInSec}초)`);
-            return data.access_token;
-          } else {
-            const errStr = data.error_description || data.msg1 || data.error_code || 'Access token missing';
-            console.error('[KIS OAuth Error]', errStr);
-            globalThis.__lastKisOAuthError__ = `[KIS OAuth 응답 에러] ${errStr}`;
-            if (attempt < 3) {
-              await new Promise((r) => setTimeout(r, 1000 * attempt));
-              continue;
-            }
-          }
-        } catch (error: any) {
-          console.error('[KIS OAuth Exception]', error);
-          globalThis.__lastKisOAuthError__ = `[KIS OAuth 네트워크 예외] ${error?.message || String(error)}`;
-          if (attempt < 3) {
-            await new Promise((r) => setTimeout(r, 1000 * attempt));
-            continue;
-          }
-        }
+      // Double check cache right before network call
+      const doubleCheck = await kvGetTokenCache(appKeyHash);
+      if (doubleCheck && doubleCheck.access_token && doubleCheck.expires_at > Date.now()) {
+        return doubleCheck.access_token;
       }
+
+      console.log('[KIS OAuth Request] KIS API 접근 토큰 신규 발급 요청 중...');
+      const res = await fetch(`${baseUrl}/oauth2/tokenP`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json; charset=utf-8',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+        },
+        body: JSON.stringify({
+          grant_type: 'client_credentials',
+          appkey: appKey,
+          appsecret: appSecret,
+        }),
+        cache: 'no-store',
+      });
+
+      if (!res.ok) {
+        const errorText = await res.text();
+        console.error(`[KIS OAuth Error ${res.status}]`, errorText);
+        globalThis.__lastKisOAuthError__ = `[KIS OAuth HTTP ${res.status}] ${errorText}`;
+
+        const fallbackToken = await kvGetTokenCache(appKeyHash, true);
+        if (fallbackToken && fallbackToken.access_token) {
+          console.warn('[KIS OAuth Fallback] 한투 서버 오류/제한으로 기존 발급 토큰 안전 사용');
+          return fallbackToken.access_token;
+        }
+        return null;
+      }
+
+      const data: any = await res.json();
+      if (data && data.access_token) {
+        const expiresInSec = typeof data.expires_in === 'number' ? data.expires_in : parseInt(data.expires_in || '86400', 10);
+        const expiresAt = Date.now() + (expiresInSec * 1000); // 1000을 곱해 밀리초(ms) 단위로 정확히 24시간 뒤로 설정
+
+        console.log(`[KIS Token Info] 새 토큰 만료 시간: ${new Date(expiresAt).toISOString()} (현재로부터 약 ${(expiresInSec / 3600).toFixed(1)}시간 뒤)`);
+
+        const tokenCache: TokenCacheData = {
+          access_token: data.access_token,
+          expires_at: expiresAt,
+          app_key_hash: appKeyHash,
+        };
+
+        await kvSaveTokenCache(tokenCache);
+        console.log(`[KIS OAuth Success] 새로운 Access Token 발급 및 Redis 공유 저장소 저장 완료 (유효기간: ${expiresInSec}초)`);
+        return data.access_token;
+      } else {
+        const errStr = data.error_description || data.msg1 || data.error_code || 'Access token missing';
+        console.error('[KIS OAuth Error]', errStr);
+        globalThis.__lastKisOAuthError__ = `[KIS OAuth 응답 에러] ${errStr}`;
+
+        const fallbackToken = await kvGetTokenCache(appKeyHash, true);
+        if (fallbackToken && fallbackToken.access_token) return fallbackToken.access_token;
+        return null;
+      }
+    } catch (e: any) {
+      console.error('[KIS OAuth Exception]', e?.message || e);
+      globalThis.__lastKisOAuthError__ = `[KIS OAuth 예외] ${e?.message || e}`;
+      const fallbackToken = await kvGetTokenCache(appKeyHash, true);
+      if (fallbackToken && fallbackToken.access_token) return fallbackToken.access_token;
       return null;
     } finally {
-      await kvReleaseDistributedLock(lockKey);
       globalThis.__kisTokenPromise__ = undefined;
     }
   })();
