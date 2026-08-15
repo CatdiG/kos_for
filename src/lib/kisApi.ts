@@ -48,61 +48,73 @@ export async function getKisAccessToken(): Promise<string | null> {
     return globalThis.__kisTokenPromise__;
   }
 
-  // 3. 신규 토큰 발급 요청 (Promise Lock 적용)
+  // 3. 신규 토큰 발급 요청 (Promise Lock 및 EGW00133 백오프 재시도 적용)
   globalThis.__kisTokenPromise__ = (async () => {
-    try {
-      console.log('[KIS OAuth Request] KIS API 접근 토큰 발급 요청 중...');
-      const res = await fetch(`${baseUrl}/oauth2/tokenP`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          grant_type: 'client_credentials',
-          appkey: appKey,
-          appsecret: appSecret,
-        }),
-      });
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        console.log(`[KIS OAuth Request] KIS API 접근 토큰 발급 요청 중... (시도 ${attempt}/3)`);
+        const res = await fetch(`${baseUrl}/oauth2/tokenP`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json; charset=utf-8',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+          },
+          body: JSON.stringify({
+            grant_type: 'client_credentials',
+            appkey: appKey,
+            appsecret: appSecret,
+          }),
+          cache: 'no-store',
+        });
 
-      if (!res.ok) {
-        const errorText = await res.text();
-        console.error('[KIS OAuth Error]', res.status, errorText);
+        if (!res.ok) {
+          const errorText = await res.text();
+          console.error(`[KIS OAuth Error ${res.status}]`, errorText);
 
-        // 403 EGW00133 제한 오류 시 메모리 기존 토큰 비상 재사용
-        if (globalThis.__kisTokenCache__?.access_token) {
-          console.warn('[KIS OAuth Fallback] 토큰 발급 제한(EGW00133)으로 메모리 저장 토큰을 비상 재사용합니다.');
-          return globalThis.__kisTokenCache__.access_token;
+          if (globalThis.__kisTokenCache__?.access_token) {
+            console.warn('[KIS OAuth Fallback] 토큰 발급 제한(EGW00133)으로 메모리 저장 토큰을 비상 재사용합니다.');
+            return globalThis.__kisTokenCache__.access_token;
+          }
+
+          if ((errorText.includes('EGW00133') || errorText.includes('초과')) && attempt < 3) {
+            console.warn(`[KIS OAuth EGW00133 Backoff ${attempt}/3] 800ms 대기 후 토큰 재발급...`);
+            await new Promise((r) => setTimeout(r, 800 * attempt));
+            continue;
+          }
+
+          return null;
         }
 
-        return null;
+        const data: any = await res.json();
+        if (data.access_token) {
+          const expiresInSec = data.expires_in || 86400;
+          const expiresAt = Date.now() + expiresInSec * 1000;
+          const tokenCache: TokenCacheData = {
+            access_token: data.access_token,
+            expires_at: expiresAt,
+            app_key_hash: appKeyHash,
+          };
+
+          globalThis.__kisTokenCache__ = tokenCache;
+          console.log(`[KIS OAuth Success] 새로운 Access Token 발급 성공 (유효기간: ${expiresInSec}초)`);
+          return data.access_token;
+        } else {
+          console.error('[KIS OAuth Error]', data.error_description || data.msg1 || data.error_code || 'Access token missing');
+          if (attempt < 3) {
+            await new Promise((r) => setTimeout(r, 800 * attempt));
+            continue;
+          }
+        }
+      } catch (error) {
+        console.error('[KIS OAuth Exception]', error);
+        if (attempt < 3) {
+          await new Promise((r) => setTimeout(r, 800 * attempt));
+          continue;
+        }
+      } finally {
+        globalThis.__kisTokenPromise__ = undefined;
       }
-
-      const data: any = await res.json();
-      if (data.access_token) {
-        const expiresInSec = data.expires_in || 86400;
-        const expiresAt = Date.now() + expiresInSec * 1000;
-        const tokenCache: TokenCacheData = {
-          access_token: data.access_token,
-          expires_at: expiresAt,
-          app_key_hash: appKeyHash,
-        };
-
-        // 100% 메모리 캐시 저장 (Zero File System I/O -> Next.js Fast Refresh 완전 방지)
-        globalThis.__kisTokenCache__ = tokenCache;
-
-        console.log(`[KIS OAuth Success] 새로운 Access Token 발급 성공 (유효기간: ${expiresInSec}초, 순수 메모리 캐싱 완료)`);
-        return data.access_token;
-      } else {
-        console.error('[KIS OAuth Error]', data.error_description || data.msg1 || data.error_code || 'Access token missing');
-        globalThis.__kisTokenCache__ = undefined;
-      }
-    } catch (error) {
-      console.error('[KIS OAuth Exception]', error);
-      globalThis.__kisTokenCache__ = undefined;
-    } finally {
-      globalThis.__kisTokenPromise__ = undefined;
     }
-
     return null;
   })();
 
@@ -211,8 +223,8 @@ async function fetchWithRetry<T>(
       return await fetchFn();
     } catch (err: any) {
       const errMsg = err?.message || String(err);
-      const isRateLimit = errMsg.includes('EGW00201') || errMsg.includes('EGW00202') || errMsg.includes('초당');
-      const isAuthError = errMsg.includes('EGW00103') || errMsg.includes('EGW00133') || errMsg.includes('AppSecret') || errMsg.includes('인증 오류');
+      const isRateLimit = errMsg.includes('EGW00201') || errMsg.includes('EGW00202') || errMsg.includes('EGW00133') || errMsg.includes('초당') || errMsg.includes('초과');
+      const isFatalAuthError = errMsg.includes('EGW00103') || errMsg.includes('AppSecret') || errMsg.includes('키가 올바르지 않습니다');
 
       if (isRateLimit && attempt < maxRetries) {
         console.warn(`[KIS Rate Limit Backoff ${attempt}/${maxRetries}] 800ms 대기 후 자동 재시도...`);
@@ -220,8 +232,8 @@ async function fetchWithRetry<T>(
         continue;
       }
 
-      if (isAuthError) {
-        throw err; // 복구 불가능한 인증 오류는 즉시 발생
+      if (isFatalAuthError) {
+        throw err; // 복구 불가능한 키 오류는 즉시 발생
       }
 
       if (attempt < maxRetries) {
