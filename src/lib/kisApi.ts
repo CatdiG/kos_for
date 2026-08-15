@@ -23,42 +23,44 @@ declare global {
 // External Shared Storage (Vercel KV / Upstash Redis REST API) & Distributed Lock
 // =================================================================
 
-import { Redis as UpstashRedis } from '@upstash/redis';
+import Redis from 'ioredis';
 
-const UPSTASH_CLIENT_KEY = Symbol.for('kis_upstash_client');
+const IOREDIS_CLIENT_KEY = Symbol.for('kis_ioredis_client');
 
-function getUpstashClient(): UpstashRedis | null {
-  if ((globalThis as any)[UPSTASH_CLIENT_KEY]) {
-    return (globalThis as any)[UPSTASH_CLIENT_KEY];
+function getIORedisClient(): Redis | null {
+  if ((globalThis as any)[IOREDIS_CLIENT_KEY]) {
+    return (globalThis as any)[IOREDIS_CLIENT_KEY];
   }
 
-  const url = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL;
-  const token = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN;
-
-  if (url && token && url.trim() !== '' && token.trim() !== '') {
-    let sanitizedUrl = url.trim();
-    if (!sanitizedUrl.startsWith('http://') && !sanitizedUrl.startsWith('https://')) {
-      sanitizedUrl = `https://${sanitizedUrl}`;
-    }
-    sanitizedUrl = sanitizedUrl.replace(/\/$/, '');
-
-    try {
-      console.log(`[Redis Config Audit] Connecting to Upstash REST URL: ${sanitizedUrl}`);
-      const client = new UpstashRedis({
-        url: sanitizedUrl,
-        token: token.trim(),
-        retry: { retries: 0 }, // 지연 방지: REST 요청 실패 시 즉시 무응답 재시도 없이 0ms 회피
-      });
-      (globalThis as any)[UPSTASH_CLIENT_KEY] = client;
-      return client;
-    } catch (e: any) {
-      console.error('[Redis 에러] UpstashRedis 클라이언트 생성 실패:', e?.message || e);
-    }
-  } else {
-    console.log('[Redis Config Info] KV_REST_API_URL 또는 KV_REST_API_TOKEN 환경 변수가 설정되지 않아 외부 Redis 캐시를 건너끕니다.');
+  const redisUrl = process.env.REDIS_URL;
+  if (!redisUrl || typeof redisUrl !== 'string' || redisUrl.trim() === '') {
+    return null;
   }
 
-  return null;
+  try {
+    const trimmedUrl = redisUrl.trim();
+    console.log(`[Redis Config Audit] Connecting to REDIS_URL via ioredis TCP: ${trimmedUrl.slice(0, 18)}...`);
+
+    const client = new Redis(trimmedUrl, {
+      connectTimeout: 2000,       // 2초 타임아웃
+      commandTimeout: 1000,       // 1초 커맨드 타임아웃
+      maxRetriesPerRequest: 0,    // 실패 시 0회 재시도 (즉시 포기 후 폴백)
+      enableReadyCheck: false,    // 준비 상태 체킹 대기 생략
+      lazyConnect: true,
+      enableOfflineQueue: false,  // 오프라인 큐 대기 취소
+      tls: trimmedUrl.startsWith('rediss://') ? { rejectUnauthorized: false } : undefined,
+    });
+
+    client.on('error', (err) => {
+      console.error('[Redis ioredis 소켓 에러]', err?.message || err);
+    });
+
+    (globalThis as any)[IOREDIS_CLIENT_KEY] = client;
+    return client;
+  } catch (e: any) {
+    console.error('[Redis 에러] ioredis 클라이언트 생성 중 오류:', e?.message || e);
+    return null;
+  }
 }
 
 const TOKEN_CACHE_KEY = Symbol.for('kis_token_cache_v2');
@@ -112,26 +114,34 @@ async function kvGetTokenCache(appKeyHash: string, allowExpired: boolean = false
     return fileCache;
   }
 
-  // 3. Upstash Redis Official REST SDK Lookup
-  const upstash = getUpstashClient();
-  if (upstash) {
+  // 3. ioredis TCP Store Lookup (Strict 1s max timeout)
+  const redis = getIORedisClient();
+  if (redis) {
     try {
-      const rawVal = await upstash.get<any>(`kis_token_${appKeyHash}`);
-      if (rawVal) {
-        const cache: TokenCacheData = typeof rawVal === 'string' ? JSON.parse(rawVal) : rawVal;
-        if (cache && cache.access_token && (allowExpired || cache.expires_at > now)) {
-          console.log('[KIS Redis Hit] Upstash Redis REST에서 유효한 접근 토큰 획득 성공 (신규 발급 0건)');
-          setGlobalTokenCache(cache);
-          saveLocalFileTokenCache(cache);
-          return cache;
+      if (redis.status === 'wait') {
+        await redis.connect().catch((err) => {
+          console.error('[Redis ioredis Connect Failed]', err?.message || err);
+        });
+      }
+
+      if (redis.status === 'ready' || redis.status === 'connecting') {
+        const rawVal = await redis.get(`kis_token_${appKeyHash}`);
+        if (rawVal) {
+          const cache: TokenCacheData = JSON.parse(rawVal);
+          if (cache && cache.access_token && (allowExpired || cache.expires_at > now)) {
+            console.log('[KIS TCP Redis Hit] ioredis TCP에서 유효한 접근 토큰 획득 성공 (신규 발급 0건)');
+            setGlobalTokenCache(cache);
+            saveLocalFileTokenCache(cache);
+            return cache;
+          } else {
+            console.warn(`[KIS TCP Redis Warning] Key kis_token_${appKeyHash} found in Redis but token is expired or invalid.`);
+          }
         } else {
-          console.warn(`[KIS Redis Warning] Key kis_token_${appKeyHash} found in Redis but token is expired or invalid.`);
+          console.log(`[KIS TCP Redis Info] Key kis_token_${appKeyHash} does not exist in Redis cache yet.`);
         }
-      } else {
-        console.log(`[KIS Redis Info] Key kis_token_${appKeyHash} does not exist in Redis cache yet.`);
       }
     } catch (e: any) {
-      console.error('[Redis 에러] kvGetTokenCache Upstash REST 조회 중 오류 발생:', e?.message || e);
+      console.error('[Redis 에러] kvGetTokenCache ioredis TCP 조회 중 오류 발생:', e?.message || e);
     }
   }
 
@@ -145,24 +155,34 @@ async function kvSaveTokenCache(cache: TokenCacheData): Promise<void> {
   const ttlSec = Math.max(Math.floor((cache.expires_at - Date.now()) / 1000) - 300, 3600);
   const jsonStr = JSON.stringify(cache);
 
-  // Upstash Redis Official REST SDK Save
-  const upstash = getUpstashClient();
-  if (upstash) {
+  const redis = getIORedisClient();
+  if (redis) {
     try {
-      const res = await upstash.set(`kis_token_${cache.app_key_hash}`, jsonStr, { ex: ttlSec });
-      console.log(`[KIS Redis Saved] Upstash Redis REST 공유 저장소에 토큰 저장 완료 (Result: ${res}, TTL: ${ttlSec}초).`);
+      if (redis.status === 'wait') {
+        await redis.connect().catch((err) => {
+          console.error('[Redis ioredis Connect Failed on Save]', err?.message || err);
+        });
+      }
+
+      if (redis.status === 'ready' || redis.status === 'connecting') {
+        const res = await redis.set(`kis_token_${cache.app_key_hash}`, jsonStr, 'EX', ttlSec);
+        console.log(`[KIS TCP Redis Saved] ioredis TCP 공유 저장소에 토큰 저장 완료 (Result: ${res}, TTL: ${ttlSec}초).`);
+      }
     } catch (e: any) {
-      console.error('[Redis 에러] kvSaveTokenCache Upstash REST 저장 중 오류 발생:', e?.message || e);
+      console.error('[Redis 에러] kvSaveTokenCache ioredis TCP 저장 중 오류 발생:', e?.message || e);
     }
   }
 }
 
 async function kvAcquireDistributedLock(lockKey: string, ttlSec: number = 10): Promise<boolean> {
-  const upstash = getUpstashClient();
-  if (upstash) {
+  const redis = getIORedisClient();
+  if (redis) {
     try {
-      const res = await upstash.set(lockKey, 'locked', { nx: true, ex: ttlSec });
-      if (res === 'OK') return true;
+      if (redis.status === 'wait') await redis.connect().catch(() => {});
+      if (redis.status === 'ready' || redis.status === 'connecting') {
+        const res = await redis.set(lockKey, 'locked', 'EX', ttlSec, 'NX');
+        if (res === 'OK') return true;
+      }
     } catch (e: any) {
       console.error('[Redis 에러] kvAcquireDistributedLock 오류:', e?.message || e);
     }
@@ -171,20 +191,28 @@ async function kvAcquireDistributedLock(lockKey: string, ttlSec: number = 10): P
 }
 
 async function kvReleaseDistributedLock(lockKey: string): Promise<void> {
-  const upstash = getUpstashClient();
-  if (upstash) {
-    try { await upstash.del(lockKey); } catch (e: any) {
+  const redis = getIORedisClient();
+  if (redis) {
+    try {
+      if (redis.status === 'wait') await redis.connect().catch(() => {});
+      if (redis.status === 'ready' || redis.status === 'connecting') {
+        await redis.del(lockKey);
+      }
+    } catch (e: any) {
       console.error('[Redis 에러] kvReleaseDistributedLock 오류:', e?.message || e);
     }
   }
 }
 
 async function kvGetJson<T>(key: string): Promise<T | null> {
-  const upstash = getUpstashClient();
-  if (upstash) {
+  const redis = getIORedisClient();
+  if (redis) {
     try {
-      const rawVal = await upstash.get<T>(key);
-      if (rawVal !== null && rawVal !== undefined) return rawVal;
+      if (redis.status === 'wait') await redis.connect().catch(() => {});
+      if (redis.status === 'ready' || redis.status === 'connecting') {
+        const rawVal = await redis.get(key);
+        if (rawVal) return JSON.parse(rawVal);
+      }
     } catch (e: any) {
       console.error('[Redis 에러] kvGetJson 오류:', e?.message || e);
     }
@@ -194,9 +222,14 @@ async function kvGetJson<T>(key: string): Promise<T | null> {
 
 async function kvSetJson(key: string, data: any, ttlSec: number = 300): Promise<void> {
   const jsonStr = JSON.stringify(data);
-  const upstash = getUpstashClient();
-  if (upstash) {
-    try { await upstash.set(key, jsonStr, { ex: ttlSec }); } catch (e: any) {
+  const redis = getIORedisClient();
+  if (redis) {
+    try {
+      if (redis.status === 'wait') await redis.connect().catch(() => {});
+      if (redis.status === 'ready' || redis.status === 'connecting') {
+        await redis.set(key, jsonStr, 'EX', ttlSec);
+      }
+    } catch (e: any) {
       console.error('[Redis 에러] kvSetJson 오류:', e?.message || e);
     }
   }
@@ -206,24 +239,27 @@ async function kvMgetJson<T>(keys: string[]): Promise<Record<string, T | null>> 
   const result: Record<string, T | null> = {};
   if (!keys || keys.length === 0) return result;
 
-  const upstash = getUpstashClient();
-  if (upstash) {
+  const redis = getIORedisClient();
+  if (redis) {
     try {
-      const rawList = await upstash.mget<any[]>(...keys);
-      if (Array.isArray(rawList)) {
-        rawList.forEach((rawVal: any, idx: number) => {
-          const k = keys[idx];
-          if (rawVal !== null && rawVal !== undefined) {
-            try {
-              result[k] = typeof rawVal === 'string' ? JSON.parse(rawVal) : rawVal;
-            } catch (e) {
-              result[k] = rawVal;
+      if (redis.status === 'wait') await redis.connect().catch(() => {});
+      if (redis.status === 'ready' || redis.status === 'connecting') {
+        const rawList = await redis.mget(...keys);
+        if (Array.isArray(rawList)) {
+          rawList.forEach((rawVal: any, idx: number) => {
+            const k = keys[idx];
+            if (rawVal !== null && rawVal !== undefined) {
+              try {
+                result[k] = typeof rawVal === 'string' ? JSON.parse(rawVal) : rawVal;
+              } catch (e) {
+                result[k] = rawVal;
+              }
+            } else {
+              result[k] = null;
             }
-          } else {
-            result[k] = null;
-          }
-        });
-        return result;
+          });
+          return result;
+        }
       }
     } catch (e: any) {
       console.error('[Redis 에러] kvMgetJson 오류:', e?.message || e);
