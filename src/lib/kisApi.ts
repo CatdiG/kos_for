@@ -228,8 +228,9 @@ export async function getKisAccessToken(): Promise<string | null> {
 
   // 0. Triple-layered Fast Memory & Local File Check (0ms)
   const fastMem = getGlobalTokenCache() || getLocalFileTokenCache(appKeyHash);
-  if (fastMem && fastMem.access_token && fastMem.expires_at > Date.now() && fastMem.app_key_hash === appKeyHash) {
+  if (fastMem && fastMem.access_token && fastMem.expires_at > Date.now() && (!fastMem.app_key_hash || fastMem.app_key_hash === appKeyHash)) {
     setGlobalTokenCache(fastMem);
+    console.log('[KIS Token Cache Hit] 24시간 유효 저장 토큰 사용 중 (신규 발급 0건, 0ms)');
     return fastMem.access_token;
   }
 
