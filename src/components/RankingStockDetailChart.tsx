@@ -290,9 +290,8 @@ export default function RankingStockDetailChart({
     queryKey: ['rankingStockDetail', safeSymbol, period],
     queryFn: () => fetchTrend(safeSymbol, period),
     enabled: !isPropDataMatching && Boolean(safeSymbol),
-    staleTime: 0,
-    gcTime: 0,
-    refetchOnMount: 'always',
+    staleTime: 5 * 60 * 1000,
+    refetchOnMount: false,
   });
 
   const data = isPropDataMatching ? propData : queryResult.data;
