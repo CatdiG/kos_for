@@ -129,7 +129,10 @@ async function kvGetTokenCache(appKeyHash: string, allowExpired: boolean = false
         signal: AbortSignal.timeout(3000),
       });
 
-      if (res.ok) {
+      if (!res.ok) {
+        const errorText = await res.text();
+        console.error(`[Redis REST 에러 HTTP ${res.status}] GET kis_token_${appKeyHash} 거절 원인:`, errorText);
+      } else {
         const json = await res.json();
         const rawVal = json.result;
         if (rawVal) {
@@ -141,12 +144,9 @@ async function kvGetTokenCache(appKeyHash: string, allowExpired: boolean = false
             return cache;
           }
         }
-      } else {
-        const errText = await res.text();
-        console.warn(`[KIS Native REST Warning ${res.status}] GET kis_token_${appKeyHash} 실패:`, errText);
       }
     } catch (e: any) {
-      console.error('[KIS Native REST Error] kvGetTokenCache HTTP fetch 실패:', e?.message || e);
+      console.error('[Redis REST 에러] kvGetTokenCache HTTP fetch 예외 발생:', e?.message || e);
     }
   }
 
@@ -175,15 +175,15 @@ async function kvSaveTokenCache(cache: TokenCacheData): Promise<void> {
         signal: AbortSignal.timeout(3000),
       });
 
-      if (res.ok) {
+      if (!res.ok) {
+        const errorText = await res.text();
+        console.error(`[Redis REST 에러 HTTP ${res.status}] SET kis_token_${cache.app_key_hash} 거절 원인:`, errorText);
+      } else {
         const json = await res.json();
         console.log(`[KIS Native REST Saved] 순수 HTTP fetch()로 Redis 토큰 저장 완료 (Result: ${json.result}, TTL: ${ttlSec}초)`);
-      } else {
-        const errText = await res.text();
-        console.error(`[KIS Native REST Error ${res.status}] SET kis_token_${cache.app_key_hash} 실패:`, errText);
       }
     } catch (e: any) {
-      console.error('[KIS Native REST Error] kvSaveTokenCache HTTP fetch 실패:', e?.message || e);
+      console.error('[Redis REST 에러] kvSaveTokenCache HTTP fetch 예외 발생:', e?.message || e);
     }
   }
 }
@@ -202,7 +202,10 @@ async function kvAcquireDistributedLock(lockKey: string, ttlSec: number = 10): P
         cache: 'no-store',
         signal: AbortSignal.timeout(3000),
       });
-      if (res.ok) {
+      if (!res.ok) {
+        const errorText = await res.text();
+        console.error(`[Redis REST 에러 HTTP ${res.status}] SET Lock 거절 원인:`, errorText);
+      } else {
         const json = await res.json();
         if (json.result === 'OK') return true;
       }
@@ -215,12 +218,16 @@ async function kvReleaseDistributedLock(lockKey: string): Promise<void> {
   const cfg = getNativeRedisRestConfig();
   if (cfg) {
     try {
-      await fetch(`${cfg.hostUrl}/del/${lockKey}`, {
+      const res = await fetch(`${cfg.hostUrl}/del/${lockKey}`, {
         method: 'GET',
         headers: { Authorization: `Bearer ${cfg.password}` },
         cache: 'no-store',
         signal: AbortSignal.timeout(3000),
       });
+      if (!res.ok) {
+        const errorText = await res.text();
+        console.error(`[Redis REST 에러 HTTP ${res.status}] DEL Lock 거절 원인:`, errorText);
+      }
     } catch (e: any) {}
   }
 }
@@ -235,7 +242,10 @@ async function kvGetJson<T>(key: string): Promise<T | null> {
         cache: 'no-store',
         signal: AbortSignal.timeout(3000),
       });
-      if (res.ok) {
+      if (!res.ok) {
+        const errorText = await res.text();
+        console.error(`[Redis REST 에러 HTTP ${res.status}] GET ${key} 거절 원인:`, errorText);
+      } else {
         const json = await res.json();
         if (json.result !== null && json.result !== undefined) {
           return typeof json.result === 'string' ? JSON.parse(json.result) : json.result;
@@ -251,7 +261,7 @@ async function kvSetJson(key: string, data: any, ttlSec: number = 300): Promise<
   const cfg = getNativeRedisRestConfig();
   if (cfg) {
     try {
-      await fetch(cfg.hostUrl, {
+      const res = await fetch(cfg.hostUrl, {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${cfg.password}`,
@@ -261,6 +271,10 @@ async function kvSetJson(key: string, data: any, ttlSec: number = 300): Promise<
         cache: 'no-store',
         signal: AbortSignal.timeout(3000),
       });
+      if (!res.ok) {
+        const errorText = await res.text();
+        console.error(`[Redis REST 에러 HTTP ${res.status}] SET ${key} 거절 원인:`, errorText);
+      }
     } catch (e: any) {}
   }
 }
@@ -282,7 +296,10 @@ async function kvMgetJson<T>(keys: string[]): Promise<Record<string, T | null>> 
         cache: 'no-store',
         signal: AbortSignal.timeout(3000),
       });
-      if (res.ok) {
+      if (!res.ok) {
+        const errorText = await res.text();
+        console.error(`[Redis REST 에러 HTTP ${res.status}] MGET 거절 원인:`, errorText);
+      } else {
         const json = await res.json();
         if (Array.isArray(json.result)) {
           json.result.forEach((rawVal: any, idx: number) => {
