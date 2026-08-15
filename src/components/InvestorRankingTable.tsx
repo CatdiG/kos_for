@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   InvestorRankingResponse,
   InvestorTrendResponse,
@@ -135,6 +135,8 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
     placeholderData: (previousData) => previousData,
   });
 
+  const queryClient = useQueryClient();
+
   useEffect(() => {
     if (data?.list && data.list.length > 0) {
       data.list.forEach((item) => {
@@ -142,15 +144,17 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
           registerRuntimeStockName(item.symbol, item.name);
         }
       });
-      // Auto-select #1 stock at the top of active screen list if no symbol is selected
-      if (!selectedSymbol && onSelectSymbol) {
-        const topItem = data.list[0];
-        if (topItem && topItem.symbol) {
+      const topItem = data.list[0];
+      if (topItem && topItem.symbol) {
+        if ((data as any).initialTrend) {
+          queryClient.setQueryData(['investorTrend', topItem.symbol, '60d'], (data as any).initialTrend);
+        }
+        if (!selectedSymbol && onSelectSymbol) {
           onSelectSymbol(topItem.symbol, topItem);
         }
       }
     }
-  }, [data?.list, selectedSymbol, onSelectSymbol]);
+  }, [(data as any)?.list, (data as any)?.initialTrend, selectedSymbol, onSelectSymbol, queryClient]);
 
   // Extract unpriced symbols for non-blocking async background quote fetching
   const unpricedSymbolsKey = useMemo(() => {

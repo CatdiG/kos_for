@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { fetchKisSurgingStocks } from '@/lib/kisApi';
+import { fetchKisSurgingStocks, fetchKisInvestorTrend } from '@/lib/kisApi';
 import { MarketType, SurgingMode } from '@/lib/types';
 // HMR re-eval
 
@@ -17,11 +17,22 @@ export async function GET(request: NextRequest) {
 
   try {
     const data = await fetchKisSurgingStocks(mode, market);
-    return NextResponse.json(data, {
-      headers: {
-        'Cache-Control': 'no-store, max-age=0, must-revalidate',
+    let initialTrend: any = null;
+    if (data && Array.isArray(data.list) && data.list.length > 0 && data.list[0].symbol) {
+      initialTrend = await fetchKisInvestorTrend(data.list[0].symbol, '60d').catch(() => null);
+    }
+
+    return NextResponse.json(
+      {
+        ...data,
+        initialTrend,
       },
-    });
+      {
+        headers: {
+          'Cache-Control': 'no-store, max-age=0, must-revalidate',
+        },
+      }
+    );
   } catch (error: any) {
     console.error('[API Surging Error]', error);
     return NextResponse.json(

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { fetchKisForeignInstitutionRanking, fetchOverlapRankingData, fetchConsecutive3dOverlapRankingData } from '@/lib/kisApi';
+import { fetchKisForeignInstitutionRanking, fetchOverlapRankingData, fetchConsecutive3dOverlapRankingData, fetchKisInvestorTrend } from '@/lib/kisApi';
 import { getBatchRankingData } from '@/lib/batchCollector';
 import { MarketType, RankingDirection, RankingPeriod, RankingType } from '@/lib/types';
 
@@ -35,12 +35,18 @@ export async function GET(request: NextRequest) {
       responseData = await fetchKisForeignInstitutionRanking('foreign', direction, period, market);
     }
 
+    let initialTrend: any = null;
+    if (responseData && Array.isArray(responseData.list) && responseData.list.length > 0 && responseData.list[0].symbol) {
+      initialTrend = await fetchKisInvestorTrend(responseData.list[0].symbol, '60d').catch(() => null);
+    }
+
     const elapsedMs = Date.now() - routeStart;
     console.log(`[PERF ROUTE END /api/stock/ranking] Total: ${elapsedMs}ms`);
 
     return NextResponse.json(
       {
         ...responseData,
+        initialTrend,
         perf: { routeTotalMs: elapsedMs },
       },
       {
