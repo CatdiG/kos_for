@@ -27,26 +27,61 @@ import { Redis as UpstashRedis } from '@upstash/redis';
 
 const UPSTASH_CLIENT_KEY = Symbol.for('kis_upstash_client');
 
+function parseRedisUrlToUpstashRest(redisUrl: string) {
+  if (!redisUrl || typeof redisUrl !== 'string') return null;
+  try {
+    const cleanUrl = redisUrl.trim().replace(/^rediss?:\/\//i, '');
+    const [authPart, hostPart] = cleanUrl.split('@');
+    if (!authPart || !hostPart) return null;
+    const token = authPart.includes(':') ? authPart.split(':')[1] : authPart;
+    const host = hostPart.split(':')[0]; // Strip port like :6379
+    if (token && host) {
+      return {
+        url: `https://${host}`,
+        token,
+      };
+    }
+  } catch (e) {
+    console.error('[Redis 에러] parseRedisUrlToUpstashRest 파싱 오류:', e);
+  }
+  return null;
+}
+
 function getUpstashClient(): UpstashRedis | null {
   if ((globalThis as any)[UPSTASH_CLIENT_KEY]) {
     return (globalThis as any)[UPSTASH_CLIENT_KEY];
   }
 
-  const url = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL;
-  const token = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN;
-  if (url && token && url.trim() !== '' && token.trim() !== '') {
-    try {
-      const client = new UpstashRedis({ url: url.replace(/\/$/, ''), token });
-      (globalThis as any)[UPSTASH_CLIENT_KEY] = client;
-      return client;
-    } catch (e) {}
+  let url = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL;
+  let token = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN;
+
+  if ((!url || !token) && process.env.REDIS_URL) {
+    const parsed = parseRedisUrlToUpstashRest(process.env.REDIS_URL);
+    if (parsed) {
+      url = parsed.url;
+      token = parsed.token;
+      console.log('[Redis Sanitizer] REDIS_URL (rediss://)에서 Upstash REST API 규격 (https://) 및 토큰 추출 완료');
+    }
   }
 
-  try {
-    const client = UpstashRedis.fromEnv();
-    (globalThis as any)[UPSTASH_CLIENT_KEY] = client;
-    return client;
-  } catch (e) {}
+  if (url && token && url.trim() !== '' && token.trim() !== '') {
+    let sanitizedUrl = url.trim();
+    if (!sanitizedUrl.startsWith('http://') && !sanitizedUrl.startsWith('https://')) {
+      sanitizedUrl = sanitizedUrl.replace(/^rediss?:\/\//i, 'https://');
+    }
+    sanitizedUrl = sanitizedUrl.replace(/\/$/, '');
+
+    try {
+      console.log(`[Redis Config Audit] Connecting to Upstash REST URL: ${sanitizedUrl}`);
+      const client = new UpstashRedis({ url: sanitizedUrl, token: token.trim() });
+      (globalThis as any)[UPSTASH_CLIENT_KEY] = client;
+      return client;
+    } catch (e: any) {
+      console.error('[Redis 에러] UpstashRedis 클라이언트 생성 실패:', e?.message || e);
+    }
+  } else {
+    console.warn(`[Redis Config Warning] Upstash REST URL(${url ? 'OK' : '미설정/형식오류'}) 또는 Token(${token ? 'OK' : '미설정'})이 누락되었습니다.`);
+  }
 
   return null;
 }
@@ -71,7 +106,9 @@ function getLocalFileTokenCache(appKeyHash: string, allowExpired: boolean = fals
         return cache;
       }
     }
-  } catch (e) {}
+  } catch (e) {
+    console.error('[Redis 에러] getLocalFileTokenCache 디스크 조회 오류:', e);
+  }
   return null;
 }
 
@@ -80,7 +117,9 @@ function saveLocalFileTokenCache(cache: TokenCacheData): void {
     const dir = path.dirname(LOCAL_TOKEN_FILE);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(LOCAL_TOKEN_FILE, JSON.stringify(cache), 'utf8');
-  } catch (e) {}
+  } catch (e) {
+    console.error('[Redis 에러] saveLocalFileTokenCache 디스크 저장 오류:', e);
+  }
 }
 
 async function kvGetTokenCache(appKeyHash: string, allowExpired: boolean = false): Promise<TokenCacheData | null> {
@@ -110,9 +149,15 @@ async function kvGetTokenCache(appKeyHash: string, allowExpired: boolean = false
           setGlobalTokenCache(cache);
           saveLocalFileTokenCache(cache);
           return cache;
+        } else {
+          console.warn(`[KIS Redis Warning] Key kis_token_${appKeyHash} found in Redis but token is expired or invalid.`);
         }
+      } else {
+        console.log(`[KIS Redis Info] Key kis_token_${appKeyHash} does not exist in Redis cache yet.`);
       }
-    } catch (e) {}
+    } catch (e: any) {
+      console.error('[Redis 에러] kvGetTokenCache Upstash REST 조회 중 오류 발생:', e?.message || e);
+    }
   }
 
   return getGlobalTokenCache() || getLocalFileTokenCache(appKeyHash, true);
@@ -129,9 +174,11 @@ async function kvSaveTokenCache(cache: TokenCacheData): Promise<void> {
   const upstash = getUpstashClient();
   if (upstash) {
     try {
-      await upstash.set(`kis_token_${cache.app_key_hash}`, jsonStr, { ex: ttlSec });
-      console.log(`[KIS Redis Saved] Upstash Redis REST 공유 저장소에 토큰 저장 완료 (TTL: ${ttlSec}초).`);
-    } catch (e) {}
+      const res = await upstash.set(`kis_token_${cache.app_key_hash}`, jsonStr, { ex: ttlSec });
+      console.log(`[KIS Redis Saved] Upstash Redis REST 공유 저장소에 토큰 저장 완료 (Result: ${res}, TTL: ${ttlSec}초).`);
+    } catch (e: any) {
+      console.error('[Redis 에러] kvSaveTokenCache Upstash REST 저장 중 오류 발생:', e?.message || e);
+    }
   }
 }
 
@@ -141,7 +188,9 @@ async function kvAcquireDistributedLock(lockKey: string, ttlSec: number = 10): P
     try {
       const res = await upstash.set(lockKey, 'locked', { nx: true, ex: ttlSec });
       if (res === 'OK') return true;
-    } catch (e) {}
+    } catch (e: any) {
+      console.error('[Redis 에러] kvAcquireDistributedLock 오류:', e?.message || e);
+    }
   }
   return true;
 }
@@ -149,7 +198,9 @@ async function kvAcquireDistributedLock(lockKey: string, ttlSec: number = 10): P
 async function kvReleaseDistributedLock(lockKey: string): Promise<void> {
   const upstash = getUpstashClient();
   if (upstash) {
-    try { await upstash.del(lockKey); } catch (e) {}
+    try { await upstash.del(lockKey); } catch (e: any) {
+      console.error('[Redis 에러] kvReleaseDistributedLock 오류:', e?.message || e);
+    }
   }
 }
 
@@ -159,7 +210,9 @@ async function kvGetJson<T>(key: string): Promise<T | null> {
     try {
       const rawVal = await upstash.get<T>(key);
       if (rawVal !== null && rawVal !== undefined) return rawVal;
-    } catch (e) {}
+    } catch (e: any) {
+      console.error('[Redis 에러] kvGetJson 오류:', e?.message || e);
+    }
   }
   return null;
 }
@@ -168,7 +221,9 @@ async function kvSetJson(key: string, data: any, ttlSec: number = 300): Promise<
   const jsonStr = JSON.stringify(data);
   const upstash = getUpstashClient();
   if (upstash) {
-    try { await upstash.set(key, jsonStr, { ex: ttlSec }); } catch (e) {}
+    try { await upstash.set(key, jsonStr, { ex: ttlSec }); } catch (e: any) {
+      console.error('[Redis 에러] kvSetJson 오류:', e?.message || e);
+    }
   }
 }
 
@@ -195,7 +250,9 @@ async function kvMgetJson<T>(keys: string[]): Promise<Record<string, T | null>> 
         });
         return result;
       }
-    } catch (e) {}
+    } catch (e: any) {
+      console.error('[Redis 에러] kvMgetJson 오류:', e?.message || e);
+    }
   }
 
   return result;
