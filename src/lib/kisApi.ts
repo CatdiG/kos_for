@@ -23,44 +23,45 @@ declare global {
 // External Shared Storage (Vercel KV / Upstash Redis REST API) & Distributed Lock
 // =================================================================
 
-import Redis from 'ioredis';
+// =================================================================
+// Pure Native HTTP fetch() Upstash REST Client (Zero External Dependencies)
+// =================================================================
 
-const IOREDIS_CLIENT_KEY = Symbol.for('kis_ioredis_client');
-
-function getIORedisClient(): Redis | null {
-  if ((globalThis as any)[IOREDIS_CLIENT_KEY]) {
-    return (globalThis as any)[IOREDIS_CLIENT_KEY];
+function getNativeRedisRestConfig() {
+  const restUrl = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL;
+  const restToken = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN;
+  if (restUrl && restToken && restUrl.trim() !== '' && restToken.trim() !== '') {
+    let sanitizedUrl = restUrl.trim();
+    if (!sanitizedUrl.startsWith('http://') && !sanitizedUrl.startsWith('https://')) {
+      sanitizedUrl = `https://${sanitizedUrl}`;
+    }
+    return {
+      hostUrl: sanitizedUrl.replace(/\/$/, ''),
+      password: restToken.trim(),
+    };
   }
 
   const redisUrl = process.env.REDIS_URL;
-  if (!redisUrl || typeof redisUrl !== 'string' || redisUrl.trim() === '') {
-    return null;
+  if (redisUrl && typeof redisUrl === 'string' && redisUrl.trim() !== '') {
+    try {
+      const cleanUrl = redisUrl.trim().replace(/^rediss?:\/\//i, '');
+      const [authPart, hostPart] = cleanUrl.split('@');
+      if (authPart && hostPart) {
+        const password = authPart.includes(':') ? authPart.split(':')[1] : authPart;
+        const host = hostPart.split(':')[0];
+        if (password && host) {
+          return {
+            hostUrl: `https://${host}`,
+            password: password.trim(),
+          };
+        }
+      }
+    } catch (e) {
+      console.error('[Redis Native REST] REDIS_URL 파싱 에러:', e);
+    }
   }
 
-  try {
-    const trimmedUrl = redisUrl.trim();
-    console.log(`[Redis Config Audit] Connecting to REDIS_URL via ioredis TCP: ${trimmedUrl.slice(0, 18)}...`);
-
-    const client = new Redis(trimmedUrl, {
-      connectTimeout: 2000,       // 2초 타임아웃
-      commandTimeout: 1000,       // 1초 커맨드 타임아웃
-      maxRetriesPerRequest: 0,    // 실패 시 0회 재시도 (즉시 포기 후 폴백)
-      enableReadyCheck: false,    // 준비 상태 체킹 대기 생략
-      lazyConnect: true,
-      enableOfflineQueue: false,  // 오프라인 큐 대기 취소
-      tls: trimmedUrl.startsWith('rediss://') ? { rejectUnauthorized: false } : undefined,
-    });
-
-    client.on('error', (err) => {
-      console.error('[Redis ioredis 소켓 에러]', err?.message || err);
-    });
-
-    (globalThis as any)[IOREDIS_CLIENT_KEY] = client;
-    return client;
-  } catch (e: any) {
-    console.error('[Redis 에러] ioredis 클라이언트 생성 중 오류:', e?.message || e);
-    return null;
-  }
+  return null;
 }
 
 const TOKEN_CACHE_KEY = Symbol.for('kis_token_cache_v2');
@@ -114,34 +115,38 @@ async function kvGetTokenCache(appKeyHash: string, allowExpired: boolean = false
     return fileCache;
   }
 
-  // 3. ioredis TCP Store Lookup (Strict 1s max timeout)
-  const redis = getIORedisClient();
-  if (redis) {
+  // 3. Pure Native HTTP fetch() Upstash REST GET Lookup (3s timeout)
+  const cfg = getNativeRedisRestConfig();
+  if (cfg) {
     try {
-      if (redis.status === 'wait') {
-        await redis.connect().catch((err) => {
-          console.error('[Redis ioredis Connect Failed]', err?.message || err);
-        });
-      }
+      const endpoint = `${cfg.hostUrl}/get/kis_token_${appKeyHash}`;
+      const res = await fetch(endpoint, {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${cfg.password}`,
+        },
+        cache: 'no-store',
+        signal: AbortSignal.timeout(3000),
+      });
 
-      if (redis.status === 'ready' || redis.status === 'connecting') {
-        const rawVal = await redis.get(`kis_token_${appKeyHash}`);
+      if (res.ok) {
+        const json = await res.json();
+        const rawVal = json.result;
         if (rawVal) {
-          const cache: TokenCacheData = JSON.parse(rawVal);
+          const cache: TokenCacheData = typeof rawVal === 'string' ? JSON.parse(rawVal) : rawVal;
           if (cache && cache.access_token && (allowExpired || cache.expires_at > now)) {
-            console.log('[KIS TCP Redis Hit] ioredis TCP에서 유효한 접근 토큰 획득 성공 (신규 발급 0건)');
+            console.log('[KIS Native REST Hit] 순수 HTTP fetch()로 Redis에서 유효한 접근 토큰 획득 성공 (신규 발급 0건)');
             setGlobalTokenCache(cache);
             saveLocalFileTokenCache(cache);
             return cache;
-          } else {
-            console.warn(`[KIS TCP Redis Warning] Key kis_token_${appKeyHash} found in Redis but token is expired or invalid.`);
           }
-        } else {
-          console.log(`[KIS TCP Redis Info] Key kis_token_${appKeyHash} does not exist in Redis cache yet.`);
         }
+      } else {
+        const errText = await res.text();
+        console.warn(`[KIS Native REST Warning ${res.status}] GET kis_token_${appKeyHash} 실패:`, errText);
       }
     } catch (e: any) {
-      console.error('[Redis 에러] kvGetTokenCache ioredis TCP 조회 중 오류 발생:', e?.message || e);
+      console.error('[KIS Native REST Error] kvGetTokenCache HTTP fetch 실패:', e?.message || e);
     }
   }
 
@@ -155,83 +160,108 @@ async function kvSaveTokenCache(cache: TokenCacheData): Promise<void> {
   const ttlSec = Math.max(Math.floor((cache.expires_at - Date.now()) / 1000) - 300, 3600);
   const jsonStr = JSON.stringify(cache);
 
-  const redis = getIORedisClient();
-  if (redis) {
+  // Pure Native HTTP fetch() Upstash REST POST Command Array Save (3s timeout)
+  const cfg = getNativeRedisRestConfig();
+  if (cfg) {
     try {
-      if (redis.status === 'wait') {
-        await redis.connect().catch((err) => {
-          console.error('[Redis ioredis Connect Failed on Save]', err?.message || err);
-        });
-      }
+      const res = await fetch(cfg.hostUrl, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${cfg.password}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(['SET', `kis_token_${cache.app_key_hash}`, jsonStr, 'EX', ttlSec]),
+        cache: 'no-store',
+        signal: AbortSignal.timeout(3000),
+      });
 
-      if (redis.status === 'ready' || redis.status === 'connecting') {
-        const res = await redis.set(`kis_token_${cache.app_key_hash}`, jsonStr, 'EX', ttlSec);
-        console.log(`[KIS TCP Redis Saved] ioredis TCP 공유 저장소에 토큰 저장 완료 (Result: ${res}, TTL: ${ttlSec}초).`);
+      if (res.ok) {
+        const json = await res.json();
+        console.log(`[KIS Native REST Saved] 순수 HTTP fetch()로 Redis 토큰 저장 완료 (Result: ${json.result}, TTL: ${ttlSec}초)`);
+      } else {
+        const errText = await res.text();
+        console.error(`[KIS Native REST Error ${res.status}] SET kis_token_${cache.app_key_hash} 실패:`, errText);
       }
     } catch (e: any) {
-      console.error('[Redis 에러] kvSaveTokenCache ioredis TCP 저장 중 오류 발생:', e?.message || e);
+      console.error('[KIS Native REST Error] kvSaveTokenCache HTTP fetch 실패:', e?.message || e);
     }
   }
 }
 
 async function kvAcquireDistributedLock(lockKey: string, ttlSec: number = 10): Promise<boolean> {
-  const redis = getIORedisClient();
-  if (redis) {
+  const cfg = getNativeRedisRestConfig();
+  if (cfg) {
     try {
-      if (redis.status === 'wait') await redis.connect().catch(() => {});
-      if (redis.status === 'ready' || redis.status === 'connecting') {
-        const res = await redis.set(lockKey, 'locked', 'EX', ttlSec, 'NX');
-        if (res === 'OK') return true;
+      const res = await fetch(cfg.hostUrl, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${cfg.password}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(['SET', lockKey, 'locked', 'EX', ttlSec, 'NX']),
+        cache: 'no-store',
+        signal: AbortSignal.timeout(3000),
+      });
+      if (res.ok) {
+        const json = await res.json();
+        if (json.result === 'OK') return true;
       }
-    } catch (e: any) {
-      console.error('[Redis 에러] kvAcquireDistributedLock 오류:', e?.message || e);
-    }
+    } catch (e: any) {}
   }
   return true;
 }
 
 async function kvReleaseDistributedLock(lockKey: string): Promise<void> {
-  const redis = getIORedisClient();
-  if (redis) {
+  const cfg = getNativeRedisRestConfig();
+  if (cfg) {
     try {
-      if (redis.status === 'wait') await redis.connect().catch(() => {});
-      if (redis.status === 'ready' || redis.status === 'connecting') {
-        await redis.del(lockKey);
-      }
-    } catch (e: any) {
-      console.error('[Redis 에러] kvReleaseDistributedLock 오류:', e?.message || e);
-    }
+      await fetch(`${cfg.hostUrl}/del/${lockKey}`, {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${cfg.password}` },
+        cache: 'no-store',
+        signal: AbortSignal.timeout(3000),
+      });
+    } catch (e: any) {}
   }
 }
 
 async function kvGetJson<T>(key: string): Promise<T | null> {
-  const redis = getIORedisClient();
-  if (redis) {
+  const cfg = getNativeRedisRestConfig();
+  if (cfg) {
     try {
-      if (redis.status === 'wait') await redis.connect().catch(() => {});
-      if (redis.status === 'ready' || redis.status === 'connecting') {
-        const rawVal = await redis.get(key);
-        if (rawVal) return JSON.parse(rawVal);
+      const res = await fetch(`${cfg.hostUrl}/get/${key}`, {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${cfg.password}` },
+        cache: 'no-store',
+        signal: AbortSignal.timeout(3000),
+      });
+      if (res.ok) {
+        const json = await res.json();
+        if (json.result !== null && json.result !== undefined) {
+          return typeof json.result === 'string' ? JSON.parse(json.result) : json.result;
+        }
       }
-    } catch (e: any) {
-      console.error('[Redis 에러] kvGetJson 오류:', e?.message || e);
-    }
+    } catch (e: any) {}
   }
   return null;
 }
 
 async function kvSetJson(key: string, data: any, ttlSec: number = 300): Promise<void> {
   const jsonStr = JSON.stringify(data);
-  const redis = getIORedisClient();
-  if (redis) {
+  const cfg = getNativeRedisRestConfig();
+  if (cfg) {
     try {
-      if (redis.status === 'wait') await redis.connect().catch(() => {});
-      if (redis.status === 'ready' || redis.status === 'connecting') {
-        await redis.set(key, jsonStr, 'EX', ttlSec);
-      }
-    } catch (e: any) {
-      console.error('[Redis 에러] kvSetJson 오류:', e?.message || e);
-    }
+      await fetch(cfg.hostUrl, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${cfg.password}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(['SET', key, jsonStr, 'EX', ttlSec]),
+        cache: 'no-store',
+        signal: AbortSignal.timeout(3000),
+      });
+    } catch (e: any) {}
   }
 }
 
@@ -239,14 +269,23 @@ async function kvMgetJson<T>(keys: string[]): Promise<Record<string, T | null>> 
   const result: Record<string, T | null> = {};
   if (!keys || keys.length === 0) return result;
 
-  const redis = getIORedisClient();
-  if (redis) {
+  const cfg = getNativeRedisRestConfig();
+  if (cfg) {
     try {
-      if (redis.status === 'wait') await redis.connect().catch(() => {});
-      if (redis.status === 'ready' || redis.status === 'connecting') {
-        const rawList = await redis.mget(...keys);
-        if (Array.isArray(rawList)) {
-          rawList.forEach((rawVal: any, idx: number) => {
+      const res = await fetch(cfg.hostUrl, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${cfg.password}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(['MGET', ...keys]),
+        cache: 'no-store',
+        signal: AbortSignal.timeout(3000),
+      });
+      if (res.ok) {
+        const json = await res.json();
+        if (Array.isArray(json.result)) {
+          json.result.forEach((rawVal: any, idx: number) => {
             const k = keys[idx];
             if (rawVal !== null && rawVal !== undefined) {
               try {
@@ -261,9 +300,7 @@ async function kvMgetJson<T>(keys: string[]): Promise<Record<string, T | null>> 
           return result;
         }
       }
-    } catch (e: any) {
-      console.error('[Redis 에러] kvMgetJson 오류:', e?.message || e);
-    }
+    } catch (e: any) {}
   }
 
   return result;
