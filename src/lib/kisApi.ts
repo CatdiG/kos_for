@@ -122,6 +122,40 @@ async function kvReleaseDistributedLock(lockKey: string): Promise<void> {
   } catch (e) {}
 }
 
+async function kvGetJson<T>(key: string): Promise<T | null> {
+  const cfg = getKvConfig();
+  if (!cfg) return null;
+  try {
+    const res = await fetch(`${cfg.url}/get/${key}`, {
+      headers: { Authorization: `Bearer ${cfg.token}` },
+      cache: 'no-store',
+    });
+    if (res.ok) {
+      const json = await res.json();
+      if (json.result) {
+        return typeof json.result === 'string' ? JSON.parse(json.result) : json.result;
+      }
+    }
+  } catch (e) {
+    console.warn(`[KV Read Error ${key}]`, e);
+  }
+  return null;
+}
+
+async function kvSetJson(key: string, data: any, ttlSec: number = 300): Promise<void> {
+  const cfg = getKvConfig();
+  if (!cfg) return;
+  try {
+    const jsonStr = JSON.stringify(data);
+    await fetch(`${cfg.url}/set/${key}/${encodeURIComponent(jsonStr)}/EX/${ttlSec}`, {
+      headers: { Authorization: `Bearer ${cfg.token}` },
+      cache: 'no-store',
+    });
+  } catch (e) {
+    console.warn(`[KV Write Error ${key}]`, e);
+  }
+}
+
 /**
  * KIS OAuth 2.0 Access Token 발급 및 외부 공유 저장소(Vercel KV / Upstash Redis) 캐싱
  */
@@ -397,15 +431,23 @@ export async function fetchKisInvestorTrend(
   const cacheKey = `${symbol}-${period}-v60d-full`;
   const now = Date.now();
 
-  // Clear cache if cached trend length is < 120
+  // 1. In-Memory Cache Check
   if (trendDetailCache.has(cacheKey)) {
     const cached = trendDetailCache.get(cacheKey)!;
     if (cached.data?.trend?.length < 120) {
       trendDetailCache.delete(cacheKey);
     } else if (now - cached.timestamp < TREND_CACHE_TTL_MS) {
-      console.log(`[Trend Cache Hit] ${symbol} (${period}) -> 상세 수급 캐시 즉시 반환 (0ms, API 0회)`);
+      console.log(`[PERF TREND MEMORY HIT] ${symbol} (${period}) -> 0ms 반환`);
       return cached.data;
     }
+  }
+
+  // 2. Vercel KV Redis Shared Cache Check (5 min TTL)
+  const redisTrend = await kvGetJson<InvestorTrendResponse>(`kv_trend_${cacheKey}`);
+  if (redisTrend && redisTrend.trend?.length >= 120) {
+    console.log(`[PERF TREND REDIS HIT] ${symbol} (${period}) -> Vercel KV Redis 0ms 반환`);
+    trendDetailCache.set(cacheKey, { data: redisTrend, timestamp: now });
+    return redisTrend;
   }
 
   const appKey = process.env.KIS_APPKEY;
@@ -424,17 +466,16 @@ export async function fetchKisInvestorTrend(
 
     if (response) {
       trendDetailCache.set(cacheKey, { data: response, timestamp: Date.now() });
+      await kvSetJson(`kv_trend_${cacheKey}`, response, 300); // 5분간 Vercel KV 캐싱
     }
     return response;
   } catch (err: any) {
     console.error(`[KIS Trend Queue Exception] ${symbol}:`, err);
-
-    // rate limit 등의 일시적 에러 시 기존 만료된 캐시가 있으면 만료된 캐시 데이터로 대처
+    if (redisTrend) return redisTrend;
     if (trendDetailCache.has(cacheKey)) {
       console.warn(`[KIS Trend Fallback to Stale Cache] ${symbol} 만료 캐시 데이터 반환`);
       return trendDetailCache.get(cacheKey)!.data;
     }
-
     throw err;
   }
 }
@@ -881,6 +922,13 @@ export async function fetchKisCreditAvailable(symbol: string): Promise<boolean |
     }
   }
 
+  // Vercel KV Redis 24-hour Cache Check
+  const kvCredit = await kvGetJson<boolean>(`kv_credit_${symbol}`);
+  if (kvCredit !== null && kvCredit !== undefined) {
+    creditStatusCache.set(symbol, { isCredit: kvCredit, timestamp: now });
+    return kvCredit;
+  }
+
   const appKey = process.env.KIS_APPKEY;
   const appSecret = process.env.KIS_APPSECRET;
   if (!appKey || !appSecret || appKey.trim() === '') {
@@ -888,11 +936,17 @@ export async function fetchKisCreditAvailable(symbol: string): Promise<boolean |
   }
 
   try {
-    return await kisQueue.enqueue(
+    const isCredit = await kisQueue.enqueue(
       () => fetchWithRetry(() => executeKisCreditAvailableFetch(symbol)),
       'LOW',
       `credit-${symbol}`
     );
+
+    if (isCredit !== undefined) {
+      creditStatusCache.set(symbol, { isCredit, timestamp: now });
+      await kvSetJson(`kv_credit_${symbol}`, isCredit, 86400); // 24-hour Redis Cache
+    }
+    return isCredit;
   } catch (e) {
     console.warn(`[Credit Inquiry Queue Error] ${symbol}:`, e);
     return undefined;
@@ -1018,6 +1072,22 @@ export async function fetchKisForeignInstitutionRanking(
   }
 
   const cacheKey = `ranking-${type}-${direction}-${period}-${market}-${limit || 'all'}`;
+
+  // 1. In-Memory Cache Check
+  if (rankingCacheStore.has(cacheKey)) {
+    const cached = rankingCacheStore.get(cacheKey)!;
+    console.log(`[PERF RANKING MEMORY HIT] ${cacheKey} -> 0ms`);
+    return cached;
+  }
+
+  // 2. Vercel KV Redis Shared Cache Check (5 min TTL)
+  const redisRank = await kvGetJson<InvestorRankingResponse>(`kv_${cacheKey}`);
+  if (redisRank && redisRank.list && redisRank.list.length > 0) {
+    console.log(`[PERF RANKING REDIS HIT] ${cacheKey} -> Vercel KV Redis 0ms 반환`);
+    rankingCacheStore.set(cacheKey, redisRank);
+    return redisRank;
+  }
+
   try {
     const res = await kisQueue.enqueue(
       () => fetchWithRetry(() => executeKisForeignInstitutionRankingFetch(type, direction, period, market, limit)),
@@ -1026,10 +1096,12 @@ export async function fetchKisForeignInstitutionRanking(
     );
     if (res && res.list && res.list.length > 0) {
       rankingCacheStore.set(cacheKey, res);
+      await kvSetJson(`kv_${cacheKey}`, res, 300); // 5분간 Vercel KV 캐싱
     }
     return res;
   } catch (err: any) {
     console.error('[KIS Ranking Queue Exception]', err);
+    if (redisRank) return redisRank;
     if (rankingCacheStore.has(cacheKey)) {
       console.warn(`[KIS Ranking Stale Cache Fallback] ${cacheKey} 마감/성공 실데이터 캐시 반환`);
       const cached = rankingCacheStore.get(cacheKey)!;
