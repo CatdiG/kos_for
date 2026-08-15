@@ -136,6 +136,7 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
   });
 
   const queryClient = useQueryClient();
+  const hasInitializedRef = useRef<boolean>(false);
 
   useEffect(() => {
     if (data?.list && data.list.length > 0) {
@@ -144,17 +145,21 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
           registerRuntimeStockName(item.symbol, item.name);
         }
       });
-      const topItem = data.list[0];
-      if (topItem && topItem.symbol) {
-        if ((data as any).initialTrend) {
-          queryClient.setQueryData(['investorTrend', topItem.symbol, '60d'], (data as any).initialTrend);
-        }
-        if (!selectedSymbol && onSelectSymbol) {
-          onSelectSymbol(topItem.symbol, topItem);
+
+      if (!hasInitializedRef.current) {
+        hasInitializedRef.current = true;
+        const topItem = data.list[0];
+        if (topItem && topItem.symbol) {
+          if ((data as any).initialTrend) {
+            queryClient.setQueryData(['investorTrend', topItem.symbol, '60d'], (data as any).initialTrend);
+          }
+          if (!selectedSymbol && onSelectSymbol) {
+            onSelectSymbol(topItem.symbol, topItem);
+          }
         }
       }
     }
-  }, [(data as any)?.list, (data as any)?.initialTrend, selectedSymbol, onSelectSymbol, queryClient]);
+  }, [data?.list, selectedSymbol, onSelectSymbol, queryClient]);
 
   // Extract unpriced symbols for non-blocking async background quote fetching
   const unpricedSymbolsKey = useMemo(() => {
