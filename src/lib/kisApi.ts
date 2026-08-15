@@ -68,13 +68,14 @@ async function kvCommand(command: (string | number)[]): Promise<any> {
       },
       body: JSON.stringify(command),
       cache: 'no-store',
+      signal: AbortSignal.timeout(1500),
     });
     if (res.ok) {
       const json = await res.json();
       return json.result;
     }
   } catch (e) {
-    console.warn('[KV Command Error]', command[0], e);
+    // Fail-fast fallback to memory without hanging
   }
   return null;
 }
