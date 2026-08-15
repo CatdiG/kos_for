@@ -1063,9 +1063,9 @@ export async function mergeCreditStatusToRanking(items: RankingItem[]): Promise<
       }
     });
 
-    // 4. Fetch any completely un-cached new stock from KIS once in parallel and save to Redis for 24h
+    // 4. Fetch any completely un-cached new stock from KIS asynchronously in background (NON-BLOCKING)
     if (stillMissing.length > 0) {
-      await Promise.all(
+      Promise.all(
         stillMissing.map(async (sym) => {
           try {
             const isCredit = await fetchKisCreditAvailable(sym);
