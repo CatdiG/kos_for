@@ -81,7 +81,7 @@ async function kvCommand(command: (string | number)[]): Promise<any> {
 
 async function kvGetTokenCache(appKeyHash: string, allowExpired: boolean = false): Promise<TokenCacheData | null> {
   const now = Date.now();
-  if (globalThis.__kisTokenCache__ && (allowExpired || globalThis.__kisTokenCache__.expires_at > now + 60000) && globalThis.__kisTokenCache__.app_key_hash === appKeyHash) {
+  if (globalThis.__kisTokenCache__ && (allowExpired || globalThis.__kisTokenCache__.expires_at > now) && globalThis.__kisTokenCache__.app_key_hash === appKeyHash) {
     return globalThis.__kisTokenCache__;
   }
 
@@ -89,7 +89,7 @@ async function kvGetTokenCache(appKeyHash: string, allowExpired: boolean = false
   if (rawVal) {
     try {
       const cache: TokenCacheData = typeof rawVal === 'string' ? JSON.parse(rawVal) : rawVal;
-      if (cache && cache.access_token && (allowExpired || cache.expires_at > now + 60000)) {
+      if (cache && cache.access_token && (allowExpired || cache.expires_at > now)) {
         console.log('[KIS External KV Hit] Vercel KV / Upstash Redis 외부 공유 저장소에서 토큰 획득 성공');
         globalThis.__kisTokenCache__ = cache;
         return cache;
