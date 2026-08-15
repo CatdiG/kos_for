@@ -126,15 +126,18 @@ async function kvReleaseDistributedLock(lockKey: string): Promise<void> {
  * KIS OAuth 2.0 Access Token 발급 및 외부 공유 저장소(Vercel KV / Upstash Redis) 캐싱
  */
 export async function getKisAccessToken(): Promise<string | null> {
-  const appKey = process.env.KIS_APPKEY;
-  const appSecret = process.env.KIS_APPSECRET;
+  const rawKey = process.env.KIS_APPKEY || '';
+  const rawSecret = process.env.KIS_APPSECRET || '';
+  const appKey = rawKey.trim().replace(/^["']|["']$/g, '');
+  const appSecret = rawSecret.trim().replace(/^["']|["']$/g, '');
+
   const isVirtual = process.env.KIS_VIRTUAL === 'true';
   const defaultBaseUrl = isVirtual 
     ? 'https://openapivts.koreainvestment.com:29443' 
     : 'https://openapi.koreainvestment.com:9443';
   const baseUrl = process.env.KIS_BASE_URL || defaultBaseUrl;
 
-  if (!appKey || !appSecret || appKey.trim() === '' || appSecret.trim() === '') {
+  if (!appKey || !appSecret || appKey === '' || appSecret === '') {
     const missingMsg = `Vercel 설정에 KIS_APPKEY(${appKey ? '설정됨' : '미설정'}) 또는 KIS_APPSECRET(${appSecret ? '설정됨' : '미설정'})이 누락되었습니다.`;
     console.warn(`[KIS API Warning] ${missingMsg}`);
     globalThis.__lastKisOAuthError__ = missingMsg;
