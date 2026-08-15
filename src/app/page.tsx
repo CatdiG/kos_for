@@ -20,7 +20,7 @@ async function fetchInvestorTrend(symbol: string, period: TrendPeriod): Promise<
 }
 
 export default function DashboardPage() {
-  const [symbol, setSymbol] = useState<string>('');
+  const [symbol, setSymbol] = useState<string>('005930');
   const [period, setPeriod] = useState<TrendPeriod>('60d');
   const [selectedStockItem, setSelectedStockItem] = useState<RankingItem | undefined>();
 
@@ -74,39 +74,24 @@ export default function DashboardPage() {
           </div>
         )}
 
-        {/* Loading State Skeletons (Initial Load Only) */}
-        {isLoading && !data ? (
-          <div className="space-y-6 animate-pulse">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div className="h-44 bg-white dark:bg-[#131722] rounded-xl border border-slate-200 dark:border-[#2a2e39] shadow-sm" />
-              <div className="h-44 bg-white dark:bg-[#131722] rounded-xl border border-slate-200 dark:border-[#2a2e39] shadow-sm" />
-              <div className="h-44 bg-white dark:bg-[#131722] rounded-xl border border-slate-200 dark:border-[#2a2e39] shadow-sm" />
-            </div>
-            <div className="h-96 bg-white dark:bg-[#131722] rounded-xl border border-slate-200 dark:border-[#2a2e39] shadow-sm" />
-            <div className="h-80 bg-white dark:bg-[#131722] rounded-xl border border-slate-200 dark:border-[#2a2e39] shadow-sm" />
-          </div>
-        ) : (
-          <>
-            {/* 4 Summary Cards (Foreigner, Institution, Pension Fund, Program Trading) */}
-            <SupplySummaryCards
-              summary={data?.summary}
-              programTrade={data?.programTrade}
-              stockInfo={data?.stockInfo}
-              selectedStockItem={selectedStockItem}
-              isLoading={isLoading}
-            />
+        {/* 4 Summary Cards (Foreigner, Institution, Pension Fund, Program Trading) */}
+        <SupplySummaryCards
+          summary={data?.summary}
+          programTrade={data?.programTrade}
+          stockInfo={data?.stockInfo}
+          selectedStockItem={selectedStockItem}
+          isLoading={isLoading}
+        />
 
-            {/* Investor Type Ranking Table & Side-by-side Unified Main Stock Detail Chart */}
-            <InvestorRankingTable
-              selectedSymbol={symbol}
-              chartData={data}
-              onSelectSymbol={(sym, item) => {
-                setSymbol(sym);
-                setSelectedStockItem(item);
-              }}
-            />
-          </>
-        )}
+        {/* Investor Type Ranking Table & Side-by-side Unified Main Stock Detail Chart */}
+        <InvestorRankingTable
+          selectedSymbol={symbol}
+          chartData={data}
+          onSelectSymbol={(sym, item) => {
+            setSymbol(sym);
+            setSelectedStockItem(item);
+          }}
+        />
       </main>
 
       {/* Footer */}
