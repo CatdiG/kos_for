@@ -32,16 +32,16 @@ function getKvConfig() {
   return null;
 }
 
-async function kvGetTokenCache(appKeyHash: string): Promise<TokenCacheData | null> {
+async function kvGetTokenCache(appKeyHash: string, allowExpired: boolean = false): Promise<TokenCacheData | null> {
   const now = Date.now();
   // 1. Fast in-memory check (0ms)
-  if (globalThis.__kisTokenCache__ && globalThis.__kisTokenCache__.expires_at > now + 60000 && globalThis.__kisTokenCache__.app_key_hash === appKeyHash) {
+  if (globalThis.__kisTokenCache__ && (allowExpired || globalThis.__kisTokenCache__.expires_at > now + 60000) && globalThis.__kisTokenCache__.app_key_hash === appKeyHash) {
     return globalThis.__kisTokenCache__;
   }
 
   // 2. Vercel KV / Upstash Redis REST API Shared Check
   const cfg = getKvConfig();
-  if (!cfg) return null;
+  if (!cfg) return globalThis.__kisTokenCache__ || null;
 
   try {
     const res = await fetch(`${cfg.url}/get/kis_token_${appKeyHash}`, {
@@ -53,8 +53,8 @@ async function kvGetTokenCache(appKeyHash: string): Promise<TokenCacheData | nul
       const rawVal = json.result;
       if (rawVal) {
         const cache: TokenCacheData = typeof rawVal === 'string' ? JSON.parse(rawVal) : rawVal;
-        if (cache && cache.access_token && cache.expires_at > now + 60000) {
-          console.log('[KIS External KV Hit] Vercel KV / Upstash Redis 외부 공유 저장소에서 유효한 접근 토큰 획득 (전 인스턴스 100% 공유)');
+        if (cache && cache.access_token && (allowExpired || cache.expires_at > now + 60000)) {
+          console.log('[KIS External KV Hit] Vercel KV / Upstash Redis 외부 공유 저장소에서 접근 토큰 획득');
           globalThis.__kisTokenCache__ = cache;
           return cache;
         }
@@ -63,7 +63,7 @@ async function kvGetTokenCache(appKeyHash: string): Promise<TokenCacheData | nul
   } catch (e) {
     console.warn('[KIS External KV Read Warning]', e);
   }
-  return null;
+  return globalThis.__kisTokenCache__ || null;
 }
 
 async function kvSaveTokenCache(cache: TokenCacheData): Promise<void> {
@@ -265,7 +265,7 @@ export async function getKisAccessToken(): Promise<string | null> {
             console.error(`[KIS OAuth Error ${res.status}]`, errorText);
             globalThis.__lastKisOAuthError__ = `[KIS OAuth HTTP ${res.status}] ${errorText}`;
 
-            const fallbackToken = await kvGetTokenCache(appKeyHash);
+            const fallbackToken = await kvGetTokenCache(appKeyHash, true);
             if (fallbackToken) return fallbackToken.access_token;
 
             if ((errorText.includes('EGW00133') || errorText.includes('초과')) && attempt < 3) {
