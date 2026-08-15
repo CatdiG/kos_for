@@ -81,6 +81,7 @@ async function kvCommand(command: (string | number)[]): Promise<any> {
 }
 
 const TOKEN_CACHE_KEY = Symbol.for('kis_token_cache_v2');
+const LOCAL_TOKEN_FILE = path.join(process.cwd(), 'scratch', '.kis_token_cache.json');
 
 function getGlobalTokenCache(): TokenCacheData | null {
   return (globalThis as any)[TOKEN_CACHE_KEY] || null;
@@ -90,13 +91,43 @@ function setGlobalTokenCache(cache: TokenCacheData): void {
   (globalThis as any)[TOKEN_CACHE_KEY] = cache;
 }
 
+function getLocalFileTokenCache(appKeyHash: string, allowExpired: boolean = false): TokenCacheData | null {
+  try {
+    if (fs.existsSync(LOCAL_TOKEN_FILE)) {
+      const text = fs.readFileSync(LOCAL_TOKEN_FILE, 'utf8');
+      const cache: TokenCacheData = JSON.parse(text);
+      if (cache && cache.access_token && (allowExpired || cache.expires_at > Date.now()) && cache.app_key_hash === appKeyHash) {
+        return cache;
+      }
+    }
+  } catch (e) {}
+  return null;
+}
+
+function saveLocalFileTokenCache(cache: TokenCacheData): void {
+  try {
+    const dir = path.dirname(LOCAL_TOKEN_FILE);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(LOCAL_TOKEN_FILE, JSON.stringify(cache), 'utf8');
+  } catch (e) {}
+}
+
 async function kvGetTokenCache(appKeyHash: string, allowExpired: boolean = false): Promise<TokenCacheData | null> {
   const now = Date.now();
+  // 1. Fast in-memory check (0ms)
   const mem = getGlobalTokenCache();
   if (mem && (allowExpired || mem.expires_at > now) && mem.app_key_hash === appKeyHash) {
     return mem;
   }
 
+  // 2. Fast local disk file check (0ms)
+  const fileCache = getLocalFileTokenCache(appKeyHash, allowExpired);
+  if (fileCache) {
+    setGlobalTokenCache(fileCache);
+    return fileCache;
+  }
+
+  // 3. Redis Shared Store Check
   const rawVal = await kvCommand(['GET', `kis_token_${appKeyHash}`]);
   if (rawVal) {
     try {
@@ -104,15 +135,17 @@ async function kvGetTokenCache(appKeyHash: string, allowExpired: boolean = false
       if (cache && cache.access_token && (allowExpired || cache.expires_at > now)) {
         console.log('[KIS External KV Hit] Vercel KV / Upstash Redis 외부 공유 저장소에서 토큰 획득 성공');
         setGlobalTokenCache(cache);
+        saveLocalFileTokenCache(cache);
         return cache;
       }
     } catch (e) {}
   }
-  return getGlobalTokenCache();
+  return getGlobalTokenCache() || getLocalFileTokenCache(appKeyHash, true);
 }
 
 async function kvSaveTokenCache(cache: TokenCacheData): Promise<void> {
   setGlobalTokenCache(cache);
+  saveLocalFileTokenCache(cache);
   const ttlSec = Math.max(Math.floor((cache.expires_at - Date.now()) / 1000) - 300, 3600);
   const jsonStr = JSON.stringify(cache);
   const result = await kvCommand(['SET', `kis_token_${cache.app_key_hash}`, jsonStr, 'EX', ttlSec]);
@@ -193,9 +226,10 @@ export async function getKisAccessToken(): Promise<string | null> {
 
   const appKeyHash = `${appKey.slice(0, 6)}_${isVirtual ? 'vts' : 'real'}`;
 
-  // 0. HMR / Dev-server safe Fast Memory Check (0ms)
-  const fastMem = getGlobalTokenCache();
+  // 0. Triple-layered Fast Memory & Local File Check (0ms)
+  const fastMem = getGlobalTokenCache() || getLocalFileTokenCache(appKeyHash);
   if (fastMem && fastMem.access_token && fastMem.expires_at > Date.now() && fastMem.app_key_hash === appKeyHash) {
+    setGlobalTokenCache(fastMem);
     return fastMem.access_token;
   }
 
