@@ -6,7 +6,6 @@ import { useQuery } from '@tanstack/react-query';
 import Header from '@/components/Header';
 import StockSearch from '@/components/StockSearch';
 import SupplySummaryCards from '@/components/SupplySummaryCards';
-import InvestorTrendTable from '@/components/InvestorTrendTable';
 import InvestorRankingTable from '@/components/InvestorRankingTable';
 import { InvestorTrendResponse, RankingItem, TrendPeriod } from '@/lib/types';
 import { AlertCircle, RefreshCw } from 'lucide-react';
@@ -106,9 +105,6 @@ export default function DashboardPage() {
                 setSelectedStockItem(item);
               }}
             />
-
-            {/* Detailed Sortable Daily Data Table */}
-            <InvestorTrendTable trend={data?.trend || []} />
           </>
         )}
       </main>
