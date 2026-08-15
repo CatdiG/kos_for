@@ -20,52 +20,13 @@ declare global {
 }
 
 // =================================================================
-// External Shared Storage (Vercel KV / Upstash Redis REST API) & Distributed Lock
+// Pure Server Local File System & In-Memory Token Cache System
+// (100% Zero External Database Network Overhead / 0ms Latency)
 // =================================================================
-
-// =================================================================
-// Pure Native HTTP fetch() Upstash REST Client (Zero External Dependencies)
-// =================================================================
-
-function getNativeRedisRestConfig() {
-  const restUrl = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL;
-  const restToken = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN;
-  if (restUrl && restToken && restUrl.trim() !== '' && restToken.trim() !== '') {
-    let sanitizedUrl = restUrl.trim();
-    if (!sanitizedUrl.startsWith('http://') && !sanitizedUrl.startsWith('https://')) {
-      sanitizedUrl = `https://${sanitizedUrl}`;
-    }
-    return {
-      hostUrl: sanitizedUrl.replace(/\/$/, ''),
-      password: restToken.trim(),
-    };
-  }
-
-  const redisUrl = process.env.REDIS_URL;
-  if (redisUrl && typeof redisUrl === 'string' && redisUrl.trim() !== '') {
-    try {
-      const cleanUrl = redisUrl.trim().replace(/^rediss?:\/\//i, '');
-      const [authPart, hostPart] = cleanUrl.split('@');
-      if (authPart && hostPart) {
-        const password = authPart.includes(':') ? authPart.split(':')[1] : authPart;
-        const host = hostPart.split(':')[0];
-        if (password && host) {
-          return {
-            hostUrl: `https://${host}`,
-            password: password.trim(),
-          };
-        }
-      }
-    } catch (e) {
-      console.error('[Redis Native REST] REDIS_URL 파싱 에러:', e);
-    }
-  }
-
-  return null;
-}
 
 const TOKEN_CACHE_KEY = Symbol.for('kis_token_cache_v2');
-const LOCAL_TOKEN_FILE = path.join(process.cwd(), 'scratch', '.kis_token_cache.json');
+const PRIMARY_LOCAL_TOKEN_FILE = path.join(process.cwd(), 'scratch', '.kis_token_cache.json');
+const FALLBACK_TMP_TOKEN_FILE = path.join(os.tmpdir(), '.kis_token_cache.json');
 
 function getGlobalTokenCache(): TokenCacheData | null {
   return (globalThis as any)[TOKEN_CACHE_KEY] || null;
@@ -76,78 +37,51 @@ function setGlobalTokenCache(cache: TokenCacheData): void {
 }
 
 function getLocalFileTokenCache(appKeyHash: string, allowExpired: boolean = false): TokenCacheData | null {
-  try {
-    if (fs.existsSync(LOCAL_TOKEN_FILE)) {
-      const text = fs.readFileSync(LOCAL_TOKEN_FILE, 'utf8');
-      const cache: TokenCacheData = JSON.parse(text);
-      if (cache && cache.access_token && (allowExpired || cache.expires_at > Date.now()) && cache.app_key_hash === appKeyHash) {
-        return cache;
+  const filesToTry = [PRIMARY_LOCAL_TOKEN_FILE, FALLBACK_TMP_TOKEN_FILE];
+  for (const filePath of filesToTry) {
+    try {
+      if (fs.existsSync(filePath)) {
+        const text = fs.readFileSync(filePath, 'utf8');
+        const cache: TokenCacheData = JSON.parse(text);
+        if (cache && cache.access_token && (allowExpired || cache.expires_at > Date.now()) && (!cache.app_key_hash || cache.app_key_hash === appKeyHash)) {
+          return cache;
+        }
       }
+    } catch (e) {
+      console.error(`[Local Cache Read Warning] ${filePath}:`, e);
     }
-  } catch (e) {
-    console.error('[Redis 에러] getLocalFileTokenCache 디스크 조회 오류:', e);
   }
   return null;
 }
 
 function saveLocalFileTokenCache(cache: TokenCacheData): void {
-  try {
-    const dir = path.dirname(LOCAL_TOKEN_FILE);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(LOCAL_TOKEN_FILE, JSON.stringify(cache), 'utf8');
-  } catch (e) {
-    console.error('[Redis 에러] saveLocalFileTokenCache 디스크 저장 오류:', e);
+  const filesToSave = [PRIMARY_LOCAL_TOKEN_FILE, FALLBACK_TMP_TOKEN_FILE];
+  for (const filePath of filesToSave) {
+    try {
+      const dir = path.dirname(filePath);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(filePath, JSON.stringify(cache), 'utf8');
+      console.log(`[Local Cache Saved] 서버 로컬 파일에 토큰 안전 저장 성공 (0ms): ${filePath}`);
+    } catch (e) {
+      // Vercel Serverless environment fallback handles read-only root silently
+    }
   }
 }
 
 async function kvGetTokenCache(appKeyHash: string, allowExpired: boolean = false): Promise<TokenCacheData | null> {
   const now = Date.now();
-  // 1. Fast in-memory check (0ms)
+  // 1순위: 전역 메모리 캐시 (0ms)
   const mem = getGlobalTokenCache();
   if (mem && (allowExpired || mem.expires_at > now) && (!mem.app_key_hash || mem.app_key_hash === appKeyHash)) {
     return mem;
   }
 
-  // 2. Fast local disk file check (0ms)
+  // 2순위: 서버 로컬 파일 캐시 (0ms)
   const fileCache = getLocalFileTokenCache(appKeyHash, allowExpired);
   if (fileCache) {
     setGlobalTokenCache(fileCache);
+    console.log('[KIS File Cache Hit] 서버 로컬 파일에서 24시간 유효 접근 토큰 사용 (신규 발급 0건, 0ms)');
     return fileCache;
-  }
-
-  // 3. Pure Native HTTP fetch() Upstash REST GET Lookup (3s timeout)
-  const cfg = getNativeRedisRestConfig();
-  if (cfg) {
-    try {
-      const endpoint = `${cfg.hostUrl}/get/kis_token_${appKeyHash}`;
-      const res = await fetch(endpoint, {
-        method: 'GET',
-        headers: {
-          Authorization: `Bearer ${cfg.password}`,
-        },
-        cache: 'no-store',
-        signal: AbortSignal.timeout(3000),
-      });
-
-      if (!res.ok) {
-        const errorText = await res.text();
-        console.error(`[Redis REST 에러 HTTP ${res.status}] GET kis_token_${appKeyHash} 거절 원인:`, errorText);
-      } else {
-        const json = await res.json();
-        const rawVal = json.result;
-        if (rawVal) {
-          const cache: TokenCacheData = typeof rawVal === 'string' ? JSON.parse(rawVal) : rawVal;
-          if (cache && cache.access_token && (allowExpired || cache.expires_at > now)) {
-            console.log('[KIS Native REST Hit] 순수 HTTP fetch()로 Redis에서 유효한 접근 토큰 획득 성공 (신규 발급 0건)');
-            setGlobalTokenCache(cache);
-            saveLocalFileTokenCache(cache);
-            return cache;
-          }
-        }
-      }
-    } catch (e: any) {
-      console.error('[Redis REST 에러] kvGetTokenCache HTTP fetch 예외 발생:', e?.message || e);
-    }
   }
 
   return getGlobalTokenCache() || getLocalFileTokenCache(appKeyHash, true);
@@ -156,170 +90,23 @@ async function kvGetTokenCache(appKeyHash: string, allowExpired: boolean = false
 async function kvSaveTokenCache(cache: TokenCacheData): Promise<void> {
   setGlobalTokenCache(cache);
   saveLocalFileTokenCache(cache);
-
-  const ttlSec = Math.max(Math.floor((cache.expires_at - Date.now()) / 1000) - 300, 3600);
-  const jsonStr = JSON.stringify(cache);
-
-  // Pure Native HTTP fetch() Upstash REST POST Command Array Save (3s timeout)
-  const cfg = getNativeRedisRestConfig();
-  if (cfg) {
-    try {
-      const res = await fetch(cfg.hostUrl, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${cfg.password}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(['SET', `kis_token_${cache.app_key_hash}`, jsonStr, 'EX', ttlSec]),
-        cache: 'no-store',
-        signal: AbortSignal.timeout(3000),
-      });
-
-      if (!res.ok) {
-        const errorText = await res.text();
-        console.error(`[Redis REST 에러 HTTP ${res.status}] SET kis_token_${cache.app_key_hash} 거절 원인:`, errorText);
-      } else {
-        const json = await res.json();
-        console.log(`[KIS Native REST Saved] 순수 HTTP fetch()로 Redis 토큰 저장 완료 (Result: ${json.result}, TTL: ${ttlSec}초)`);
-      }
-    } catch (e: any) {
-      console.error('[Redis REST 에러] kvSaveTokenCache HTTP fetch 예외 발생:', e?.message || e);
-    }
-  }
 }
 
 async function kvAcquireDistributedLock(lockKey: string, ttlSec: number = 10): Promise<boolean> {
-  const cfg = getNativeRedisRestConfig();
-  if (cfg) {
-    try {
-      const res = await fetch(cfg.hostUrl, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${cfg.password}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(['SET', lockKey, 'locked', 'EX', ttlSec, 'NX']),
-        cache: 'no-store',
-        signal: AbortSignal.timeout(3000),
-      });
-      if (!res.ok) {
-        const errorText = await res.text();
-        console.error(`[Redis REST 에러 HTTP ${res.status}] SET Lock 거절 원인:`, errorText);
-      } else {
-        const json = await res.json();
-        if (json.result === 'OK') return true;
-      }
-    } catch (e: any) {}
-  }
   return true;
 }
 
-async function kvReleaseDistributedLock(lockKey: string): Promise<void> {
-  const cfg = getNativeRedisRestConfig();
-  if (cfg) {
-    try {
-      const res = await fetch(`${cfg.hostUrl}/del/${lockKey}`, {
-        method: 'GET',
-        headers: { Authorization: `Bearer ${cfg.password}` },
-        cache: 'no-store',
-        signal: AbortSignal.timeout(3000),
-      });
-      if (!res.ok) {
-        const errorText = await res.text();
-        console.error(`[Redis REST 에러 HTTP ${res.status}] DEL Lock 거절 원인:`, errorText);
-      }
-    } catch (e: any) {}
-  }
-}
+async function kvReleaseDistributedLock(lockKey: string): Promise<void> {}
 
 async function kvGetJson<T>(key: string): Promise<T | null> {
-  const cfg = getNativeRedisRestConfig();
-  if (cfg) {
-    try {
-      const res = await fetch(`${cfg.hostUrl}/get/${key}`, {
-        method: 'GET',
-        headers: { Authorization: `Bearer ${cfg.password}` },
-        cache: 'no-store',
-        signal: AbortSignal.timeout(3000),
-      });
-      if (!res.ok) {
-        const errorText = await res.text();
-        console.error(`[Redis REST 에러 HTTP ${res.status}] GET ${key} 거절 원인:`, errorText);
-      } else {
-        const json = await res.json();
-        if (json.result !== null && json.result !== undefined) {
-          return typeof json.result === 'string' ? JSON.parse(json.result) : json.result;
-        }
-      }
-    } catch (e: any) {}
-  }
   return null;
 }
 
-async function kvSetJson(key: string, data: any, ttlSec: number = 300): Promise<void> {
-  const jsonStr = JSON.stringify(data);
-  const cfg = getNativeRedisRestConfig();
-  if (cfg) {
-    try {
-      const res = await fetch(cfg.hostUrl, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${cfg.password}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(['SET', key, jsonStr, 'EX', ttlSec]),
-        cache: 'no-store',
-        signal: AbortSignal.timeout(3000),
-      });
-      if (!res.ok) {
-        const errorText = await res.text();
-        console.error(`[Redis REST 에러 HTTP ${res.status}] SET ${key} 거절 원인:`, errorText);
-      }
-    } catch (e: any) {}
-  }
-}
+async function kvSetJson(key: string, data: any, ttlSec: number = 300): Promise<void> {}
 
 async function kvMgetJson<T>(keys: string[]): Promise<Record<string, T | null>> {
   const result: Record<string, T | null> = {};
-  if (!keys || keys.length === 0) return result;
-
-  const cfg = getNativeRedisRestConfig();
-  if (cfg) {
-    try {
-      const res = await fetch(cfg.hostUrl, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${cfg.password}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(['MGET', ...keys]),
-        cache: 'no-store',
-        signal: AbortSignal.timeout(3000),
-      });
-      if (!res.ok) {
-        const errorText = await res.text();
-        console.error(`[Redis REST 에러 HTTP ${res.status}] MGET 거절 원인:`, errorText);
-      } else {
-        const json = await res.json();
-        if (Array.isArray(json.result)) {
-          json.result.forEach((rawVal: any, idx: number) => {
-            const k = keys[idx];
-            if (rawVal !== null && rawVal !== undefined) {
-              try {
-                result[k] = typeof rawVal === 'string' ? JSON.parse(rawVal) : rawVal;
-              } catch (e) {
-                result[k] = rawVal;
-              }
-            } else {
-              result[k] = null;
-            }
-          });
-          return result;
-        }
-      }
-    } catch (e: any) {}
-  }
-
+  if (keys) keys.forEach((k) => (result[k] = null));
   return result;
 }
 
