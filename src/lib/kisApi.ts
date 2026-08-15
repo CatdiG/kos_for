@@ -127,7 +127,7 @@ async function kvReleaseDistributedLock(lockKey: string): Promise<void> {
 export async function getKisAccessToken(): Promise<string | null> {
   const appKey = process.env.KIS_APPKEY;
   const appSecret = process.env.KIS_APPSECRET;
-  const isVirtual = process.env.KIS_VIRTUAL !== 'false';
+  const isVirtual = process.env.KIS_VIRTUAL === 'true';
   const defaultBaseUrl = isVirtual 
     ? 'https://openapivts.koreainvestment.com:29443' 
     : 'https://openapi.koreainvestment.com:9443';
@@ -435,7 +435,7 @@ async function executeKisInvestorTrendFetch(
 ): Promise<InvestorTrendResponse> {
   const appKey = process.env.KIS_APPKEY!;
   const appSecret = process.env.KIS_APPSECRET!;
-  const isVirtual = process.env.KIS_VIRTUAL !== 'false';
+  const isVirtual = process.env.KIS_VIRTUAL === 'true';
   const defaultBaseUrl = isVirtual 
     ? 'https://openapivts.koreainvestment.com:29443' 
     : 'https://openapi.koreainvestment.com:9443';
@@ -889,7 +889,7 @@ export async function fetchKisCreditAvailable(symbol: string): Promise<boolean |
 }
 
 async function executeKisCreditAvailableFetch(symbol: string): Promise<boolean | undefined> {
-  const isVirtual = process.env.KIS_VIRTUAL !== 'false';
+  const isVirtual = process.env.KIS_VIRTUAL === 'true';
   const defaultBaseUrl = isVirtual 
     ? 'https://openapivts.koreainvestment.com:29443' 
     : 'https://openapi.koreainvestment.com:9443';
@@ -1041,7 +1041,7 @@ async function executeKisForeignInstitutionRankingFetch(
 ): Promise<InvestorRankingResponse> {
   const appKey = process.env.KIS_APPKEY!;
   const appSecret = process.env.KIS_APPSECRET!;
-  const isVirtual = process.env.KIS_VIRTUAL !== 'false';
+  const isVirtual = process.env.KIS_VIRTUAL === 'true';
   const defaultBaseUrl = isVirtual 
     ? 'https://openapivts.koreainvestment.com:29443' 
     : 'https://openapi.koreainvestment.com:9443';
@@ -1174,7 +1174,7 @@ async function enrichRankingWithRawInvestorData(
     const token = await getKisAccessToken();
     if (!token) return;
 
-    const isVirtual = process.env.KIS_VIRTUAL !== 'false';
+    const isVirtual = process.env.KIS_VIRTUAL === 'true';
     const defaultBaseUrl = isVirtual 
       ? 'https://openapivts.koreainvestment.com:29443' 
       : 'https://openapi.koreainvestment.com:9443';
@@ -1628,7 +1628,7 @@ async function executeKisSurgingStocksFetch(
   mode: SurgingMode,
   market: MarketType
 ): Promise<InvestorRankingResponse> {
-  const isVirtual = process.env.KIS_VIRTUAL !== 'false';
+  const isVirtual = process.env.KIS_VIRTUAL === 'true';
   const defaultBaseUrl = isVirtual 
     ? 'https://openapivts.koreainvestment.com:29443' 
     : 'https://openapi.koreainvestment.com:9443';
