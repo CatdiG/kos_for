@@ -99,14 +99,43 @@ async function kvAcquireDistributedLock(lockKey: string, ttlSec: number = 10): P
 async function kvReleaseDistributedLock(lockKey: string): Promise<void> {}
 
 async function kvGetJson<T>(key: string): Promise<T | null> {
+  const sanitizeKey = key.replace(/[^a-zA-Z0-9_-]/g, '_');
+  const primaryFile = path.join(process.cwd(), 'scratch', `.cache_${sanitizeKey}.json`);
+  const fallbackFile = path.join(os.tmpdir(), `.cache_${sanitizeKey}.json`);
+
+  for (const filePath of [primaryFile, fallbackFile]) {
+    try {
+      if (fs.existsSync(filePath)) {
+        const text = fs.readFileSync(filePath, 'utf8');
+        const data = JSON.parse(text) as T;
+        if (data) return data;
+      }
+    } catch (e) {}
+  }
   return null;
 }
 
-async function kvSetJson(key: string, data: any, ttlSec: number = 300): Promise<void> {}
+async function kvSetJson(key: string, data: any, ttlSec: number = 300): Promise<void> {
+  const sanitizeKey = key.replace(/[^a-zA-Z0-9_-]/g, '_');
+  const primaryFile = path.join(process.cwd(), 'scratch', `.cache_${sanitizeKey}.json`);
+  const fallbackFile = path.join(os.tmpdir(), `.cache_${sanitizeKey}.json`);
+
+  for (const filePath of [primaryFile, fallbackFile]) {
+    try {
+      const dir = path.dirname(filePath);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(filePath, JSON.stringify(data), 'utf8');
+    } catch (e) {}
+  }
+}
 
 async function kvMgetJson<T>(keys: string[]): Promise<Record<string, T | null>> {
   const result: Record<string, T | null> = {};
-  if (keys) keys.forEach((k) => (result[k] = null));
+  if (!keys || keys.length === 0) return result;
+
+  for (const key of keys) {
+    result[key] = await kvGetJson<T>(key);
+  }
   return result;
 }
 
@@ -1095,7 +1124,10 @@ export async function fetchKisForeignInstitutionRanking(
     return res;
   } catch (err: any) {
     console.error('[KIS Ranking Queue Exception]', err);
-    if (redisRank) return redisRank;
+    const diskFallback = await kvGetJson<InvestorRankingResponse>(`kv_${cacheKey}`);
+    if (diskFallback && diskFallback.list && diskFallback.list.length > 0) {
+      return diskFallback;
+    }
     if (rankingCacheStore.has(cacheKey)) {
       console.warn(`[KIS Ranking Stale Cache Fallback] ${cacheKey} 마감/성공 실데이터 캐시 반환`);
       const cached = rankingCacheStore.get(cacheKey)!;
@@ -1105,7 +1137,15 @@ export async function fetchKisForeignInstitutionRanking(
         updatedAt: new Date().toISOString(),
       };
     }
-    throw err;
+    console.warn(`[KIS Ranking Safe Fallback] KIS API 수신 실패로 빈 랭킹 데이터 안전 반환`);
+    return {
+      type,
+      direction,
+      period,
+      list: [],
+      lastBatchTime: '데이터 수집 대기 중',
+      updatedAt: new Date().toISOString(),
+    };
   }
 }
 
