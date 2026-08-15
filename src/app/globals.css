@@ -1,0 +1,91 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --bg-main: #f8fafc;
+    --bg-panel: #ffffff;
+    --bg-card: #f1f5f9;
+    --bg-card-hover: #e2e8f0;
+    --border-color: #e2e8f0;
+    --text-primary: #0f172a;
+    --text-secondary: #475569;
+    --text-muted: #64748b;
+
+    --color-up: #ef4444;       /* 한국 주식 시장 관례: 상승/순매수 = 빨간색 */
+    --color-down: #2563eb;     /* 한국 주식 시장 관례: 하락/순매도 = 파란색 */
+    --color-neutral: #64748b;
+  }
+
+  .dark {
+    --bg-main: #0b0e14;
+    --bg-panel: #131722;
+    --bg-card: #1e222d;
+    --bg-card-hover: #2a2e39;
+    --border-color: #2a2e39;
+    --text-primary: #f8fafc;
+    --text-secondary: #cbd5e1;
+    --text-muted: #787b86;
+  }
+
+  body {
+    background-color: var(--bg-main);
+    color: var(--text-primary);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    min-height: 100vh;
+    transition: background-color 0.2s ease, color 0.2s ease;
+  }
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: var(--bg-panel);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border-color);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}
+
+/* Glassmorphism Panel */
+.glass-panel {
+  background: var(--bg-panel);
+  backdrop-filter: blur(12px);
+  border: 1px solid var(--border-color);
+  border-radius: 0.75rem;
+}
+
+.glass-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 0.5rem;
+  transition: border-color 0.2s ease, transform 0.2s ease;
+}
+
+.glass-card:hover {
+  border-color: var(--border-color);
+}
+
+/* Pulse highlight animation */
+@keyframes flashGreen {
+  0% { background-color: rgba(239, 68, 68, 0.25); }
+  100% { background-color: transparent; }
+}
+
+@keyframes flashBlue {
+  0% { background-color: rgba(59, 130, 246, 0.25); }
+  100% { background-color: transparent; }
+}
+
+.flash-up {
+  animation: flashGreen 1.2s ease-out;
+}
+
+.flash-down {
+  animation: flashBlue 1.2s ease-out;
+}
