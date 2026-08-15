@@ -32,162 +32,103 @@ function getKvConfig() {
   return null;
 }
 
-async function kvGetTokenCache(appKeyHash: string, allowExpired: boolean = false): Promise<TokenCacheData | null> {
-  const now = Date.now();
-  // 1. Fast in-memory check (0ms)
-  if (globalThis.__kisTokenCache__ && (allowExpired || globalThis.__kisTokenCache__.expires_at > now + 60000) && globalThis.__kisTokenCache__.app_key_hash === appKeyHash) {
-    return globalThis.__kisTokenCache__;
-  }
-
-  // 2. Vercel KV / Upstash Redis REST API Shared Check
+async function kvCommand(command: (string | number)[]): Promise<any> {
   const cfg = getKvConfig();
-  if (!cfg) return globalThis.__kisTokenCache__ || null;
-
+  if (!cfg) return null;
   try {
-    const res = await fetch(`${cfg.url}/get/kis_token_${appKeyHash}`, {
-      headers: { Authorization: `Bearer ${cfg.token}` },
+    const res = await fetch(cfg.url, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${cfg.token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(command),
       cache: 'no-store',
     });
     if (res.ok) {
       const json = await res.json();
-      const rawVal = json.result;
-      if (rawVal) {
-        const cache: TokenCacheData = typeof rawVal === 'string' ? JSON.parse(rawVal) : rawVal;
-        if (cache && cache.access_token && (allowExpired || cache.expires_at > now + 60000)) {
-          console.log('[KIS External KV Hit] Vercel KV / Upstash Redis 외부 공유 저장소에서 접근 토큰 획득');
-          globalThis.__kisTokenCache__ = cache;
-          return cache;
-        }
-      }
+      return json.result;
     }
   } catch (e) {
-    console.warn('[KIS External KV Read Warning]', e);
+    console.warn('[KV Command Error]', command[0], e);
+  }
+  return null;
+}
+
+async function kvGetTokenCache(appKeyHash: string, allowExpired: boolean = false): Promise<TokenCacheData | null> {
+  const now = Date.now();
+  if (globalThis.__kisTokenCache__ && (allowExpired || globalThis.__kisTokenCache__.expires_at > now + 60000) && globalThis.__kisTokenCache__.app_key_hash === appKeyHash) {
+    return globalThis.__kisTokenCache__;
+  }
+
+  const rawVal = await kvCommand(['GET', `kis_token_${appKeyHash}`]);
+  if (rawVal) {
+    try {
+      const cache: TokenCacheData = typeof rawVal === 'string' ? JSON.parse(rawVal) : rawVal;
+      if (cache && cache.access_token && (allowExpired || cache.expires_at > now + 60000)) {
+        console.log('[KIS External KV Hit] Vercel KV / Upstash Redis 외부 공유 저장소에서 토큰 획득 성공');
+        globalThis.__kisTokenCache__ = cache;
+        return cache;
+      }
+    } catch (e) {}
   }
   return globalThis.__kisTokenCache__ || null;
 }
 
 async function kvSaveTokenCache(cache: TokenCacheData): Promise<void> {
   globalThis.__kisTokenCache__ = cache;
-  const cfg = getKvConfig();
-  if (!cfg) return;
-
-  try {
-    const ttlSec = Math.max(Math.floor((cache.expires_at - Date.now()) / 1000) - 300, 3600);
-    const jsonStr = JSON.stringify(cache);
-    const res = await fetch(`${cfg.url}/set/kis_token_${cache.app_key_hash}/${encodeURIComponent(jsonStr)}/EX/${ttlSec}`, {
-      headers: { Authorization: `Bearer ${cfg.token}` },
-      cache: 'no-store',
-    });
-    if (res.ok) {
-      console.log(`[KIS External KV Saved] Vercel KV / Upstash Redis 외부 저장소에 토큰 저장을 완료했습니다 (TTL: ${ttlSec}초).`);
-    }
-  } catch (e) {
-    console.warn('[KIS External KV Save Warning]', e);
+  const ttlSec = Math.max(Math.floor((cache.expires_at - Date.now()) / 1000) - 300, 3600);
+  const jsonStr = JSON.stringify(cache);
+  const result = await kvCommand(['SET', `kis_token_${cache.app_key_hash}`, jsonStr, 'EX', ttlSec]);
+  if (result === 'OK') {
+    console.log(`[KIS External KV Saved] Vercel KV / Upstash Redis 토큰 공유 저장 성공 (TTL: ${ttlSec}초).`);
   }
 }
 
 async function kvAcquireDistributedLock(lockKey: string, ttlSec: number = 10): Promise<boolean> {
-  const cfg = getKvConfig();
-  if (!cfg) return true; // Fallback to memory lock if KV not configured
-
-  try {
-    // Atomic SET NX with TTL (Only sets if key does NOT exist)
-    const res = await fetch(`${cfg.url}/set/${lockKey}/locked/NX/EX/${ttlSec}`, {
-      headers: { Authorization: `Bearer ${cfg.token}` },
-      cache: 'no-store',
-    });
-    if (res.ok) {
-      const json = await res.json();
-      const isLocked = json.result === 'OK';
-      if (isLocked) {
-        console.log(`[KIS Distributed Lock Acquired] ${lockKey} 분산 락 획득 성공`);
-      }
-      return isLocked;
-    }
-  } catch (e) {
-    console.warn('[KIS Distributed Lock Warning]', e);
-  }
-  return true;
+  const result = await kvCommand(['SET', lockKey, 'locked', 'NX', 'EX', ttlSec]);
+  return result === 'OK';
 }
 
 async function kvReleaseDistributedLock(lockKey: string): Promise<void> {
-  const cfg = getKvConfig();
-  if (!cfg) return;
-
-  try {
-    await fetch(`${cfg.url}/del/${lockKey}`, {
-      headers: { Authorization: `Bearer ${cfg.token}` },
-      cache: 'no-store',
-    });
-  } catch (e) {}
+  await kvCommand(['DEL', lockKey]);
 }
 
 async function kvGetJson<T>(key: string): Promise<T | null> {
-  const cfg = getKvConfig();
-  if (!cfg) return null;
-  try {
-    const res = await fetch(`${cfg.url}/get/${key}`, {
-      headers: { Authorization: `Bearer ${cfg.token}` },
-      cache: 'no-store',
-    });
-    if (res.ok) {
-      const json = await res.json();
-      if (json.result) {
-        return typeof json.result === 'string' ? JSON.parse(json.result) : json.result;
-      }
+  const rawVal = await kvCommand(['GET', key]);
+  if (rawVal !== null && rawVal !== undefined) {
+    try {
+      return typeof rawVal === 'string' ? JSON.parse(rawVal) : rawVal;
+    } catch (e) {
+      return rawVal;
     }
-  } catch (e) {
-    console.warn(`[KV Read Error ${key}]`, e);
   }
   return null;
 }
 
 async function kvSetJson(key: string, data: any, ttlSec: number = 300): Promise<void> {
-  const cfg = getKvConfig();
-  if (!cfg) return;
-  try {
-    const jsonStr = JSON.stringify(data);
-    await fetch(`${cfg.url}/set/${key}/${encodeURIComponent(jsonStr)}/EX/${ttlSec}`, {
-      headers: { Authorization: `Bearer ${cfg.token}` },
-      cache: 'no-store',
-    });
-  } catch (e) {
-    console.warn(`[KV Write Error ${key}]`, e);
-  }
+  const jsonStr = JSON.stringify(data);
+  await kvCommand(['SET', key, jsonStr, 'EX', ttlSec]);
 }
 
 async function kvMgetJson<T>(keys: string[]): Promise<Record<string, T | null>> {
   const result: Record<string, T | null> = {};
   if (!keys || keys.length === 0) return result;
 
-  const cfg = getKvConfig();
-  if (!cfg) return result;
-
-  try {
-    const keysPath = keys.map((k) => encodeURIComponent(k)).join('/');
-    const res = await fetch(`${cfg.url}/mget/${keysPath}`, {
-      headers: { Authorization: `Bearer ${cfg.token}` },
-      cache: 'no-store',
-    });
-    if (res.ok) {
-      const json = await res.json();
-      if (Array.isArray(json.result)) {
-        json.result.forEach((rawVal: any, idx: number) => {
-          const k = keys[idx];
-          if (rawVal !== null && rawVal !== undefined) {
-            try {
-              result[k] = typeof rawVal === 'string' ? JSON.parse(rawVal) : rawVal;
-            } catch (e) {
-              result[k] = rawVal;
-            }
-          } else {
-            result[k] = null;
-          }
-        });
+  const rawList = await kvCommand(['MGET', ...keys]);
+  if (Array.isArray(rawList)) {
+    rawList.forEach((rawVal: any, idx: number) => {
+      const k = keys[idx];
+      if (rawVal !== null && rawVal !== undefined) {
+        try {
+          result[k] = typeof rawVal === 'string' ? JSON.parse(rawVal) : rawVal;
+        } catch (e) {
+          result[k] = rawVal;
+        }
+      } else {
+        result[k] = null;
       }
-    }
-  } catch (e) {
-    console.warn('[KV MGET Error]', e);
+    });
   }
   return result;
 }
