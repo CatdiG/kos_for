@@ -4,6 +4,7 @@ import { TrendPeriod } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
+export const maxDuration = 60;
 
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
@@ -20,10 +21,10 @@ export async function GET(request: NextRequest) {
         'Cache-Control': 'no-store, max-age=0, must-revalidate',
       },
     });
-  } catch (error) {
+  } catch (error: any) {
     console.error('[API Route Error]', error);
     return NextResponse.json(
-      { error: '주식 수급 데이터를 불러오는 도중 오류가 발생했습니다.' },
+      { error: error?.message || '주식 수급 데이터를 불러오는 도중 오류가 발생했습니다.' },
       {
         status: 500,
         headers: {

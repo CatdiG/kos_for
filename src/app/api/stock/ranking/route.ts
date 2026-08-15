@@ -5,6 +5,7 @@ import { MarketType, RankingDirection, RankingPeriod, RankingType } from '@/lib/
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
+export const maxDuration = 60; // Set Vercel serverless function max duration to 60 seconds
 
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
@@ -36,10 +37,10 @@ export async function GET(request: NextRequest) {
         'Cache-Control': 'no-store, max-age=0, must-revalidate',
       },
     });
-  } catch (error) {
+  } catch (error: any) {
     console.error('[Ranking API Route Exception]', error);
     return NextResponse.json(
-      { error: (error as Error)?.message || '매매 순위 데이터를 가져오는 중 오류가 발생했습니다.' },
+      { error: error?.message || '매매순위 수급 데이터를 가져오는 중 오류가 발생했습니다.' },
       {
         status: 500,
         headers: {

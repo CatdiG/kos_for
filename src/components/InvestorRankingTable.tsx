@@ -54,7 +54,8 @@ async function fetchRanking(
     `/api/stock/ranking?type=${type}&direction=${direction}&period=${period}&mode=${mode}&limit=${limit}&market=${market}`
   );
   if (!res.ok) {
-    throw new Error('매매 순위 데이터를 가져오는 중 오류가 발생했습니다.');
+    const errJson = await res.json().catch(() => null);
+    throw new Error(errJson?.error || '매매 순위 데이터를 가져오는 중 오류가 발생했습니다.');
   }
   return res.json();
 }
@@ -114,12 +115,18 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
     queryFn: async () => {
       if (activeTab === 'comprehensive') {
         const res = await fetch(`/api/stock/surging?mode=comprehensive&market=${market}`);
-        if (!res.ok) throw new Error('종합랭킹 데이터를 가져오는 중 오류가 발생했습니다.');
+        if (!res.ok) {
+          const errJson = await res.json().catch(() => null);
+          throw new Error(errJson?.error || '종합랭킹 데이터를 가져오는 중 오류가 발생했습니다.');
+        }
         return res.json();
       }
       if (isSurging) {
         const res = await fetch(`/api/stock/surging?mode=${surgingMode}&market=${market}`);
-        if (!res.ok) throw new Error('급등주 순위 데이터를 가져오는 중 오류가 발생했습니다.');
+        if (!res.ok) {
+          const errJson = await res.json().catch(() => null);
+          throw new Error(errJson?.error || '급등주 순위 데이터를 가져오는 중 오류가 발생했습니다.');
+        }
         return res.json();
       }
       return fetchRanking(activeTab, direction, period, overlapMode, overlapLimit, market);
