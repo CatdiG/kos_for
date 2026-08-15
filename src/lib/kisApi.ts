@@ -1118,6 +1118,11 @@ async function executeKisCreditAvailableFetch(symbol: string): Promise<boolean |
       throw new Error(`[KIS API Error] ${json.msg1 || json.msg_cd || json.rt_cd}`);
     }
   }
+
+  if (res.status >= 500) {
+    console.warn(`[KIS Server ${res.status} Temporary Failure] ${symbol} 신용/주가 조회 한투 서버 오류. 백그라운드 안전 스킵됨.`);
+    return undefined;
+  }
   throw new Error(`[KIS HTTP Error] Status ${res.status}`);
 }
 
