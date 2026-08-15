@@ -19,7 +19,11 @@ export async function GET(request: NextRequest) {
     const data = await fetchKisSurgingStocks(mode, market);
     let initialTrend: any = null;
     if (data && Array.isArray(data.list) && data.list.length > 0 && data.list[0].symbol) {
-      initialTrend = await fetchKisInvestorTrend(data.list[0].symbol, '60d').catch(() => null);
+      const topSymbol = data.list[0].symbol;
+      initialTrend = await Promise.race([
+        fetchKisInvestorTrend(topSymbol, '60d'),
+        new Promise((resolve) => setTimeout(() => resolve(null), 1200)),
+      ]).catch(() => null);
     }
 
     return NextResponse.json(

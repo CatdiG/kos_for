@@ -37,7 +37,11 @@ export async function GET(request: NextRequest) {
 
     let initialTrend: any = null;
     if (responseData && Array.isArray(responseData.list) && responseData.list.length > 0 && responseData.list[0].symbol) {
-      initialTrend = await fetchKisInvestorTrend(responseData.list[0].symbol, '60d').catch(() => null);
+      const topSymbol = responseData.list[0].symbol;
+      initialTrend = await Promise.race([
+        fetchKisInvestorTrend(topSymbol, '60d'),
+        new Promise((resolve) => setTimeout(() => resolve(null), 1200)),
+      ]).catch(() => null);
     }
 
     const elapsedMs = Date.now() - routeStart;
