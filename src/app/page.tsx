@@ -14,7 +14,8 @@ import { AlertCircle, RefreshCw } from 'lucide-react';
 async function fetchInvestorTrend(symbol: string, period: TrendPeriod): Promise<InvestorTrendResponse> {
   const res = await fetch(`/api/stock/investor-trend?symbol=${symbol}&period=${period}`);
   if (!res.ok) {
-    throw new Error('수급 데이터를 가져오는 중 오류가 발생했습니다.');
+    const errJson = await res.json().catch(() => null);
+    throw new Error(errJson?.error || '수급 데이터를 가져오는 중 오류가 발생했습니다.');
   }
   return res.json();
 }
