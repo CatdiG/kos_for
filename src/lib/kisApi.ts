@@ -16,6 +16,7 @@ interface TokenCacheData {
 declare global {
   var __kisTokenCache__: TokenCacheData | undefined;
   var __kisTokenPromise__: Promise<string | null> | undefined;
+  var __lastKisOAuthError__: string | undefined;
 }
 
 // =================================================================
@@ -134,7 +135,9 @@ export async function getKisAccessToken(): Promise<string | null> {
   const baseUrl = process.env.KIS_BASE_URL || defaultBaseUrl;
 
   if (!appKey || !appSecret || appKey.trim() === '' || appSecret.trim() === '') {
-    console.warn('[KIS API] App Key 또는 App Secret이 설정되지 않았습니다.');
+    const missingMsg = `Vercel 설정에 KIS_APPKEY(${appKey ? '설정됨' : '미설정'}) 또는 KIS_APPSECRET(${appSecret ? '설정됨' : '미설정'})이 누락되었습니다.`;
+    console.warn(`[KIS API Warning] ${missingMsg}`);
+    globalThis.__lastKisOAuthError__ = missingMsg;
     return null;
   }
 
@@ -187,6 +190,7 @@ export async function getKisAccessToken(): Promise<string | null> {
           if (!res.ok) {
             const errorText = await res.text();
             console.error(`[KIS OAuth Error ${res.status}]`, errorText);
+            globalThis.__lastKisOAuthError__ = `[KIS OAuth HTTP ${res.status}] ${errorText}`;
 
             const fallbackToken = await kvGetTokenCache(appKeyHash);
             if (fallbackToken) return fallbackToken.access_token;
@@ -214,14 +218,17 @@ export async function getKisAccessToken(): Promise<string | null> {
             console.log(`[KIS OAuth Success] 새로운 Access Token 발급 및 외부 공유 저장소 저장 완료 (유효기간: ${expiresInSec}초)`);
             return data.access_token;
           } else {
-            console.error('[KIS OAuth Error]', data.error_description || data.msg1 || data.error_code || 'Access token missing');
+            const errStr = data.error_description || data.msg1 || data.error_code || 'Access token missing';
+            console.error('[KIS OAuth Error]', errStr);
+            globalThis.__lastKisOAuthError__ = `[KIS OAuth 응답 에러] ${errStr}`;
             if (attempt < 3) {
               await new Promise((r) => setTimeout(r, 1000 * attempt));
               continue;
             }
           }
-        } catch (error) {
+        } catch (error: any) {
           console.error('[KIS OAuth Exception]', error);
+          globalThis.__lastKisOAuthError__ = `[KIS OAuth 네트워크 예외] ${error?.message || String(error)}`;
           if (attempt < 3) {
             await new Promise((r) => setTimeout(r, 1000 * attempt));
             continue;
@@ -443,7 +450,8 @@ async function executeKisInvestorTrendFetch(
 
   const token = await getKisAccessToken();
   if (!token) {
-    throw new Error('[KIS API 인증 오류] KIS 오픈API Access Token 발급 실패');
+    const detail = globalThis.__lastKisOAuthError__ || 'KIS 오픈API Access Token 발급 실패 (인증키 설정 및 KIS 서버 거부 상태 확인 필요)';
+    throw new Error(`[KIS API 인증 오류] ${detail}`);
   }
 
   await enforceRateLimit();
@@ -1049,7 +1057,8 @@ async function executeKisForeignInstitutionRankingFetch(
 
   const token = await getKisAccessToken();
   if (!token) {
-    throw new Error('[KIS API 인증 오류] KIS 오픈API Access Token 발급 실패');
+    const detail = globalThis.__lastKisOAuthError__ || 'KIS 오픈API Access Token 발급 실패 (인증키 설정 및 KIS 서버 거부 상태 확인 필요)';
+    throw new Error(`[KIS API 인증 오류] ${detail}`);
   }
 
   const etcClsCode = type === 'foreign' ? '1' : '2';
@@ -1638,7 +1647,8 @@ async function executeKisSurgingStocksFetch(
 
   const token = await getKisAccessToken();
   if (!token) {
-    throw new Error('[KIS API 인증 오류] KIS 오픈API Access Token 발급 실패');
+    const detail = globalThis.__lastKisOAuthError__ || 'KIS 오픈API Access Token 발급 실패 (인증키 설정 및 KIS 서버 거부 상태 확인 필요)';
+    throw new Error(`[KIS API 인증 오류] ${detail}`);
   }
 
   const iscdParam = market === 'KOSPI' ? '0001' : market === 'KOSDAQ' ? '1001' : '0000';
