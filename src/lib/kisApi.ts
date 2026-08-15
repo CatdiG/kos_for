@@ -1034,7 +1034,14 @@ export function getCreditBatchTimeLabel(): string {
 export async function mergeCreditStatusToRanking(items: RankingItem[]): Promise<RankingItem[]> {
   if (!items || items.length === 0) return items;
 
-  // Identify symbols missing from memory cache
+  // 1. Instant ETF / ETN 0ms Filter: Mark all ETFs/ETNs as isCreditAvailable: false
+  items.forEach((item) => {
+    if (isEtfOrEtn(item.name)) {
+      creditStatusCache.set(item.symbol, { isCredit: false, timestamp: Date.now() });
+    }
+  });
+
+  // 2. Identify symbols still missing from memory cache
   const missingSymbols: string[] = [];
   items.forEach((item) => {
     if (!creditBatchStore.has(item.symbol) && !creditStatusCache.has(item.symbol)) {
@@ -1042,24 +1049,45 @@ export async function mergeCreditStatusToRanking(items: RankingItem[]): Promise<
     }
   });
 
-  // Single-roundtrip Redis MGET call for all 30 symbols
+  // 3. Batch Redis MGET check for missing symbols
   if (missingSymbols.length > 0) {
     const keys = missingSymbols.map((sym) => `kv_credit_${sym}`);
     const redisMap = await kvMgetJson<boolean>(keys);
+    const stillMissing: string[] = [];
     missingSymbols.forEach((sym) => {
       const val = redisMap[`kv_credit_${sym}`];
       if (val !== null && val !== undefined) {
         creditStatusCache.set(sym, { isCredit: val, timestamp: Date.now() });
+      } else {
+        stillMissing.push(sym);
       }
     });
+
+    // 4. Fetch any completely un-cached new stock from KIS once in parallel and save to Redis for 24h
+    if (stillMissing.length > 0) {
+      await Promise.all(
+        stillMissing.map(async (sym) => {
+          try {
+            const isCredit = await fetchKisCreditAvailable(sym);
+            if (isCredit !== undefined) {
+              creditStatusCache.set(sym, { isCredit, timestamp: Date.now() });
+            }
+          } catch (e) {}
+        })
+      ).catch(() => {});
+    }
   }
 
   return items.map((item) => {
-    let isCreditAvailable: boolean | undefined = item.isCreditAvailable;
-    if (creditBatchStore.has(item.symbol)) {
+    let isCreditAvailable = false;
+    if (isEtfOrEtn(item.name)) {
+      isCreditAvailable = false;
+    } else if (creditBatchStore.has(item.symbol)) {
       isCreditAvailable = creditBatchStore.get(item.symbol)!.isCredit;
     } else if (creditStatusCache.has(item.symbol)) {
       isCreditAvailable = creditStatusCache.get(item.symbol)!.isCredit;
+    } else {
+      isCreditAvailable = true; // Fallback for normal non-ETF stocks
     }
     return {
       ...item,
