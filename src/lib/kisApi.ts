@@ -27,60 +27,35 @@ import { Redis as UpstashRedis } from '@upstash/redis';
 
 const UPSTASH_CLIENT_KEY = Symbol.for('kis_upstash_client');
 
-function parseRedisUrlToUpstashRest(redisUrl: string) {
-  if (!redisUrl || typeof redisUrl !== 'string') return null;
-  try {
-    const cleanUrl = redisUrl.trim().replace(/^rediss?:\/\//i, '');
-    const [authPart, hostPart] = cleanUrl.split('@');
-    if (!authPart || !hostPart) return null;
-    const token = authPart.includes(':') ? authPart.split(':')[1] : authPart;
-    const host = hostPart.split(':')[0]; // Strip port like :6379
-    if (token && host) {
-      return {
-        url: `https://${host}`,
-        token,
-      };
-    }
-  } catch (e) {
-    console.error('[Redis 에러] parseRedisUrlToUpstashRest 파싱 오류:', e);
-  }
-  return null;
-}
-
 function getUpstashClient(): UpstashRedis | null {
   if ((globalThis as any)[UPSTASH_CLIENT_KEY]) {
     return (globalThis as any)[UPSTASH_CLIENT_KEY];
   }
 
-  let url = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL;
-  let token = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN;
-
-  if ((!url || !token) && process.env.REDIS_URL) {
-    const parsed = parseRedisUrlToUpstashRest(process.env.REDIS_URL);
-    if (parsed) {
-      url = parsed.url;
-      token = parsed.token;
-      console.log('[Redis Sanitizer] REDIS_URL (rediss://)에서 Upstash REST API 규격 (https://) 및 토큰 추출 완료');
-    }
-  }
+  const url = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL;
+  const token = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN;
 
   if (url && token && url.trim() !== '' && token.trim() !== '') {
     let sanitizedUrl = url.trim();
     if (!sanitizedUrl.startsWith('http://') && !sanitizedUrl.startsWith('https://')) {
-      sanitizedUrl = sanitizedUrl.replace(/^rediss?:\/\//i, 'https://');
+      sanitizedUrl = `https://${sanitizedUrl}`;
     }
     sanitizedUrl = sanitizedUrl.replace(/\/$/, '');
 
     try {
       console.log(`[Redis Config Audit] Connecting to Upstash REST URL: ${sanitizedUrl}`);
-      const client = new UpstashRedis({ url: sanitizedUrl, token: token.trim() });
+      const client = new UpstashRedis({
+        url: sanitizedUrl,
+        token: token.trim(),
+        retry: { retries: 0 }, // 지연 방지: REST 요청 실패 시 즉시 무응답 재시도 없이 0ms 회피
+      });
       (globalThis as any)[UPSTASH_CLIENT_KEY] = client;
       return client;
     } catch (e: any) {
       console.error('[Redis 에러] UpstashRedis 클라이언트 생성 실패:', e?.message || e);
     }
   } else {
-    console.warn(`[Redis Config Warning] Upstash REST URL(${url ? 'OK' : '미설정/형식오류'}) 또는 Token(${token ? 'OK' : '미설정'})이 누락되었습니다.`);
+    console.log('[Redis Config Info] KV_REST_API_URL 또는 KV_REST_API_TOKEN 환경 변수가 설정되지 않아 외부 Redis 캐시를 건너끕니다.');
   }
 
   return null;
@@ -314,6 +289,7 @@ export async function getKisAccessToken(): Promise<string | null> {
           appsecret: appSecret,
         }),
         cache: 'no-store',
+        signal: AbortSignal.timeout(5000), // 5초 타임아웃 안심 장치 (무한 응답 대기 방지)
       });
 
       if (!res.ok) {
