@@ -510,9 +510,8 @@ async function executeKisInvestorTrendFetch(
     });
   }
 
-  let dpJson: any = null;
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    await new Promise((resolve) => setTimeout(resolve, attempt === 1 ? 150 : 400));
+  let fullDailyItems: any[] = [];
+  try {
     const dailyPriceRes = await fetch(dailyChartUrl, {
       method: 'GET',
       headers: {
@@ -524,84 +523,16 @@ async function executeKisInvestorTrendFetch(
         custtype: 'P',
       },
       cache: 'no-store',
-    }).catch(() => null);
+    });
 
-    if (dailyPriceRes && dailyPriceRes.ok) {
-      const parsed = await dailyPriceRes.json().catch(() => null);
+    if (dailyPriceRes.ok) {
+      const parsed = await dailyPriceRes.json();
       if (parsed && parsed.rt_cd === '0' && Array.isArray(parsed.output2) && parsed.output2.length > 0) {
-        dpJson = parsed;
-        break;
+        fullDailyItems = parsed.output2.slice().reverse(); // Ascending date order
       }
     }
-  }
-
-  let fullDailyItems: any[] = [];
-  if (dpJson && dpJson.rt_cd === '0' && Array.isArray(dpJson.output2) && dpJson.output2.length > 0) {
-    const page1Ascending = dpJson.output2.slice().reverse(); // Ascending date
-    fullDailyItems = page1Ascending;
-        // Robust Pagination: Fetch preceding trading days until we have at least 120+ trading days for complete 60D MAs
-        const getObjDate = (item: any) => item?.stck_bsop_date || item?.bsop_date || item?.date || '';
-        let currentEnd = getObjDate(page1Ascending[0]);
-
-        for (let p = 2; p <= 4 && fullDailyItems.length < 120; p++) {
-          if (!currentEnd || currentEnd.length !== 8) break;
-          const py = parseInt(currentEnd.slice(0, 4), 10);
-          const pm = parseInt(currentEnd.slice(4, 6), 10) - 1;
-          const pd = parseInt(currentEnd.slice(6, 8), 10);
-          const pEndObj = new Date(py, pm, pd);
-          pEndObj.setDate(pEndObj.getDate() - 1);
-          const pEndDate = pEndObj.toISOString().slice(0, 10).replace(/-/g, '');
-
-          const pStartObj = new Date(pEndObj);
-          pStartObj.setDate(pStartObj.getDate() - 120);
-          const pStartDate = pStartObj.toISOString().slice(0, 10).replace(/-/g, '');
-
-          const pUrl = `${baseUrl}/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice?FID_COND_MRKT_DIV_CODE=J&FID_INPUT_ISCD=${symbol}&FID_INPUT_DATE_1=${pStartDate}&FID_INPUT_DATE_2=${pEndDate}&FID_PERIOD_DIV_CODE=D&FID_ORG_ADJ_PRC=0`;
-
-          await new Promise((r) => setTimeout(r, 250));
-          let pRes = await fetch(pUrl, {
-            method: 'GET',
-            headers: {
-              'content-type': 'application/json; charset=utf-8',
-              authorization: `Bearer ${token}`,
-              appkey: appKey,
-              appsecret: appSecret,
-              tr_id: 'FHKST03010100',
-              custtype: 'P',
-            },
-            cache: 'no-store',
-          }).catch(() => null);
-
-          if (pRes && pRes.ok) {
-            let pJson = await pRes.json().catch(() => null);
-            if (pJson && pJson.rt_cd !== '0' && (pJson.msg1?.includes('초당') || pJson.msg_cd === 'EGW00201')) {
-              await new Promise((r) => setTimeout(r, 500));
-              const retryRes = await fetch(pUrl, {
-                method: 'GET',
-                headers: {
-                  'content-type': 'application/json; charset=utf-8',
-                  authorization: `Bearer ${token}`,
-                  appkey: appKey,
-                  appsecret: appSecret,
-                  tr_id: 'FHKST03010100',
-                  custtype: 'P',
-                },
-                cache: 'no-store',
-              }).catch(() => null);
-              if (retryRes && retryRes.ok) pJson = await retryRes.json().catch(() => null);
-            }
-
-            if (pJson && pJson.rt_cd === '0' && Array.isArray(pJson.output2) && pJson.output2.length > 0) {
-              const pAscending = pJson.output2.slice().reverse();
-              fullDailyItems = [...pAscending, ...fullDailyItems];
-              currentEnd = getObjDate(pAscending[0]);
-            } else {
-              break;
-            }
-          } else {
-            break;
-          }
-        }
+  } catch (e) {
+    console.warn(`[KIS Daily Price Fetch Warning] ${symbol}:`, e);
   }
 
   if (fullDailyItems.length === 0) {
