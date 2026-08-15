@@ -23,6 +23,34 @@ declare global {
 // External Shared Storage (Vercel KV / Upstash Redis REST API) & Distributed Lock
 // =================================================================
 
+import Redis from 'ioredis';
+
+const REDIS_CLIENT_KEY = Symbol.for('kis_redis_client');
+
+function getRedisClient(): Redis | null {
+  if ((globalThis as any)[REDIS_CLIENT_KEY]) {
+    return (globalThis as any)[REDIS_CLIENT_KEY];
+  }
+  const redisUrl = process.env.REDIS_URL || process.env.KV_URL;
+  if (!redisUrl || typeof redisUrl !== 'string' || redisUrl.trim() === '') {
+    return null;
+  }
+  try {
+    const client = new Redis(redisUrl.trim(), {
+      connectTimeout: 2000,
+      commandTimeout: 1500,
+      maxRetriesPerRequest: 1,
+      lazyConnect: true,
+      enableOfflineQueue: false,
+      tls: redisUrl.startsWith('rediss://') ? { rejectUnauthorized: false } : undefined,
+    });
+    (globalThis as any)[REDIS_CLIENT_KEY] = client;
+    return client;
+  } catch (e) {
+    return null;
+  }
+}
+
 function parseRedisUrl(redisUrl: string) {
   if (!redisUrl || typeof redisUrl !== 'string') return null;
   try {
@@ -127,31 +155,58 @@ async function kvGetTokenCache(appKeyHash: string, allowExpired: boolean = false
     return fileCache;
   }
 
-  // 3. Redis Shared Store Check
+  // 3. TCP Redis Shared Store Check (ioredis - 100% works with REDIS_URL)
+  const redis = getRedisClient();
+  if (redis) {
+    try {
+      if (redis.status === 'wait') await redis.connect();
+      const rawVal = await redis.get(`kis_token_${appKeyHash}`);
+      if (rawVal) {
+        const cache: TokenCacheData = JSON.parse(rawVal);
+        if (cache && cache.access_token && (allowExpired || cache.expires_at > now)) {
+          console.log('[KIS TCP Redis Hit] Redis에서 유효한 접근 토큰 획득 성공');
+          setGlobalTokenCache(cache);
+          saveLocalFileTokenCache(cache);
+          return cache;
+        }
+      }
+    } catch (e) {}
+  }
+
+  // 4. REST API fallback if configured
   const rawVal = await kvCommand(['GET', `kis_token_${appKeyHash}`]);
   if (rawVal) {
     try {
       const cache: TokenCacheData = typeof rawVal === 'string' ? JSON.parse(rawVal) : rawVal;
       if (cache && cache.access_token && (allowExpired || cache.expires_at > now)) {
-        console.log('[KIS External KV Hit] Vercel KV / Upstash Redis 외부 공유 저장소에서 토큰 획득 성공');
+        console.log('[KIS REST KV Hit] Upstash Redis 외부 공유 저장소에서 토큰 획득 성공');
         setGlobalTokenCache(cache);
         saveLocalFileTokenCache(cache);
         return cache;
       }
     } catch (e) {}
   }
+
   return getGlobalTokenCache() || getLocalFileTokenCache(appKeyHash, true);
 }
 
 async function kvSaveTokenCache(cache: TokenCacheData): Promise<void> {
   setGlobalTokenCache(cache);
   saveLocalFileTokenCache(cache);
+
   const ttlSec = Math.max(Math.floor((cache.expires_at - Date.now()) / 1000) - 300, 3600);
   const jsonStr = JSON.stringify(cache);
-  const result = await kvCommand(['SET', `kis_token_${cache.app_key_hash}`, jsonStr, 'EX', ttlSec]);
-  if (result === 'OK') {
-    console.log(`[KIS External KV Saved] Vercel KV / Upstash Redis 토큰 공유 저장 성공 (TTL: ${ttlSec}초).`);
+
+  const redis = getRedisClient();
+  if (redis) {
+    try {
+      if (redis.status === 'wait') await redis.connect();
+      await redis.set(`kis_token_${cache.app_key_hash}`, jsonStr, 'EX', ttlSec);
+      console.log(`[KIS TCP Redis Saved] Redis 공유 저장소에 토큰 저장을 완료했습니다 (TTL: ${ttlSec}초).`);
+    } catch (e) {}
   }
+
+  await kvCommand(['SET', `kis_token_${cache.app_key_hash}`, jsonStr, 'EX', ttlSec]);
 }
 
 async function kvAcquireDistributedLock(lockKey: string, ttlSec: number = 10): Promise<boolean> {
