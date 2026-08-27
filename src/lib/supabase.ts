@@ -4,7 +4,11 @@ let supabasePublicClient: SupabaseClient | null = null;
 let supabaseAdminClient: SupabaseClient | null = null;
 
 function getSupabaseUrl(): string {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL || '';
+  const url =
+    process.env.NEXT_PUBLIC_SUPABASE_URL ||
+    process.env.SUPABASE_URL ||
+    process.env.SUPABASE_PROJECT_URL ||
+    'https://spyffsvzqldefmjnolql.supabase.co';
   return url.trim().replace(/\/rest\/v1\/?$/i, '').replace(/\/$/, '');
 }
 
