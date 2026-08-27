@@ -131,7 +131,11 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
       }
       return fetchRanking(activeTab, direction, period, overlapMode, overlapLimit, market);
     },
-    refetchInterval: false,
+    refetchInterval: (query) => {
+      const list = query.state.data?.list;
+      const hasPending = list?.some((item: any) => item.isCreditAvailable === undefined) ?? false;
+      return hasPending ? 3000 : false;
+    },
     placeholderData: (previousData) => previousData,
   });
 
