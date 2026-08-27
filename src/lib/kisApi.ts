@@ -29,8 +29,8 @@ declare global {
 // =================================================================
 
 function getNativeRedisRestConfig() {
-  const restUrl = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL;
-  const restToken = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN;
+  const restUrl = process.env.UPSTASH_REDIS_REST_URL;
+  const restToken = process.env.UPSTASH_REDIS_REST_TOKEN;
   if (restUrl && restToken && restUrl.trim() !== '' && restToken.trim() !== '') {
     let sanitizedUrl = restUrl.trim();
     if (!sanitizedUrl.startsWith('http://') && !sanitizedUrl.startsWith('https://')) {
