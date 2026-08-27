@@ -1098,6 +1098,25 @@ export function getCreditBatchTimeLabel(): string {
 }
 
 /**
+ * 3-상태 신용가능 여부 단일 공용 평가 함수 (Single Source of Truth)
+ * - false: ETF/ETN 또는 확정된 신용불가 종목
+ * - true: 확정된 신용가능 종목
+ * - undefined: 미캐시 / 조회 중 ('확인필요')
+ */
+export function getEvaluatedCreditStatus(symbol: string, name?: string): boolean | undefined {
+  if (name && isEtfOrEtn(name)) {
+    return false;
+  }
+  if (creditBatchStore.has(symbol)) {
+    return creditBatchStore.get(symbol)!.isCredit;
+  }
+  if (creditStatusCache.has(symbol)) {
+    return creditStatusCache.get(symbol)!.isCredit;
+  }
+  return undefined;
+}
+
+/**
  * 랭킹 종목 리스트에 대해 로컬 배치 캐시의 신용가능 여부 즉시 병합 (0ms, 불변 객체 생성)
  */
 export async function mergeCreditStatusToRanking(items: RankingItem[]): Promise<RankingItem[]> {
@@ -1147,22 +1166,10 @@ export async function mergeCreditStatusToRanking(items: RankingItem[]): Promise<
     }
   }
 
-  return items.map((item) => {
-    let isCreditAvailable: boolean | undefined = undefined;
-    if (isEtfOrEtn(item.name)) {
-      isCreditAvailable = false;
-    } else if (creditBatchStore.has(item.symbol)) {
-      isCreditAvailable = creditBatchStore.get(item.symbol)!.isCredit;
-    } else if (creditStatusCache.has(item.symbol)) {
-      isCreditAvailable = creditStatusCache.get(item.symbol)!.isCredit;
-    } else {
-      isCreditAvailable = undefined; // Fallback for un-cached/unknown stocks (3-state: true/false/undefined)
-    }
-    return {
-      ...item,
-      isCreditAvailable,
-    };
-  });
+  return items.map((item) => ({
+    ...item,
+    isCreditAvailable: getEvaluatedCreditStatus(item.symbol, item.name),
+  }));
 }
 
 /**
@@ -1337,7 +1344,7 @@ async function executeKisForeignInstitutionRankingFetch(
         netBuyAmtEok,
         volume,
         ratioVsVolume,
-        isCreditAvailable: undefined,
+        isCreditAvailable: getEvaluatedCreditStatus(symbol, name),
       };
     });
 
@@ -1938,7 +1945,7 @@ async function executeKisSurgingStocksFetch(
       amountEok,
       volumeIncreaseRate,
       surgingMode: mode,
-      isCreditAvailable: undefined,
+      isCreditAvailable: getEvaluatedCreditStatus(symbol, name),
       type: 'surging',
     });
   });
@@ -1967,7 +1974,7 @@ async function executeKisSurgingStocksFetch(
       if (!creditBatchStore.has(item.symbol) && !creditStatusCache.has(item.symbol)) {
         try {
           const isCredit = await fetchKisCreditAvailable(item.symbol);
-          item.isCreditAvailable = isCredit;
+          item.isCreditAvailable = getEvaluatedCreditStatus(item.symbol, item.name);
         } catch (e) {
           // Keep default
         }
