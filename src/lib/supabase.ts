@@ -56,7 +56,7 @@ export interface KisTokenRecord {
  * Supabase DB에서 id=1 토큰 읽기 (읽기 전용)
  */
 export async function fetchTokenFromSupabase(): Promise<KisTokenRecord | null> {
-  const client = getSupabasePublic() || getSupabaseAdmin();
+  const client = getSupabaseAdmin() || getSupabasePublic();
   if (!client) {
     console.warn('[Supabase Warning] SUPABASE_URL 또는 KEY가 설정되지 않아 DB 조회를 건너땁니다.');
     return null;
@@ -132,7 +132,7 @@ export async function saveTokenToSupabase(accessToken: string, expiresAtMs: numb
  * Supabase DB kis_credits 테이블에서 여러 종목 신용상태 일괄 조회
  */
 export async function fetchCreditBatchFromSupabase(symbols: string[]): Promise<Record<string, boolean>> {
-  const client = getSupabasePublic() || getSupabaseAdmin();
+  const client = getSupabaseAdmin() || getSupabasePublic();
   if (!client || !symbols || symbols.length === 0) return {};
 
   try {
