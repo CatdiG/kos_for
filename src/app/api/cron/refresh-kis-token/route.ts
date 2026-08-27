@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { saveTokenToSupabase } from '@/lib/supabase';
+import { saveTokenToSupabase, fetchTokenFromSupabase } from '@/lib/supabase';
 import fs from 'fs';
 import path from 'path';
 
@@ -73,6 +73,20 @@ async function handleCronTokenRefresh(request: NextRequest) {
     if (!res.ok) {
       const errorText = await res.text();
       console.error(`[Cron KIS OAuth Error ${res.status}]`, errorText);
+
+      // Handle 1-minute rate-limit gracefully (EGW00133)
+      if (errorText.includes('EGW00133')) {
+        const existing = await fetchTokenFromSupabase();
+        if (existing && existing.access_token) {
+          console.warn('[Cron KIS OAuth Rate Limited EGW00133] Supabase에 저장된 기존 유효 토큰을 유지합니다.');
+          return NextResponse.json({
+            success: true,
+            warning: '1분당 1회 토큰 발급 제한(EGW00133)으로 기존 Supabase DB 토큰 유지',
+            expires_at: new Date(existing.expires_at).toISOString(),
+          });
+        }
+      }
+
       return NextResponse.json(
         { error: `KIS OAuth Error ${res.status}: ${errorText}` },
         { status: 500 }
