@@ -1,5 +1,5 @@
 import { TOP_50_STOCKS, getStockName } from './mockData';
-import { fetchKisInvestorTrend, fetchKisProgramTrade, getKisAccessToken } from './kisApi';
+import { fetchKisInvestorTrend, fetchKisProgramTrade, getKisAccessToken, getEvaluatedCreditStatus } from './kisApi';
 import { InvestorRankingResponse, RankingItem, RankingType, RankingDirection, RankingPeriod, MarketType } from './types';
 
 // Configurable Batch Parameters
@@ -128,6 +128,7 @@ export async function runTop50BatchCollector(force: boolean = false): Promise<bo
           netBuyAmtEok: Number((data.pensionAmt / 100).toFixed(1)),
           volume: data.volume,
           ratioVsVolume: data.volume > 0 ? Number(((Math.abs(data.pensionQty) / data.volume) * 100).toFixed(1)) : 0,
+          isCreditAvailable: getEvaluatedCreditStatus(stock.symbol, data.name),
         });
 
         // 프로그램 Ranking Item
@@ -143,6 +144,7 @@ export async function runTop50BatchCollector(force: boolean = false): Promise<bo
           netBuyAmtEok: Number((data.programAmt / 100).toFixed(1)),
           volume: data.volume,
           ratioVsVolume: data.volume > 0 ? Number(((Math.abs(data.programQty) / data.volume) * 100).toFixed(1)) : 0,
+          isCreditAvailable: getEvaluatedCreditStatus(stock.symbol, data.name),
         });
       }
 

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse, after } from 'next/server';
-import { fetchKisForeignInstitutionRanking, fetchOverlapRankingData, fetchConsecutive3dOverlapRankingData, fetchKisInvestorTrend, getKisAccessTokenWithSource, resolveAndCacheMissingCredits } from '@/lib/kisApi';
+import { fetchKisForeignInstitutionRanking, fetchOverlapRankingData, fetchConsecutive3dOverlapRankingData, fetchKisInvestorTrend, getKisAccessTokenWithSource, resolveAndCacheMissingCredits, mergeCreditStatusToRanking } from '@/lib/kisApi';
 import { getBatchRankingData } from '@/lib/batchCollector';
 import { MarketType, RankingDirection, RankingPeriod, RankingType } from '@/lib/types';
 
@@ -31,6 +31,9 @@ export async function GET(request: NextRequest) {
       responseData = await fetchKisForeignInstitutionRanking(type, direction, period, market);
     } else if (type === 'pension' || type === 'program') {
       responseData = getBatchRankingData(type, direction, period, market);
+      if (responseData && Array.isArray(responseData.list)) {
+        await mergeCreditStatusToRanking(responseData.list);
+      }
     } else {
       responseData = await fetchKisForeignInstitutionRanking('foreign', direction, period, market);
     }
