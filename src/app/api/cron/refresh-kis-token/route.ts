@@ -23,16 +23,19 @@ async function handleCronTokenRefresh(request: NextRequest) {
   const url = new URL(request.url);
   const secretParam = url.searchParams.get('secret');
 
-  // Vercel Cron Header / CRON_SECRET authorization check
-  if (cronSecret && cronSecret.trim() !== '') {
-    const expectedBearer = `Bearer ${cronSecret.trim()}`;
-    const isHeaderValid = authHeader === expectedBearer;
-    const isParamValid = secretParam === cronSecret.trim();
+  // Strict Vercel Cron Header / CRON_SECRET authorization check
+  if (!cronSecret || cronSecret.trim() === '') {
+    console.warn('[Cron Auth Error] CRON_SECRET 미설정으로 인한 토큰 갱신 실행 거부');
+    return NextResponse.json({ error: 'Unauthorized: CRON_SECRET not configured' }, { status: 401 });
+  }
 
-    if (!isHeaderValid && !isParamValid) {
-      console.warn('[Cron Auth Rejected] CRON_SECRET 인증 실패');
-      return NextResponse.json({ error: 'Unauthorized: Invalid CRON_SECRET' }, { status: 401 });
-    }
+  const expectedBearer = `Bearer ${cronSecret.trim()}`;
+  const isHeaderValid = authHeader === expectedBearer;
+  const isParamValid = secretParam === cronSecret.trim();
+
+  if (!isHeaderValid && !isParamValid) {
+    console.warn('[Cron Auth Rejected] CRON_SECRET 인증 실패');
+    return NextResponse.json({ error: 'Unauthorized: Invalid CRON_SECRET' }, { status: 401 });
   }
 
   const rawKey = process.env.KIS_APPKEY || '';
