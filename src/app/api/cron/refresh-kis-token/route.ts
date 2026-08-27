@@ -57,6 +57,7 @@ async function handleCronTokenRefresh(request: NextRequest) {
   const baseUrl = process.env.KIS_BASE_URL || defaultBaseUrl;
 
   try {
+    console.log('[TOKEN-ISSUE-TRACE]', new Date().toISOString(), new Error().stack);
     console.log('[Vercel Cron KIS Token] KIS OpenAPI 서버로 신규 토큰 발급 요청 중...');
     const res = await fetch(`${baseUrl}/oauth2/tokenP`, {
       method: 'POST',
