@@ -33,6 +33,7 @@ yarn-error.log*
 # env & token files (can opt-in for committing if needed)
 .env*
 .kis_token*.json
+scratch/
 
 # vercel
 .vercel

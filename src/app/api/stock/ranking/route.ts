@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { fetchKisForeignInstitutionRanking, fetchOverlapRankingData, fetchConsecutive3dOverlapRankingData, fetchKisInvestorTrend } from '@/lib/kisApi';
+import { fetchKisForeignInstitutionRanking, fetchOverlapRankingData, fetchConsecutive3dOverlapRankingData, fetchKisInvestorTrend, getKisAccessTokenWithSource } from '@/lib/kisApi';
 import { getBatchRankingData } from '@/lib/batchCollector';
 import { MarketType, RankingDirection, RankingPeriod, RankingType } from '@/lib/types';
 
@@ -44,18 +44,29 @@ export async function GET(request: NextRequest) {
       ]).catch(() => null);
     }
 
+    const instanceId = process.env.VERCEL_DEPLOYMENT_ID || `pid-${process.pid}`;
+    const region = process.env.VERCEL_REGION || 'local-dev';
+    const tokenInfo = await getKisAccessTokenWithSource();
     const elapsedMs = Date.now() - routeStart;
-    console.log(`[PERF ROUTE END /api/stock/ranking] Total: ${elapsedMs}ms`);
+    console.log(`[PERF ROUTE END /api/stock/ranking] Total: ${elapsedMs}ms (Cache-Source: ${tokenInfo.source}, Instance: ${instanceId})`);
 
     return NextResponse.json(
       {
         ...responseData,
         initialTrend,
-        perf: { routeTotalMs: elapsedMs },
+        perf: {
+          routeTotalMs: elapsedMs,
+          cacheSource: tokenInfo.source,
+          instanceId,
+          region,
+        },
       },
       {
         headers: {
           'Cache-Control': 'no-store, max-age=0, must-revalidate',
+          'X-Cache-Source': tokenInfo.source,
+          'X-Instance-ID': instanceId,
+          'X-Vercel-Region': region,
         },
       }
     );

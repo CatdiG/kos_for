@@ -4,6 +4,7 @@ import path from 'path';
 import os from 'os';
 import { InvestorTrendDay, InvestorTrendResponse, KisTokenResponse, ProgramTradeIntradayPoint, ProgramTradeSummary, SupplySummary, TrendPeriod, InvestorRankingResponse, RankingItem, RankingDirection, RankingPeriod, RankingType, OverlapInvestorRank, MarketType, SurgingRankItem, ScoreBreakdown, SurgingMode, isEtfOrEtn } from './types';
 import { getStockName, resolveStockPriceAndChange, updateRuntimeStockPrice, resolveMarketType } from './mockData';
+import { fetchTokenFromSupabase } from './supabase';
 export { resolveStockPriceAndChange };
 
 interface TokenCacheData {
@@ -20,13 +21,52 @@ declare global {
 }
 
 // =================================================================
-// Pure Server Local File System & In-Memory Token Cache System
-// (100% Zero External Database Network Overhead / 0ms Latency)
+// External Shared Storage (Vercel KV / Upstash Redis REST API) & Distributed Lock
 // =================================================================
 
+// =================================================================
+// Pure Native HTTP fetch() Upstash REST Client (Zero External Dependencies)
+// =================================================================
+
+function getNativeRedisRestConfig() {
+  const restUrl = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL;
+  const restToken = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN;
+  if (restUrl && restToken && restUrl.trim() !== '' && restToken.trim() !== '') {
+    let sanitizedUrl = restUrl.trim();
+    if (!sanitizedUrl.startsWith('http://') && !sanitizedUrl.startsWith('https://')) {
+      sanitizedUrl = `https://${sanitizedUrl}`;
+    }
+    return {
+      hostUrl: sanitizedUrl.replace(/\/$/, ''),
+      password: restToken.trim(),
+    };
+  }
+
+  const redisUrl = process.env.REDIS_URL;
+  if (redisUrl && typeof redisUrl === 'string' && redisUrl.trim() !== '') {
+    try {
+      const cleanUrl = redisUrl.trim().replace(/^rediss?:\/\//i, '');
+      const [authPart, hostPart] = cleanUrl.split('@');
+      if (authPart && hostPart) {
+        const password = authPart.includes(':') ? authPart.split(':')[1] : authPart;
+        const host = hostPart.split(':')[0];
+        if (password && host) {
+          return {
+            hostUrl: `https://${host}`,
+            password: password.trim(),
+          };
+        }
+      }
+    } catch (e) {
+      console.error('[Redis Native REST] REDIS_URL 파싱 에러:', e);
+    }
+  }
+
+  return null;
+}
+
 const TOKEN_CACHE_KEY = Symbol.for('kis_token_cache_v2');
-const PRIMARY_LOCAL_TOKEN_FILE = path.join(process.cwd(), 'scratch', '.kis_token_cache.json');
-const FALLBACK_TMP_TOKEN_FILE = path.join(os.tmpdir(), '.kis_token_cache.json');
+const LOCAL_TOKEN_FILE = path.join(process.cwd(), 'scratch', '.kis_token_cache.json');
 
 function getGlobalTokenCache(): TokenCacheData | null {
   return (globalThis as any)[TOKEN_CACHE_KEY] || null;
@@ -37,95 +77,197 @@ function setGlobalTokenCache(cache: TokenCacheData): void {
 }
 
 function getLocalFileTokenCache(appKeyHash: string, allowExpired: boolean = false): TokenCacheData | null {
-  const filesToTry = [PRIMARY_LOCAL_TOKEN_FILE, FALLBACK_TMP_TOKEN_FILE];
-  for (const filePath of filesToTry) {
-    try {
-      if (fs.existsSync(filePath)) {
-        const text = fs.readFileSync(filePath, 'utf8');
-        const cache: TokenCacheData = JSON.parse(text);
-        if (cache && cache.access_token && (allowExpired || cache.expires_at > Date.now()) && (!cache.app_key_hash || cache.app_key_hash === appKeyHash)) {
-          return cache;
-        }
+  try {
+    if (fs.existsSync(LOCAL_TOKEN_FILE)) {
+      const text = fs.readFileSync(LOCAL_TOKEN_FILE, 'utf8');
+      const cache: TokenCacheData = JSON.parse(text);
+      if (cache && cache.access_token && (allowExpired || cache.expires_at > Date.now()) && cache.app_key_hash === appKeyHash) {
+        return cache;
       }
-    } catch (e) {
-      console.error(`[Local Cache Read Warning] ${filePath}:`, e);
     }
+  } catch (e) {
+    console.error('[Redis 에러] getLocalFileTokenCache 디스크 조회 오류:', e);
   }
   return null;
 }
 
 function saveLocalFileTokenCache(cache: TokenCacheData): void {
-  const filesToSave = [PRIMARY_LOCAL_TOKEN_FILE, FALLBACK_TMP_TOKEN_FILE];
-  for (const filePath of filesToSave) {
-    try {
-      const dir = path.dirname(filePath);
-      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(filePath, JSON.stringify(cache), 'utf8');
-      console.log(`[Local Cache Saved] 서버 로컬 파일에 토큰 안전 저장 성공 (0ms): ${filePath}`);
-    } catch (e) {
-      // Vercel Serverless environment fallback handles read-only root silently
-    }
+  try {
+    const dir = path.dirname(LOCAL_TOKEN_FILE);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(LOCAL_TOKEN_FILE, JSON.stringify(cache), 'utf8');
+  } catch (e) {
+    console.error('[Redis 에러] saveLocalFileTokenCache 디스크 저장 오류:', e);
   }
 }
 
-async function kvGetTokenCache(appKeyHash: string, allowExpired: boolean = false): Promise<TokenCacheData | null> {
+export type CacheSource = 'memory' | 'file' | 'supabase' | 'redis' | 'none';
+
+async function kvGetTokenCacheWithSource(appKeyHash: string, allowExpired: boolean = false): Promise<{ data: TokenCacheData | null; source: CacheSource }> {
   const now = Date.now();
-  // 1순위: 전역 메모리 캐시 (0ms)
+  // 1. Fast in-memory check (0ms)
   const mem = getGlobalTokenCache();
   if (mem && (allowExpired || mem.expires_at > now) && (!mem.app_key_hash || mem.app_key_hash === appKeyHash)) {
-    return mem;
+    return { data: mem, source: 'memory' };
   }
 
-  // 2순위: 서버 로컬 파일 캐시 (0ms)
+  // 2. Fast local disk file check (0ms)
   const fileCache = getLocalFileTokenCache(appKeyHash, allowExpired);
   if (fileCache) {
     setGlobalTokenCache(fileCache);
-    console.log('[KIS File Cache Hit] 서버 로컬 파일에서 24시간 유효 접근 토큰 사용 (신규 발급 0건, 0ms)');
-    return fileCache;
+    return { data: fileCache, source: 'file' };
   }
 
-  return getGlobalTokenCache() || getLocalFileTokenCache(appKeyHash, true);
+  // 3. Supabase DB Check (Read-Only)
+  try {
+    const supabaseToken = await fetchTokenFromSupabase();
+    if (supabaseToken && supabaseToken.access_token && (allowExpired || supabaseToken.expires_at > now)) {
+      const cacheData: TokenCacheData = {
+        access_token: supabaseToken.access_token,
+        expires_at: supabaseToken.expires_at,
+        app_key_hash: appKeyHash,
+      };
+      setGlobalTokenCache(cacheData);
+      saveLocalFileTokenCache(cacheData);
+      console.log('[Supabase DB Hit] Supabase에서 중앙 KIS 토큰 조회 성공');
+      return { data: cacheData, source: 'supabase' };
+    }
+  } catch (e: any) {
+    console.error('[Supabase DB 조회 예외]', e?.message || e);
+  }
+
+  const fallback = getGlobalTokenCache() || getLocalFileTokenCache(appKeyHash, true);
+  return { data: fallback, source: fallback ? 'file' : 'none' };
+}
+
+async function kvGetTokenCache(appKeyHash: string, allowExpired: boolean = false): Promise<TokenCacheData | null> {
+  const res = await kvGetTokenCacheWithSource(appKeyHash, allowExpired);
+  return res.data;
 }
 
 async function kvSaveTokenCache(cache: TokenCacheData): Promise<void> {
   setGlobalTokenCache(cache);
   saveLocalFileTokenCache(cache);
+
+  const ttlSec = Math.max(Math.floor((cache.expires_at - Date.now()) / 1000) - 300, 3600);
+  const jsonStr = JSON.stringify(cache);
+
+  // Pure Native HTTP fetch() Upstash REST POST Command Array Save (3s timeout)
+  const cfg = getNativeRedisRestConfig();
+  if (cfg) {
+    try {
+      const res = await fetch(cfg.hostUrl, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${cfg.password}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(['SET', `kis_token_${cache.app_key_hash}`, jsonStr, 'EX', ttlSec]),
+        cache: 'no-store',
+        signal: AbortSignal.timeout(3000),
+      });
+
+      if (!res.ok) {
+        const errorText = await res.text();
+        console.error(`[Redis REST 에러 HTTP ${res.status}] SET kis_token_${cache.app_key_hash} 거절 원인:`, errorText);
+      } else {
+        const json = await res.json();
+        console.log(`[KIS Native REST Saved] 순수 HTTP fetch()로 Redis 토큰 저장 완료 (Result: ${json.result}, TTL: ${ttlSec}초)`);
+      }
+    } catch (e: any) {
+      console.error('[Redis REST 에러] kvSaveTokenCache HTTP fetch 예외 발생:', e?.message || e);
+    }
+  }
 }
 
 async function kvAcquireDistributedLock(lockKey: string, ttlSec: number = 10): Promise<boolean> {
+  const cfg = getNativeRedisRestConfig();
+  if (cfg) {
+    try {
+      const res = await fetch(cfg.hostUrl, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${cfg.password}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(['SET', lockKey, 'locked', 'EX', ttlSec, 'NX']),
+        cache: 'no-store',
+        signal: AbortSignal.timeout(3000),
+      });
+      if (!res.ok) {
+        const errorText = await res.text();
+        console.error(`[Redis REST 에러 HTTP ${res.status}] SET Lock 거절 원인:`, errorText);
+      } else {
+        const json = await res.json();
+        if (json.result === 'OK') return true;
+      }
+    } catch (e: any) {}
+  }
   return true;
 }
 
-async function kvReleaseDistributedLock(lockKey: string): Promise<void> {}
+async function kvReleaseDistributedLock(lockKey: string): Promise<void> {
+  const cfg = getNativeRedisRestConfig();
+  if (cfg) {
+    try {
+      const res = await fetch(`${cfg.hostUrl}/del/${lockKey}`, {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${cfg.password}` },
+        cache: 'no-store',
+        signal: AbortSignal.timeout(3000),
+      });
+      if (!res.ok) {
+        const errorText = await res.text();
+        console.error(`[Redis REST 에러 HTTP ${res.status}] DEL Lock 거절 원인:`, errorText);
+      }
+    } catch (e: any) {}
+  }
+}
 
 async function kvGetJson<T>(key: string): Promise<T | null> {
-  const sanitizeKey = key.replace(/[^a-zA-Z0-9_-]/g, '_');
-  const primaryFile = path.join(process.cwd(), 'scratch', `.cache_${sanitizeKey}.json`);
-  const fallbackFile = path.join(os.tmpdir(), `.cache_${sanitizeKey}.json`);
-
-  for (const filePath of [primaryFile, fallbackFile]) {
+  const cfg = getNativeRedisRestConfig();
+  if (cfg) {
     try {
-      if (fs.existsSync(filePath)) {
-        const text = fs.readFileSync(filePath, 'utf8');
-        const data = JSON.parse(text) as T;
-        if (data) return data;
+      const res = await fetch(`${cfg.hostUrl}/get/${key}`, {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${cfg.password}` },
+        cache: 'no-store',
+        signal: AbortSignal.timeout(3000),
+      });
+      if (!res.ok) {
+        const errorText = await res.text();
+        console.error(`[Redis REST 에러 HTTP ${res.status}] GET ${key} 거절 원인:`, errorText);
+      } else {
+        const json = await res.json();
+        if (json.result !== null && json.result !== undefined) {
+          return typeof json.result === 'string' ? JSON.parse(json.result) : json.result;
+        }
       }
-    } catch (e) {}
+    } catch (e: any) {}
   }
   return null;
 }
 
 async function kvSetJson(key: string, data: any, ttlSec: number = 300): Promise<void> {
-  const sanitizeKey = key.replace(/[^a-zA-Z0-9_-]/g, '_');
-  const primaryFile = path.join(process.cwd(), 'scratch', `.cache_${sanitizeKey}.json`);
-  const fallbackFile = path.join(os.tmpdir(), `.cache_${sanitizeKey}.json`);
-
-  for (const filePath of [primaryFile, fallbackFile]) {
+  const jsonStr = JSON.stringify(data);
+  const cfg = getNativeRedisRestConfig();
+  if (cfg) {
     try {
-      const dir = path.dirname(filePath);
-      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(filePath, JSON.stringify(data), 'utf8');
-    } catch (e) {}
+      const res = await fetch(cfg.hostUrl, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${cfg.password}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(['SET', key, jsonStr, 'EX', ttlSec]),
+        cache: 'no-store',
+        signal: AbortSignal.timeout(3000),
+      });
+      if (!res.ok) {
+        const errorText = await res.text();
+        console.error(`[Redis REST 에러 HTTP ${res.status}] SET ${key} 거절 원인:`, errorText);
+      }
+    } catch (e: any) {}
   }
 }
 
@@ -133,121 +275,76 @@ async function kvMgetJson<T>(keys: string[]): Promise<Record<string, T | null>> 
   const result: Record<string, T | null> = {};
   if (!keys || keys.length === 0) return result;
 
-  for (const key of keys) {
-    result[key] = await kvGetJson<T>(key);
+  const cfg = getNativeRedisRestConfig();
+  if (cfg) {
+    try {
+      const res = await fetch(cfg.hostUrl, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${cfg.password}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(['MGET', ...keys]),
+        cache: 'no-store',
+        signal: AbortSignal.timeout(3000),
+      });
+      if (!res.ok) {
+        const errorText = await res.text();
+        console.error(`[Redis REST 에러 HTTP ${res.status}] MGET 거절 원인:`, errorText);
+      } else {
+        const json = await res.json();
+        if (Array.isArray(json.result)) {
+          json.result.forEach((rawVal: any, idx: number) => {
+            const k = keys[idx];
+            if (rawVal !== null && rawVal !== undefined) {
+              try {
+                result[k] = typeof rawVal === 'string' ? JSON.parse(rawVal) : rawVal;
+              } catch (e) {
+                result[k] = rawVal;
+              }
+            } else {
+              result[k] = null;
+            }
+          });
+          return result;
+        }
+      }
+    } catch (e: any) {}
   }
+
   return result;
 }
 
 /**
- * KIS OAuth 2.0 Access Token 발급 및 외부 공유 저장소(Vercel KV / Upstash Redis) 캐싱
+ * KIS OAuth Access Token 조회 (읽기 전용 - KIS OAuth 직접 요청 100% 차단)
+ * 신규 발급은 오직 Vercel Cron (/api/cron/refresh-kis-token) 라우트에서만 실행됨
  */
-export async function getKisAccessToken(): Promise<string | null> {
+export async function getKisAccessTokenWithSource(): Promise<{ token: string | null; source: CacheSource }> {
   const rawKey = process.env.KIS_APPKEY || '';
-  const rawSecret = process.env.KIS_APPSECRET || '';
   const appKey = rawKey.trim().replace(/^["']|["']$/g, '');
-  const appSecret = rawSecret.trim().replace(/^["']|["']$/g, '');
-
   const isVirtual = process.env.KIS_VIRTUAL === 'true';
-  const defaultBaseUrl = isVirtual 
-    ? 'https://openapivts.koreainvestment.com:29443' 
-    : 'https://openapi.koreainvestment.com:9443';
-  const baseUrl = process.env.KIS_BASE_URL || defaultBaseUrl;
-
-  if (!appKey || !appSecret || appKey === '' || appSecret === '') {
-    const missingMsg = `Vercel 설정에 KIS_APPKEY(${appKey ? '설정됨' : '미설정'}) 또는 KIS_APPSECRET(${appSecret ? '설정됨' : '미설정'})이 누락되었습니다.`;
-    console.warn(`[KIS API Warning] ${missingMsg}`);
-    globalThis.__lastKisOAuthError__ = missingMsg;
-    return null;
-  }
-
   const appKeyHash = `${appKey.slice(0, 6)}_${isVirtual ? 'vts' : 'real'}`;
 
-  // 1. Fast Memory & Local File & Redis Check (0ms)
-  const existingToken = await kvGetTokenCache(appKeyHash);
+  const { data: existingToken, source } = await kvGetTokenCacheWithSource(appKeyHash);
   if (existingToken && existingToken.access_token && existingToken.expires_at > Date.now()) {
-    return existingToken.access_token;
+    return { token: existingToken.access_token, source };
   }
 
-  // 2. Promise Lock for concurrent requests within the same process
-  if (globalThis.__kisTokenPromise__) {
-    return globalThis.__kisTokenPromise__;
+  const { data: fallbackToken, source: fallbackSource } = await kvGetTokenCacheWithSource(appKeyHash, true);
+  if (fallbackToken && fallbackToken.access_token) {
+    console.warn('[KIS API Read-Only] 유효기간 만료 임박/초과된 기존 토큰 사용 (Cron 갱신 수신 전)');
+    return { token: fallbackToken.access_token, source: fallbackSource };
   }
 
-  globalThis.__kisTokenPromise__ = (async () => {
-    try {
-      // Double check cache right before network call
-      const doubleCheck = await kvGetTokenCache(appKeyHash);
-      if (doubleCheck && doubleCheck.access_token && doubleCheck.expires_at > Date.now()) {
-        return doubleCheck.access_token;
-      }
+  const missingMsg = '[KIS API Read-Only Error] Supabase DB 및 캐시에 토큰이 없습니다. Cron/수동 발급이 필요합니다.';
+  console.error(missingMsg);
+  globalThis.__lastKisOAuthError__ = missingMsg;
+  return { token: null, source: 'none' };
+}
 
-      console.log('[KIS OAuth Request] KIS API 접근 토큰 신규 발급 요청 중...');
-      const res = await fetch(`${baseUrl}/oauth2/tokenP`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json; charset=utf-8',
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-        },
-        body: JSON.stringify({
-          grant_type: 'client_credentials',
-          appkey: appKey,
-          appsecret: appSecret,
-        }),
-        cache: 'no-store',
-        signal: AbortSignal.timeout(5000), // 5초 타임아웃 안심 장치 (무한 응답 대기 방지)
-      });
-
-      if (!res.ok) {
-        const errorText = await res.text();
-        console.error(`[KIS OAuth Error ${res.status}]`, errorText);
-        globalThis.__lastKisOAuthError__ = `[KIS OAuth HTTP ${res.status}] ${errorText}`;
-
-        const fallbackToken = await kvGetTokenCache(appKeyHash, true);
-        if (fallbackToken && fallbackToken.access_token) {
-          console.warn('[KIS OAuth Fallback] 한투 서버 오류/제한으로 기존 발급 토큰 안전 사용');
-          return fallbackToken.access_token;
-        }
-        return null;
-      }
-
-      const data: any = await res.json();
-      if (data && data.access_token) {
-        const expiresInSec = typeof data.expires_in === 'number' ? data.expires_in : parseInt(data.expires_in || '86400', 10);
-        const expiresAt = Date.now() + (expiresInSec * 1000); // 1000을 곱해 밀리초(ms) 단위로 정확히 24시간 뒤로 설정
-
-        console.log(`[KIS Token Info] 새 토큰 만료 시간: ${new Date(expiresAt).toISOString()} (현재로부터 약 ${(expiresInSec / 3600).toFixed(1)}시간 뒤)`);
-
-        const tokenCache: TokenCacheData = {
-          access_token: data.access_token,
-          expires_at: expiresAt,
-          app_key_hash: appKeyHash,
-        };
-
-        await kvSaveTokenCache(tokenCache);
-        console.log(`[KIS OAuth Success] 새로운 Access Token 발급 및 Redis 공유 저장소 저장 완료 (유효기간: ${expiresInSec}초)`);
-        return data.access_token;
-      } else {
-        const errStr = data.error_description || data.msg1 || data.error_code || 'Access token missing';
-        console.error('[KIS OAuth Error]', errStr);
-        globalThis.__lastKisOAuthError__ = `[KIS OAuth 응답 에러] ${errStr}`;
-
-        const fallbackToken = await kvGetTokenCache(appKeyHash, true);
-        if (fallbackToken && fallbackToken.access_token) return fallbackToken.access_token;
-        return null;
-      }
-    } catch (e: any) {
-      console.error('[KIS OAuth Exception]', e?.message || e);
-      globalThis.__lastKisOAuthError__ = `[KIS OAuth 예외] ${e?.message || e}`;
-      const fallbackToken = await kvGetTokenCache(appKeyHash, true);
-      if (fallbackToken && fallbackToken.access_token) return fallbackToken.access_token;
-      return null;
-    } finally {
-      globalThis.__kisTokenPromise__ = undefined;
-    }
-  })();
-
-  return globalThis.__kisTokenPromise__;
+export async function getKisAccessToken(): Promise<string | null> {
+  const res = await getKisAccessTokenWithSource();
+  return res.token;
 }
 
 export const getKisToken = getKisAccessToken;
@@ -510,8 +607,9 @@ async function executeKisInvestorTrendFetch(
     });
   }
 
-  let fullDailyItems: any[] = [];
-  try {
+  let dpJson: any = null;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, attempt === 1 ? 150 : 400));
     const dailyPriceRes = await fetch(dailyChartUrl, {
       method: 'GET',
       headers: {
@@ -523,16 +621,84 @@ async function executeKisInvestorTrendFetch(
         custtype: 'P',
       },
       cache: 'no-store',
-    });
+    }).catch(() => null);
 
-    if (dailyPriceRes.ok) {
-      const parsed = await dailyPriceRes.json();
+    if (dailyPriceRes && dailyPriceRes.ok) {
+      const parsed = await dailyPriceRes.json().catch(() => null);
       if (parsed && parsed.rt_cd === '0' && Array.isArray(parsed.output2) && parsed.output2.length > 0) {
-        fullDailyItems = parsed.output2.slice().reverse(); // Ascending date order
+        dpJson = parsed;
+        break;
       }
     }
-  } catch (e) {
-    console.warn(`[KIS Daily Price Fetch Warning] ${symbol}:`, e);
+  }
+
+  let fullDailyItems: any[] = [];
+  if (dpJson && dpJson.rt_cd === '0' && Array.isArray(dpJson.output2) && dpJson.output2.length > 0) {
+    const page1Ascending = dpJson.output2.slice().reverse(); // Ascending date
+    fullDailyItems = page1Ascending;
+        // Robust Pagination: Fetch preceding trading days until we have at least 120+ trading days for complete 60D MAs
+        const getObjDate = (item: any) => item?.stck_bsop_date || item?.bsop_date || item?.date || '';
+        let currentEnd = getObjDate(page1Ascending[0]);
+
+        for (let p = 2; p <= 4 && fullDailyItems.length < 120; p++) {
+          if (!currentEnd || currentEnd.length !== 8) break;
+          const py = parseInt(currentEnd.slice(0, 4), 10);
+          const pm = parseInt(currentEnd.slice(4, 6), 10) - 1;
+          const pd = parseInt(currentEnd.slice(6, 8), 10);
+          const pEndObj = new Date(py, pm, pd);
+          pEndObj.setDate(pEndObj.getDate() - 1);
+          const pEndDate = pEndObj.toISOString().slice(0, 10).replace(/-/g, '');
+
+          const pStartObj = new Date(pEndObj);
+          pStartObj.setDate(pStartObj.getDate() - 120);
+          const pStartDate = pStartObj.toISOString().slice(0, 10).replace(/-/g, '');
+
+          const pUrl = `${baseUrl}/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice?FID_COND_MRKT_DIV_CODE=J&FID_INPUT_ISCD=${symbol}&FID_INPUT_DATE_1=${pStartDate}&FID_INPUT_DATE_2=${pEndDate}&FID_PERIOD_DIV_CODE=D&FID_ORG_ADJ_PRC=0`;
+
+          await new Promise((r) => setTimeout(r, 250));
+          let pRes = await fetch(pUrl, {
+            method: 'GET',
+            headers: {
+              'content-type': 'application/json; charset=utf-8',
+              authorization: `Bearer ${token}`,
+              appkey: appKey,
+              appsecret: appSecret,
+              tr_id: 'FHKST03010100',
+              custtype: 'P',
+            },
+            cache: 'no-store',
+          }).catch(() => null);
+
+          if (pRes && pRes.ok) {
+            let pJson = await pRes.json().catch(() => null);
+            if (pJson && pJson.rt_cd !== '0' && (pJson.msg1?.includes('초당') || pJson.msg_cd === 'EGW00201')) {
+              await new Promise((r) => setTimeout(r, 500));
+              const retryRes = await fetch(pUrl, {
+                method: 'GET',
+                headers: {
+                  'content-type': 'application/json; charset=utf-8',
+                  authorization: `Bearer ${token}`,
+                  appkey: appKey,
+                  appsecret: appSecret,
+                  tr_id: 'FHKST03010100',
+                  custtype: 'P',
+                },
+                cache: 'no-store',
+              }).catch(() => null);
+              if (retryRes && retryRes.ok) pJson = await retryRes.json().catch(() => null);
+            }
+
+            if (pJson && pJson.rt_cd === '0' && Array.isArray(pJson.output2) && pJson.output2.length > 0) {
+              const pAscending = pJson.output2.slice().reverse();
+              fullDailyItems = [...pAscending, ...fullDailyItems];
+              currentEnd = getObjDate(pAscending[0]);
+            } else {
+              break;
+            }
+          } else {
+            break;
+          }
+        }
   }
 
   if (fullDailyItems.length === 0) {
@@ -982,7 +1148,7 @@ export async function mergeCreditStatusToRanking(items: RankingItem[]): Promise<
   }
 
   return items.map((item) => {
-    let isCreditAvailable = false;
+    let isCreditAvailable: boolean | undefined = undefined;
     if (isEtfOrEtn(item.name)) {
       isCreditAvailable = false;
     } else if (creditBatchStore.has(item.symbol)) {
@@ -990,7 +1156,7 @@ export async function mergeCreditStatusToRanking(items: RankingItem[]): Promise<
     } else if (creditStatusCache.has(item.symbol)) {
       isCreditAvailable = creditStatusCache.get(item.symbol)!.isCredit;
     } else {
-      isCreditAvailable = true; // Fallback for normal non-ETF stocks
+      isCreditAvailable = undefined; // Fallback for un-cached/unknown stocks (3-state: true/false/undefined)
     }
     return {
       ...item,
@@ -1055,10 +1221,7 @@ export async function fetchKisForeignInstitutionRanking(
     return res;
   } catch (err: any) {
     console.error('[KIS Ranking Queue Exception]', err);
-    const diskFallback = await kvGetJson<InvestorRankingResponse>(`kv_${cacheKey}`);
-    if (diskFallback && diskFallback.list && diskFallback.list.length > 0) {
-      return diskFallback;
-    }
+    if (redisRank) return redisRank;
     if (rankingCacheStore.has(cacheKey)) {
       console.warn(`[KIS Ranking Stale Cache Fallback] ${cacheKey} 마감/성공 실데이터 캐시 반환`);
       const cached = rankingCacheStore.get(cacheKey)!;
@@ -1068,15 +1231,7 @@ export async function fetchKisForeignInstitutionRanking(
         updatedAt: new Date().toISOString(),
       };
     }
-    console.warn(`[KIS Ranking Safe Fallback] KIS API 수신 실패로 빈 랭킹 데이터 안전 반환`);
-    return {
-      type,
-      direction,
-      period,
-      list: [],
-      lastBatchTime: '데이터 수집 대기 중',
-      updatedAt: new Date().toISOString(),
-    };
+    throw err;
   }
 }
 
@@ -1182,7 +1337,7 @@ async function executeKisForeignInstitutionRankingFetch(
         netBuyAmtEok,
         volume,
         ratioVsVolume,
-        isCreditAvailable: true,
+        isCreditAvailable: undefined,
       };
     });
 
@@ -1783,7 +1938,7 @@ async function executeKisSurgingStocksFetch(
       amountEok,
       volumeIncreaseRate,
       surgingMode: mode,
-      isCreditAvailable: true,
+      isCreditAvailable: undefined,
       type: 'surging',
     });
   });

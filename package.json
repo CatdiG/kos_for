@@ -8,6 +8,7 @@
     "start": "next start"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.112.4",
     "@tanstack/react-query": "^5.101.4",
     "clsx": "^2.1.1",
     "lucide-react": "^1.26.0",

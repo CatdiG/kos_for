@@ -991,9 +991,22 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
           )}
 
           {/* Ranking Table Content with Fixed Height & Internal Vertical Scroll */}
-          {isError ? (
+          {isLoading ? (
+            <div className="h-64 flex flex-col items-center justify-center gap-2 text-slate-400 dark:text-slate-500 text-xs animate-pulse">
+              <RefreshCw className="w-6 h-6 animate-spin" />
+              <span>{overlapMode === 'consecutive3d' ? '3일 연속 수급 교집합 데이터 분석 중...' : '매매 순위 데이터를 로딩하는 중입니다...'}</span>
+            </div>
+          ) : isError ? (
             <div className="p-6 text-center text-xs text-red-500 bg-red-50 dark:bg-red-950/20 rounded-xl border border-red-200 dark:border-red-900">
               랭킹 데이터를 불러오지 못했습니다. 다시 시도해 주세요.
+            </div>
+          ) : displayList.length === 0 ? (
+            <div className="p-8 text-center text-xs text-slate-400 dark:text-slate-500 bg-slate-50/50 dark:bg-[#1e222d]/30 rounded-xl border border-dashed border-slate-200 dark:border-[#2a2e39]">
+              {activeTab === 'overlap'
+                ? (overlapMode === 'consecutive3d'
+                    ? '3일 이상 연속 수급이 2개 이상 주체에서 동시에 진행 중인 종목이 없습니다.'
+                    : '조건에 부합하는 수급 교집합 종목 데이터가 없습니다.')
+                : `${activeTabLabel} ${isBuy ? '순매수' : '순매도'}${market !== 'ALL' ? ` (${market === 'KOSPI' ? '코스피' : '코스닥'})` : ''} 조건에 부합하는 종목 데이터가 없습니다.`}
             </div>
           ) : (
             /* Fixed Height Scroll Container */
@@ -1082,30 +1095,7 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-[#2a2e39]/60 font-mono">
-                  {isLoading ? (
-                    Array.from({ length: 10 }).map((_, idx) => (
-                      <tr key={`skeleton-${idx}`} className="animate-pulse h-12">
-                        <td className="p-2.5 text-center"><div className="w-5 h-4 mx-auto bg-slate-200 dark:bg-slate-700/60 rounded" /></td>
-                        <td className="p-2.5"><div className="w-24 h-4 bg-slate-200 dark:bg-slate-700/60 rounded" /></td>
-                        <td className="p-2.5 text-right"><div className="w-16 h-4 ml-auto bg-slate-200 dark:bg-slate-700/60 rounded" /></td>
-                        <td className="p-2.5 text-right"><div className="w-12 h-4 ml-auto bg-slate-200 dark:bg-slate-700/60 rounded" /></td>
-                        <td className="p-2.5 text-right"><div className="w-20 h-4 ml-auto bg-slate-200 dark:bg-slate-700/60 rounded" /></td>
-                        <td className="p-2.5 text-right"><div className="w-20 h-4 ml-auto bg-slate-200 dark:bg-slate-700/60 rounded" /></td>
-                        <td className="p-2.5 text-right"><div className="w-20 h-4 ml-auto bg-slate-200 dark:bg-slate-700/60 rounded" /></td>
-                      </tr>
-                    ))
-                  ) : displayList.length === 0 ? (
-                    <tr>
-                      <td colSpan={10} className="p-8 text-center text-xs text-slate-400 dark:text-slate-500">
-                        {activeTab === 'overlap'
-                          ? (overlapMode === 'consecutive3d'
-                              ? '3일 이상 연속 수급이 2개 이상 주체에서 동시에 진행 중인 종목이 없습니다.'
-                              : '조건에 부합하는 수급 교집합 종목 데이터가 없습니다.')
-                          : `${activeTabLabel} ${isBuy ? '순매수' : '순매도'}${market !== 'ALL' ? ` (${market === 'KOSPI' ? '코스피' : '코스닥'})` : ''} 조건에 부합하는 종목 데이터가 없습니다.`}
-                      </td>
-                    </tr>
-                  ) : (
-                    displayList.map((item) => {
+                  {displayList.map((item) => {
                     const liveQuote = quotesData?.quotes?.[item.symbol];
                     const priceInfo = liveQuote && liveQuote.currentPrice > 0
                       ? {
@@ -1587,7 +1577,7 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
                       )}
                     </React.Fragment>
                   );
-                }))}
+                  })}
                 </tbody>
               </table>
             </div>
