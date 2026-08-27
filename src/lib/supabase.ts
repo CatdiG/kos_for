@@ -58,7 +58,9 @@ export interface KisTokenRecord {
 export async function fetchTokenFromSupabase(): Promise<KisTokenRecord | null> {
   const client = getSupabaseAdmin() || getSupabasePublic();
   if (!client) {
-    console.warn('[Supabase Warning] SUPABASE_URL 또는 KEY가 설정되지 않아 DB 조회를 건너땁니다.');
+    const url = getSupabaseUrl();
+    const key = getSupabaseServiceKey();
+    console.warn(`[Supabase Warning] DB 조회를 건너땁니다. (URL 존재: ${Boolean(url)}, KEY 존재: ${Boolean(key)})`);
     return null;
   }
 
@@ -70,7 +72,7 @@ export async function fetchTokenFromSupabase(): Promise<KisTokenRecord | null> {
       .maybeSingle();
 
     if (error) {
-      console.error('[Supabase DB Read Error]', error.message);
+      console.error('[Supabase DB Read Error]', error.message, error.details || '');
       return null;
     }
 
@@ -81,6 +83,8 @@ export async function fetchTokenFromSupabase(): Promise<KisTokenRecord | null> {
         expires_at: expiresAtMs,
         updated_at: data.updated_at,
       };
+    } else {
+      console.warn('[Supabase DB Empty] kis_tokens 테이블에 id=1 레코드가 없거나 access_token이 비어있습니다.');
     }
   } catch (e: any) {
     console.error('[Supabase Exception]', e?.message || e);
