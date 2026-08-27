@@ -1,7 +1,6 @@
-import { NextRequest, NextResponse } from 'next/server';
-import { fetchKisSurgingStocks, fetchKisInvestorTrend } from '@/lib/kisApi';
+import { NextRequest, NextResponse, after } from 'next/server';
+import { fetchKisSurgingStocks, fetchKisInvestorTrend, resolveAndCacheMissingCredits } from '@/lib/kisApi';
 import { MarketType, SurgingMode } from '@/lib/types';
-// HMR re-eval
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -24,6 +23,17 @@ export async function GET(request: NextRequest) {
         fetchKisInvestorTrend(topSymbol, '60d'),
         new Promise((resolve) => setTimeout(() => resolve(null), 1200)),
       ]).catch(() => null);
+    }
+
+    if (data && Array.isArray(data.list)) {
+      const missingSymbols = data.list
+        .filter((item: any) => item.isCreditAvailable === undefined)
+        .map((item: any) => item.symbol);
+      if (missingSymbols.length > 0) {
+        after(async () => {
+          await resolveAndCacheMissingCredits(missingSymbols);
+        });
+      }
     }
 
     return NextResponse.json(

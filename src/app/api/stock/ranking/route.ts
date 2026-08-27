@@ -1,5 +1,5 @@
-import { NextRequest, NextResponse } from 'next/server';
-import { fetchKisForeignInstitutionRanking, fetchOverlapRankingData, fetchConsecutive3dOverlapRankingData, fetchKisInvestorTrend, getKisAccessTokenWithSource } from '@/lib/kisApi';
+import { NextRequest, NextResponse, after } from 'next/server';
+import { fetchKisForeignInstitutionRanking, fetchOverlapRankingData, fetchConsecutive3dOverlapRankingData, fetchKisInvestorTrend, getKisAccessTokenWithSource, resolveAndCacheMissingCredits } from '@/lib/kisApi';
 import { getBatchRankingData } from '@/lib/batchCollector';
 import { MarketType, RankingDirection, RankingPeriod, RankingType } from '@/lib/types';
 
@@ -49,6 +49,18 @@ export async function GET(request: NextRequest) {
     const tokenInfo = await getKisAccessTokenWithSource();
     const elapsedMs = Date.now() - routeStart;
     console.log(`[PERF ROUTE END /api/stock/ranking] Total: ${elapsedMs}ms (Cache-Source: ${tokenInfo.source}, Instance: ${instanceId})`);
+
+    // Next.js 15+ after() API: Send 0ms response first, then resolve & save missing credits in background on Vercel Serverless
+    if (responseData && Array.isArray(responseData.list)) {
+      const missingSymbols = responseData.list
+        .filter((item: any) => item.isCreditAvailable === undefined)
+        .map((item: any) => item.symbol);
+      if (missingSymbols.length > 0) {
+        after(async () => {
+          await resolveAndCacheMissingCredits(missingSymbols);
+        });
+      }
+    }
 
     return NextResponse.json(
       {

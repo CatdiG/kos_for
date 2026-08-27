@@ -127,3 +127,65 @@ export async function saveTokenToSupabase(accessToken: string, expiresAtMs: numb
     return false;
   }
 }
+
+/**
+ * Supabase DB kis_credits 테이블에서 여러 종목 신용상태 일괄 조회
+ */
+export async function fetchCreditBatchFromSupabase(symbols: string[]): Promise<Record<string, boolean>> {
+  const client = getSupabasePublic() || getSupabaseAdmin();
+  if (!client || !symbols || symbols.length === 0) return {};
+
+  try {
+    const { data, error } = await client
+      .from('kis_credits')
+      .select('symbol, is_credit')
+      .in('symbol', symbols);
+
+    if (error) {
+      console.warn('[Supabase kis_credits Read Error]', error.message);
+      return {};
+    }
+
+    const resultMap: Record<string, boolean> = {};
+    if (data) {
+      data.forEach((row: any) => {
+        if (row.symbol) {
+          resultMap[row.symbol] = Boolean(row.is_credit);
+        }
+      });
+    }
+    return resultMap;
+  } catch (e: any) {
+    return {};
+  }
+}
+
+/**
+ * Supabase DB kis_credits 테이블에 여러 종목 신용상태 일괄 UPSERT 저장
+ */
+export async function saveCreditBatchToSupabase(entries: Array<{ symbol: string; is_credit: boolean }>): Promise<boolean> {
+  const client = getSupabaseAdmin() || getSupabasePublic();
+  if (!client || !entries || entries.length === 0) return false;
+
+  try {
+    const records = entries.map((e) => ({
+      symbol: e.symbol,
+      is_credit: e.is_credit,
+      updated_at: new Date().toISOString(),
+    }));
+
+    const { error } = await client
+      .from('kis_credits')
+      .upsert(records, { onConflict: 'symbol' });
+
+    if (error) {
+      console.error('[Supabase kis_credits Save Error]', error.message);
+      return false;
+    }
+    return true;
+  } catch (e: any) {
+    console.error('[Supabase kis_credits Save Exception]', e?.message || e);
+    return false;
+  }
+}
+

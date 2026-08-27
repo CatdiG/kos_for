@@ -4,7 +4,7 @@ import path from 'path';
 import os from 'os';
 import { InvestorTrendDay, InvestorTrendResponse, KisTokenResponse, ProgramTradeIntradayPoint, ProgramTradeSummary, SupplySummary, TrendPeriod, InvestorRankingResponse, RankingItem, RankingDirection, RankingPeriod, RankingType, OverlapInvestorRank, MarketType, SurgingRankItem, ScoreBreakdown, SurgingMode, isEtfOrEtn } from './types';
 import { getStockName, resolveStockPriceAndChange, updateRuntimeStockPrice, resolveMarketType } from './mockData';
-import { fetchTokenFromSupabase } from './supabase';
+import { fetchTokenFromSupabase, fetchCreditBatchFromSupabase, saveCreditBatchToSupabase } from './supabase';
 export { resolveStockPriceAndChange };
 
 interface TokenCacheData {
@@ -1137,32 +1137,30 @@ export async function mergeCreditStatusToRanking(items: RankingItem[]): Promise<
     }
   });
 
-  // 3. Batch Redis MGET check for missing symbols
+  // 3. Batch Supabase DB & Redis check for missing symbols
   if (missingSymbols.length > 0) {
-    const keys = missingSymbols.map((sym) => `kv_credit_${sym}`);
-    const redisMap = await kvMgetJson<boolean>(keys);
     const stillMissing: string[] = [];
+
+    // 3a. Supabase DB Check (Instant DB Read)
+    const supabaseMap = await fetchCreditBatchFromSupabase(missingSymbols);
     missingSymbols.forEach((sym) => {
-      const val = redisMap[`kv_credit_${sym}`];
-      if (val !== null && val !== undefined) {
-        creditStatusCache.set(sym, { isCredit: val, timestamp: Date.now() });
+      if (supabaseMap[sym] !== undefined) {
+        creditStatusCache.set(sym, { isCredit: supabaseMap[sym], timestamp: Date.now() });
       } else {
         stillMissing.push(sym);
       }
     });
 
-    // 4. Fetch any completely un-cached new stock from KIS asynchronously in background (NON-BLOCKING)
+    // 3b. Redis fallback check if still missing
     if (stillMissing.length > 0) {
-      Promise.all(
-        stillMissing.map(async (sym) => {
-          try {
-            const isCredit = await fetchKisCreditAvailable(sym);
-            if (isCredit !== undefined) {
-              creditStatusCache.set(sym, { isCredit, timestamp: Date.now() });
-            }
-          } catch (e) {}
-        })
-      ).catch(() => {});
+      const keys = stillMissing.map((sym) => `kv_credit_${sym}`);
+      const redisMap = await kvMgetJson<boolean>(keys);
+      stillMissing.forEach((sym) => {
+        const val = redisMap[`kv_credit_${sym}`];
+        if (val !== null && val !== undefined) {
+          creditStatusCache.set(sym, { isCredit: val, timestamp: Date.now() });
+        }
+      });
     }
   }
 
@@ -1170,6 +1168,33 @@ export async function mergeCreditStatusToRanking(items: RankingItem[]): Promise<
     ...item,
     isCreditAvailable: getEvaluatedCreditStatus(item.symbol, item.name),
   }));
+}
+
+/**
+ * Next.js after() 콜백에서 호출되는 백그라운드 KIS 신용조회 및 Supabase DB 저장 함수
+ */
+export async function resolveAndCacheMissingCredits(symbols: string[]): Promise<void> {
+  if (!symbols || symbols.length === 0) return;
+  const unCached = symbols.filter((sym) => !creditStatusCache.has(sym) && !creditBatchStore.has(sym));
+  if (unCached.length === 0) return;
+
+  const entries: Array<{ symbol: string; is_credit: boolean }> = [];
+  await Promise.all(
+    unCached.map(async (sym) => {
+      try {
+        const isCredit = await fetchKisCreditAvailable(sym);
+        if (isCredit !== undefined) {
+          creditStatusCache.set(sym, { isCredit, timestamp: Date.now() });
+          entries.push({ symbol: sym, is_credit: isCredit });
+        }
+      } catch (e) {}
+    })
+  );
+
+  if (entries.length > 0) {
+    const saved = await saveCreditBatchToSupabase(entries);
+    console.log(`[Supabase kis_credits Saved] ${entries.length}개 종목 신용상태 DB 저장 완료 (성공: ${saved})`);
+  }
 }
 
 /**
