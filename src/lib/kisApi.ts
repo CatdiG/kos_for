@@ -1179,17 +1179,22 @@ export async function resolveAndCacheMissingCredits(symbols: string[]): Promise<
   if (unCached.length === 0) return;
 
   const entries: Array<{ symbol: string; is_credit: boolean }> = [];
-  await Promise.all(
-    unCached.map(async (sym) => {
-      try {
-        const isCredit = await fetchKisCreditAvailable(sym);
-        if (isCredit !== undefined) {
-          creditStatusCache.set(sym, { isCredit, timestamp: Date.now() });
-          entries.push({ symbol: sym, is_credit: isCredit });
-        }
-      } catch (e) {}
-    })
-  );
+  const chunkSize = 5; // 5개씩 병렬 묶음 처리하여 KIS EGW00201 초당 건수제한 무해성 보장
+
+  for (let i = 0; i < unCached.length; i += chunkSize) {
+    const chunk = unCached.slice(i, i + chunkSize);
+    await Promise.all(
+      chunk.map(async (sym) => {
+        try {
+          const isCredit = await fetchKisCreditAvailable(sym);
+          if (isCredit !== undefined) {
+            creditStatusCache.set(sym, { isCredit, timestamp: Date.now() });
+            entries.push({ symbol: sym, is_credit: isCredit });
+          }
+        } catch (e) {}
+      })
+    );
+  }
 
   if (entries.length > 0) {
     const saved = await saveCreditBatchToSupabase(entries);
