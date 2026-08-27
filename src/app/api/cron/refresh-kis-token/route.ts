@@ -57,7 +57,7 @@ async function handleCronTokenRefresh(request: NextRequest) {
   const baseUrl = process.env.KIS_BASE_URL || defaultBaseUrl;
 
   try {
-    console.log('[TOKEN-ISSUE-TRACE]', new Date().toISOString(), new Error().stack);
+    console.log('[TOKEN-ISSUE-TRACE:START]', new Date().toISOString(), new Error().stack);
     console.log('[Vercel Cron KIS Token] KIS OpenAPI 서버로 신규 토큰 발급 요청 중...');
     const res = await fetch(`${baseUrl}/oauth2/tokenP`, {
       method: 'POST',
@@ -85,6 +85,7 @@ async function handleCronTokenRefresh(request: NextRequest) {
 
     const data: any = await res.json();
     if (data && data.access_token) {
+      console.log('[TOKEN-ISSUE-TRACE:FETCH-SUCCESS]', new Date().toISOString(), `Access Token received (Length: ${data.access_token.length})`);
       const expiresInSec = typeof data.expires_in === 'number' ? data.expires_in : parseInt(data.expires_in || '86400', 10);
       const expiresAt = Date.now() + expiresInSec * 1000;
       const appKeyHash = `${appKey.slice(0, 6)}_${isVirtual ? 'vts' : 'real'}`;
@@ -109,6 +110,7 @@ async function handleCronTokenRefresh(request: NextRequest) {
 
       // 3. Supabase DB Save (id=1 UPSERT)
       const supabaseSaved = await saveTokenToSupabase(data.access_token, expiresAt);
+      console.log('[TOKEN-ISSUE-TRACE:SUPABASE-SAVE]', new Date().toISOString(), `Supabase Save Result: ${supabaseSaved ? 'SUCCESS' : 'FAILED'}`);
 
       console.log(`[Cron Token Refresh Success] 토큰 신규 발급 완료 (Supabase 저장: ${supabaseSaved ? '성공' : '실패'})`);
 

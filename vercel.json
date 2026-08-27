@@ -2,7 +2,7 @@
   "crons": [
     {
       "path": "/api/cron/refresh-kis-token",
-      "schedule": "0 */23 * * *"
+      "schedule": "0 22 * * *"
     }
   ]
 }
