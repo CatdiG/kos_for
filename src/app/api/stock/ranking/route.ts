@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse, after } from 'next/server';
 import { fetchKisForeignInstitutionRanking, fetchOverlapRankingData, fetchConsecutive3dOverlapRankingData, fetchKisInvestorTrend, getKisAccessTokenWithSource, resolveAndCacheMissingCredits, mergeCreditStatusToRanking } from '@/lib/kisApi';
-import { getBatchRankingData } from '@/lib/batchCollector';
+import { getBatchRankingData, getBatchRankingDataAsync } from '@/lib/batchCollector';
 import { MarketType, RankingDirection, RankingPeriod, RankingType } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
@@ -14,7 +14,7 @@ export async function GET(request: NextRequest) {
   const direction = (searchParams.get('direction') as RankingDirection) || 'buy';
   const period = (searchParams.get('period') as RankingPeriod) || '1d';
   const mode = searchParams.get('mode') || 'daily';
-  const limit = parseInt(searchParams.get('limit') || '20', 10);
+  const limit = parseInt(searchParams.get('limit') || '50', 10);
   const market = (searchParams.get('market') as MarketType) || 'ALL';
 
   console.log(`[PERF ROUTE START /api/stock/ranking] type=${type}, direction=${direction}, period=${period}, market=${market}`);
@@ -28,24 +28,17 @@ export async function GET(request: NextRequest) {
         responseData = await fetchOverlapRankingData(direction, period, 2, limit, market);
       }
     } else if (type === 'foreign' || type === 'organ') {
-      responseData = await fetchKisForeignInstitutionRanking(type, direction, period, market);
+      responseData = await fetchKisForeignInstitutionRanking(type, direction, period, market, limit);
     } else if (type === 'pension' || type === 'program') {
-      responseData = getBatchRankingData(type, direction, period, market);
+      responseData = await getBatchRankingDataAsync(type, direction, period, market, limit);
       if (responseData && Array.isArray(responseData.list)) {
-        await mergeCreditStatusToRanking(responseData.list);
+        responseData.list = await mergeCreditStatusToRanking(responseData.list);
       }
     } else {
-      responseData = await fetchKisForeignInstitutionRanking('foreign', direction, period, market);
+      responseData = await fetchKisForeignInstitutionRanking('foreign', direction, period, market, limit);
     }
 
     let initialTrend: any = null;
-    if (responseData && Array.isArray(responseData.list) && responseData.list.length > 0 && responseData.list[0].symbol) {
-      const topSymbol = responseData.list[0].symbol;
-      initialTrend = await Promise.race([
-        fetchKisInvestorTrend(topSymbol, '60d'),
-        new Promise((resolve) => setTimeout(() => resolve(null), 1200)),
-      ]).catch(() => null);
-    }
 
     const instanceId = process.env.VERCEL_DEPLOYMENT_ID || `pid-${process.pid}`;
     const region = process.env.VERCEL_REGION || 'local-dev';
@@ -59,9 +52,13 @@ export async function GET(request: NextRequest) {
         .filter((item: any) => item.isCreditAvailable === undefined)
         .map((item: any) => item.symbol);
       if (missingSymbols.length > 0) {
-        after(async () => {
-          await resolveAndCacheMissingCredits(missingSymbols);
-        });
+        if (typeof after === 'function') {
+          after(async () => {
+            await resolveAndCacheMissingCredits(missingSymbols);
+          });
+        } else {
+          resolveAndCacheMissingCredits(missingSymbols).catch(() => null);
+        }
       }
     }
 

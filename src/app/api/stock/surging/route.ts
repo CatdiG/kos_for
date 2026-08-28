@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse, after } from 'next/server';
-import { fetchKisSurgingStocks, fetchKisInvestorTrend, resolveAndCacheMissingCredits } from '@/lib/kisApi';
+import { fetchKisSurgingStocks, fetchKisInvestorTrend, resolveAndCacheMissingCredits, mergeCreditStatusToRanking } from '@/lib/kisApi';
 import { MarketType, SurgingMode } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
@@ -16,6 +16,9 @@ export async function GET(request: NextRequest) {
 
   try {
     const data = await fetchKisSurgingStocks(mode, market);
+    if (data && Array.isArray(data.list)) {
+      data.list = await mergeCreditStatusToRanking(data.list);
+    }
     let initialTrend: any = null;
     if (data && Array.isArray(data.list) && data.list.length > 0 && data.list[0].symbol) {
       const topSymbol = data.list[0].symbol;

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { fetchKisForeignInstitutionRanking, fetchOverlapRankingData, fetchConsecutive3dOverlapRankingData } from '@/lib/kisApi';
-import { getBatchRankingData } from '@/lib/batchCollector';
+import { getBatchRankingData, getBatchRankingDataAsync } from '@/lib/batchCollector';
 import { MarketType, RankingDirection, RankingPeriod, RankingType } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
@@ -32,7 +32,7 @@ export async function GET(
     } else if (type === 'foreign' || type === 'organ') {
       responseData = await fetchKisForeignInstitutionRanking(type, direction, period, market, limit);
     } else if (type === 'pension' || type === 'program') {
-      responseData = getBatchRankingData(type, direction, period, market);
+      responseData = await getBatchRankingDataAsync(type, direction, period, market);
     } else {
       responseData = await fetchKisForeignInstitutionRanking('foreign', direction, period, market, limit);
     }

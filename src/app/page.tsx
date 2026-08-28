@@ -7,8 +7,9 @@ import Header from '@/components/Header';
 import StockSearch from '@/components/StockSearch';
 import SupplySummaryCards from '@/components/SupplySummaryCards';
 import InvestorRankingTable from '@/components/InvestorRankingTable';
+import RankingStockDetailChart from '@/components/RankingStockDetailChart';
 import { InvestorTrendResponse, RankingItem, TrendPeriod } from '@/lib/types';
-import { AlertCircle, RefreshCw } from 'lucide-react';
+import { AlertCircle, RefreshCw, X } from 'lucide-react';
 
 async function fetchInvestorTrend(symbol: string, period: TrendPeriod): Promise<InvestorTrendResponse> {
   const res = await fetch(`/api/stock/investor-trend?symbol=${symbol}&period=${period}`);
@@ -23,6 +24,7 @@ export default function DashboardPage() {
   const [symbol, setSymbol] = useState<string>('');
   const [period, setPeriod] = useState<TrendPeriod>('60d');
   const [selectedStockItem, setSelectedStockItem] = useState<RankingItem | undefined>();
+  const [isSearchedStockOpen, setIsSearchedStockOpen] = useState<boolean>(false);
 
   const {
     data,
@@ -52,6 +54,7 @@ export default function DashboardPage() {
           onSelectSymbol={(newSym) => {
             setSymbol(newSym);
             setSelectedStockItem(undefined);
+            setIsSearchedStockOpen(true);
           }}
           onRefresh={() => refetch()}
           isFetching={isFetching}
@@ -74,39 +77,56 @@ export default function DashboardPage() {
           </div>
         )}
 
-        {/* Loading State Skeletons (Initial Load Only) */}
-        {isLoading && !data ? (
-          <div className="space-y-6 animate-pulse">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div className="h-44 bg-white dark:bg-[#131722] rounded-xl border border-slate-200 dark:border-[#2a2e39] shadow-sm" />
-              <div className="h-44 bg-white dark:bg-[#131722] rounded-xl border border-slate-200 dark:border-[#2a2e39] shadow-sm" />
-              <div className="h-44 bg-white dark:bg-[#131722] rounded-xl border border-slate-200 dark:border-[#2a2e39] shadow-sm" />
-            </div>
-            <div className="h-96 bg-white dark:bg-[#131722] rounded-xl border border-slate-200 dark:border-[#2a2e39] shadow-sm" />
-            <div className="h-80 bg-white dark:bg-[#131722] rounded-xl border border-slate-200 dark:border-[#2a2e39] shadow-sm" />
-          </div>
-        ) : (
-          <>
-            {/* 4 Summary Cards (Foreigner, Institution, Pension Fund, Program Trading) */}
-            <SupplySummaryCards
-              summary={data?.summary}
-              programTrade={data?.programTrade}
-              stockInfo={data?.stockInfo}
-              selectedStockItem={selectedStockItem}
-              isLoading={isLoading}
-            />
+        {/* 4 Summary Cards (Foreigner, Institution, Pension Fund, Program Trading) */}
+        <SupplySummaryCards
+          summary={data?.summary}
+          programTrade={data?.programTrade}
+          stockInfo={data?.stockInfo}
+          selectedStockItem={selectedStockItem}
+          isLoading={isLoading || !data}
+        />
 
-            {/* Investor Type Ranking Table & Side-by-side Unified Main Stock Detail Chart */}
-            <InvestorRankingTable
-              selectedSymbol={symbol}
-              chartData={data}
-              onSelectSymbol={(sym, item) => {
-                setSymbol(sym);
-                setSelectedStockItem(item);
-              }}
+        {/* Searched Stock Full Main Detail Chart Panel (Opens ONLY on StockSearch search) */}
+        {isSearchedStockOpen && symbol && data && (
+          <div className="relative bg-white dark:bg-[#131722] border border-slate-200 dark:border-[#2a2e39] rounded-2xl p-4 sm:p-6 shadow-xl transition-all duration-300 space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-[#2a2e39]">
+              <div className="flex items-center gap-2">
+                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-red-600 text-white font-black text-xs shadow-xs">
+                  🔍 검색 종목 분석 전용 대형 차트
+                </span>
+                <span className="text-xs text-slate-500 dark:text-slate-400 font-medium">
+                  (검색된 종목의 60d/20d/5d 캔들차트, 이격도, 단기과열 및 7대 수급지표 전체 종합 분석)
+                </span>
+              </div>
+              <button
+                onClick={() => setIsSearchedStockOpen(false)}
+                className="px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-[#1e222d] dark:hover:bg-[#2a2e39] text-slate-600 dark:text-slate-300 font-bold text-xs transition flex items-center gap-1 cursor-pointer shadow-2xs"
+              >
+                <span>차트 닫기</span>
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <RankingStockDetailChart
+              symbol={symbol}
+              data={data}
+              isLoading={isLoading}
+              period={period}
+              onPeriodChange={(newPeriod) => setPeriod(newPeriod)}
             />
-          </>
+          </div>
         )}
+
+        {/* Investor Type Ranking Table & Side-by-side Unified Main Stock Detail Chart */}
+        <InvestorRankingTable
+          selectedSymbol={symbol}
+          chartData={data}
+          onSelectSymbol={(sym, item) => {
+            setSymbol(sym);
+            setSelectedStockItem(item);
+            setIsSearchedStockOpen(false);
+          }}
+        />
       </main>
 
       {/* Footer */}

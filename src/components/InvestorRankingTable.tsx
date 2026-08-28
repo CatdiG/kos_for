@@ -47,7 +47,7 @@ async function fetchRanking(
   direction: RankingDirection,
   period: RankingPeriod,
   mode: 'daily' | 'consecutive3d' = 'daily',
-  limit: number = 20,
+  limit: number = 50,
   market: MarketType = 'ALL'
 ): Promise<InvestorRankingResponse> {
   const res = await fetch(
@@ -66,13 +66,14 @@ function getIntradaySnapshotNoticeText(hasRealData: boolean): string {
   const minutes = now.getMinutes();
   const timeNum = hours * 100 + minutes;
 
-  if (!hasRealData) {
-    let targetTimeStr = '09:30';
-    if (timeNum >= 930 && timeNum < 1120) targetTimeStr = '11:20';
-    else if (timeNum >= 1120 && timeNum < 1320) targetTimeStr = '13:20';
-    else if (timeNum >= 1320 && timeNum < 1430) targetTimeStr = '14:30';
+  let targetTimeStr = '09:30';
+  if (timeNum >= 930 && timeNum < 1120) targetTimeStr = '11시 20분';
+  else if (timeNum >= 1120 && timeNum < 1320) targetTimeStr = '오후 1시 20분';
+  else if (timeNum >= 1320 && timeNum < 1430) targetTimeStr = '오후 2시 30분';
+  else targetTimeStr = '내일 오전 09시 30분';
 
-    return `⏳ 한투 API 장중가집계 스냅샷 갱신 대기 중 (09:30, 11:20, 13:20, 14:30 고시. KIS 서버 반영 지연 시 5~10분 소요될 수 있습니다. / 다음 예정: ${targetTimeStr})`;
+  if (!hasRealData) {
+    return `ℹ️ 현재 KIS API 당일 장중가집계 미정산 상태입니다 (직전 장마감 8/27 기준 표시 중 / 다음 갱신 예정: ${targetTimeStr})`;
   }
 
   if (timeNum < 930) {
@@ -96,7 +97,7 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
   const [sortField, setSortField] = useState<keyof RankingItem>('netBuyAmt');
   const [sortAsc, setSortAsc] = useState<boolean>(false);
   const [overlapMode, setOverlapMode] = useState<'daily' | 'consecutive3d'>('daily');
-  const [overlapLimit, setOverlapLimit] = useState<number>(20);
+  const [overlapLimit, setOverlapLimit] = useState<number>(50);
   const [creditOnly, setCreditOnly] = useState<boolean>(false);
   const [surgingMode, setSurgingMode] = useState<SurgingMode>('fluctuation');
 
@@ -107,6 +108,8 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
 
   const selectedSymbol = propSelectedSymbol || internalSymbol;
   const isSurging = activeTab === 'surging' || activeTab === 'comprehensive';
+
+  const queryClient = useQueryClient();
 
   const { data, isLoading, isError, refetch, isFetching } = useQuery<InvestorRankingResponse>({
     queryKey: isSurging
@@ -131,15 +134,34 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
       }
       return fetchRanking(activeTab, direction, period, overlapMode, overlapLimit, market);
     },
-    refetchInterval: (query) => {
-      const list = query.state.data?.list;
-      const hasPending = list?.some((item: any) => item.isCreditAvailable === undefined) ?? false;
-      return hasPending ? 3000 : false;
-    },
-    placeholderData: (previousData) => previousData,
+    staleTime: 30 * 1000, // 30s cache staleTime for 0ms instant tab switching
+    gcTime: 10 * 60 * 1000,
   });
 
-  const queryClient = useQueryClient();
+  // Smart hover-based prefetching: Only prefetches the target tab when the user hovers over its button
+  const handleTabHover = (tab: RankingType) => {
+    if (tab === activeTab) return;
+    const key = tab === 'surging' || tab === 'comprehensive'
+      ? ['surging', tab === 'comprehensive' ? 'comprehensive' : surgingMode, market]
+      : ['ranking', tab, direction, period, overlapMode, overlapLimit, market];
+
+    queryClient.prefetchQuery({
+      queryKey: key,
+      queryFn: async () => {
+        if (tab === 'comprehensive') {
+          const res = await fetch(`/api/stock/surging?mode=comprehensive&market=${market}`);
+          return res.json();
+        }
+        if (tab === 'surging') {
+          const res = await fetch(`/api/stock/surging?mode=${surgingMode}&market=${market}`);
+          return res.json();
+        }
+        return fetchRanking(tab, direction, period, overlapMode, overlapLimit, market);
+      },
+      staleTime: 30 * 1000,
+    });
+  };
+
   const hasInitializedRef = useRef<boolean>(false);
 
   useEffect(() => {
@@ -376,11 +398,10 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
         }
       }
       if (activeTab === 'overlap') {
-        const countA = a.overlapCount || 0;
-        const countB = b.overlapCount || 0;
-        if (countB !== countA) {
-          return countB - countA;
+        if (Math.abs(b.netBuyAmt - a.netBuyAmt) > 0.01) {
+          return isBuy ? b.netBuyAmt - a.netBuyAmt : a.netBuyAmt - b.netBuyAmt;
         }
+        return (b.overlapCount || 0) - (a.overlapCount || 0);
       }
       return isBuy ? b.netBuyAmt - a.netBuyAmt : a.netBuyAmt - b.netBuyAmt;
     }
@@ -664,6 +685,7 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
                     type="button"
                     key={tab.id}
                     onClick={() => handleTabChange(tab.id)}
+                    onMouseEnter={() => handleTabHover(tab.id)}
                     className={`px-3 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 whitespace-nowrap border cursor-pointer shrink-0 ${
                       isActive
                         ? isOverlapTab
@@ -970,26 +992,10 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
                 </button>
               </div>
 
-              {/* Overlap Top Limit Filter (Right) */}
-              <div className="bg-slate-100 dark:bg-[#1e222d] p-1 rounded-xl flex items-center text-xs font-medium border border-slate-200/60 dark:border-[#2a2e39] gap-0.5 shrink-0">
-                <span className="text-[10px] text-slate-400 font-bold px-1 shrink-0">탐색범위:</span>
-                {([10, 20, 30, 50] as number[]).map((limitVal) => {
-                  const isActive = overlapLimit === limitVal;
-                  return (
-                    <button
-                      type="button"
-                      key={limitVal}
-                      onClick={() => setOverlapLimit(limitVal)}
-                      className={`px-2 py-0.5 rounded-lg text-xs transition cursor-pointer font-bold whitespace-nowrap ${
-                        isActive
-                          ? 'bg-purple-600 text-white shadow-xs font-black'
-                          : 'text-slate-600 dark:text-gray-400 hover:text-slate-900 dark:hover:text-white font-semibold'
-                      }`}
-                    >
-                      {limitVal === 50 ? 'Top 50(전체)' : `Top ${limitVal}`}
-                    </button>
-                  );
-                })}
+              {/* Dynamic Overlap Total Count Badge */}
+              <div className="bg-purple-100/80 dark:bg-purple-950/40 text-purple-700 dark:text-purple-300 px-3 py-1 rounded-xl flex items-center text-xs font-bold border border-purple-200 dark:border-purple-800/50 gap-1.5 shrink-0 shadow-2xs">
+                <Flame className="w-3.5 h-3.5 text-purple-600 dark:text-purple-400 shrink-0" />
+                <span>당일 교집합: <strong className="text-purple-900 dark:text-purple-100 font-black">{displayList.length}개 종목</strong> 포착</span>
               </div>
             </div>
           )}
@@ -1023,14 +1029,9 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
                     <th className="p-2.5 whitespace-nowrap min-w-[110px] sticky top-0 z-10 bg-slate-100 dark:bg-[#1a1e29]">종목명</th>
 
                     {activeTab === 'overlap' ? (
-                      <>
-                        <th className="p-2.5 whitespace-nowrap min-w-[110px] sticky top-0 z-10 bg-slate-100 dark:bg-[#1a1e29]">
-                          중복수급
-                        </th>
-                        <th className="p-2.5 whitespace-nowrap min-w-[200px] sticky top-0 z-10 bg-slate-100 dark:bg-[#1a1e29]">
-                          {overlapMode === 'consecutive3d' ? '주체별 수급액' : '주체별 상세 순위'}
-                        </th>
-                      </>
+                      <th className="p-2.5 whitespace-nowrap min-w-[200px] sticky top-0 z-10 bg-slate-100 dark:bg-[#1a1e29]">
+                        {overlapMode === 'consecutive3d' ? '주체별 연속 순매수' : '주체별 상세 순위'}
+                      </th>
                     ) : null}
 
                     {isComprehensive ? (
@@ -1133,19 +1134,85 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
                         {/* 순위 */}
                         <td className="p-2.5 text-center font-bold whitespace-nowrap">
                           <div className="flex flex-row items-center justify-center gap-1 whitespace-nowrap">
-                            <span
-                              className={`inline-flex items-center justify-center w-5 h-5 rounded-md text-[10px] shrink-0 ${
-                                item.rank === 1
-                                  ? 'bg-amber-500 text-white font-black shadow-xs'
-                                  : item.rank === 2
-                                  ? 'bg-slate-400 text-white font-bold'
-                                  : item.rank === 3
-                                  ? 'bg-amber-700 text-white font-bold'
-                                  : 'text-slate-500 dark:text-slate-400'
-                              }`}
-                            >
-                              {item.rank}
-                            </span>
+                            <div className="relative inline-flex items-center justify-center shrink-0">
+                              {/* Tilted Floating Star Emblem Overlay on top-left of rank badge */}
+                              {activeTab === 'overlap' && overlapMode === 'consecutive3d' && item.aiPickRank && (
+                                <div
+                                  className="absolute -top-1.5 -left-1.5 z-10 pointer-events-none transform -rotate-6 shrink-0"
+                                  title={`AI 수급 추천 ${item.aiPickRank}위`}
+                                >
+                                  {item.aiPickRank === 1 ? (
+                                    /* 1위: 별 3개가 선명하게 겹쳐진 3중 입체 엠블럼 */
+                                    <svg width="24" height="16" viewBox="0 0 34 22" fill="none" className="shrink-0">
+                                      <path
+                                        d="M8 2l2.1 4.2L15 6.9l-3.5 3.4.8 4.8L8 12.8 3.7 15.1l.8-4.8L1 6.9l4.9-.7L8 2z"
+                                        fill="#FFD700"
+                                        stroke="#4A2E00"
+                                        strokeWidth="1.4"
+                                        strokeLinejoin="round"
+                                      />
+                                      <path
+                                        d="M26 2l2.1 4.2L33 6.9l-3.5 3.4.8 4.8-4.3-2.3-4.3 2.3.8-4.8-3.5-3.4 4.9-.7L26 2z"
+                                        fill="#FFD700"
+                                        stroke="#4A2E00"
+                                        strokeWidth="1.4"
+                                        strokeLinejoin="round"
+                                      />
+                                      <path
+                                        d="M17 1l2.6 5.3 5.8.8-4.2 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8-4.2-4.1 5.8-.8L17 1z"
+                                        fill="#FFE600"
+                                        stroke="#4A2E00"
+                                        strokeWidth="1.5"
+                                        strokeLinejoin="round"
+                                      />
+                                    </svg>
+                                  ) : item.aiPickRank === 2 ? (
+                                    /* 2위: 별 2개가 선명하게 겹쳐진 2중 엠블럼 */
+                                    <svg width="19" height="15" viewBox="0 0 26 22" fill="none" className="shrink-0">
+                                      <path
+                                        d="M8 2l2.1 4.2L15 6.9l-3.5 3.4.8 4.8L8 12.8 3.7 15.1l.8-4.8L1 6.9l4.9-.7L8 2z"
+                                        fill="#FFD700"
+                                        stroke="#4A2E00"
+                                        strokeWidth="1.4"
+                                        strokeLinejoin="round"
+                                      />
+                                      <path
+                                        d="M18 1l2.5 5 5.5.8-4 3.9 1 5.5-5-2.6-5 2.6 1-5.5-4-3.9 5.5-.8L18 1z"
+                                        fill="#FFE600"
+                                        stroke="#4A2E00"
+                                        strokeWidth="1.5"
+                                        strokeLinejoin="round"
+                                      />
+                                    </svg>
+                                  ) : (
+                                    /* 3위: 1개 엠블럼 별 */
+                                    <svg width="14" height="14" viewBox="0 0 22 22" fill="none" className="shrink-0">
+                                      <path
+                                        d="M11 1l2.8 5.7 6.3.9-4.5 4.4 1.1 6.3-5.7-3-5.7 3 1.1-6.3-4.5-4.4 6.3-.9L11 1z"
+                                        fill="#FFE600"
+                                        stroke="#4A2E00"
+                                        strokeWidth="1.5"
+                                        strokeLinejoin="round"
+                                      />
+                                    </svg>
+                                  )}
+                                </div>
+                              )}
+
+                              <span
+                                className={`inline-flex items-center justify-center w-5 h-5 rounded-md text-[10px] shrink-0 ${
+                                  item.rank === 1
+                                    ? 'bg-amber-500 text-white font-black shadow-xs'
+                                    : item.rank === 2
+                                    ? 'bg-slate-400 text-white font-bold'
+                                    : item.rank === 3
+                                    ? 'bg-amber-700 text-white font-bold'
+                                    : 'text-slate-500 dark:text-slate-400'
+                                }`}
+                              >
+                                {item.rank}
+                              </span>
+                            </div>
                             {creditOnly && (item as any).overallRank && (
                               <span className="text-[9px] text-slate-400 dark:text-slate-500 font-sans font-normal whitespace-nowrap shrink-0">
                                 (전체 {(item as any).overallRank}위)
@@ -1190,20 +1257,19 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
                           </div>
                         </td>
 
-                        {/* Overlap Specific Columns */}
+                         {/* Overlap Specific Columns */}
                         {activeTab === 'overlap' && (
-                          <>
-                            {/* 중복 수급 주체 Badge */}
-                            <td className="p-2.5 font-sans whitespace-nowrap min-w-[110px]">
-                              <span className={`inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full whitespace-nowrap font-bold max-w-full truncate ${badgeStyle.bg}`}>
-                                {badgeStyle.label}
+                          <td className="p-2.5 font-sans min-w-[200px]">
+                            <div className="flex items-center gap-1 flex-nowrap overflow-x-auto scrollbar-none py-0.5">
+                              <span
+                                className={`inline-flex items-center gap-1 text-[9px] px-1.5 py-0.5 rounded font-bold border whitespace-nowrap shrink-0 ${
+                                  item.statusBadgeStyle || 'bg-amber-50 dark:bg-amber-950/60 text-amber-600 dark:text-amber-400 border-amber-200 dark:border-amber-800/60 font-bold'
+                                }`}
+                                title={item.statusBadge || '🔍 확인필요'}
+                              >
+                                {item.statusBadge || '🔍 확인필요'}
                               </span>
-                            </td>
-
-                            {/* 주체별 상세 순위 Badges */}
-                            <td className="p-2.5 font-sans min-w-[200px]">
-                              <div className="flex items-center gap-1 flex-nowrap overflow-x-auto scrollbar-none py-0.5">
-                                {item.ranksByType?.map((r) => (
+                              {item.ranksByType?.map((r) => (
                                   <span
                                     key={r.type}
                                     className={`inline-flex items-center gap-1 text-[9px] px-1.5 py-0.5 rounded font-semibold border whitespace-nowrap shrink-0 ${getInvestorRankBadge(
@@ -1213,15 +1279,23 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
                                     <span>{r.label}</span>
                                     <strong className="font-mono text-[10px]">
                                       {overlapMode === 'consecutive3d'
-                                        ? `${r.netBuyAmtEok >= 0 ? '+' : ''}${r.netBuyAmtEok}억`
+                                        ? (r.consecutiveText || `${r.consecutiveDays || 3}일연속`)
                                         : `${r.rank}위`}
                                     </strong>
                                   </span>
                                 ))}
+                              {item.missingEntities?.map((m) => (
+                                <span
+                                  key={m.type}
+                                  className="inline-flex items-center text-[9px] px-1.5 py-0.5 rounded font-semibold border border-dashed border-slate-300 dark:border-slate-700 text-slate-400 dark:text-slate-500 bg-slate-50/50 dark:bg-slate-900/40 opacity-70 whitespace-nowrap shrink-0 cursor-help"
+                                  title={`${m.label}: 당일 순매수 상위 순위 미진입`}
+                                >
+                                  <span>{m.label}: 미달</span>
+                                </span>
+                              ))}
                               </div>
                             </td>
-                          </>
-                        )}
+                          )}
 
                         {/* 종합점수 탭 전용 테이블 컬럼 */}
                         {isComprehensive ? (
@@ -1604,7 +1678,11 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
           ) : (
             <div className="text-[11px] px-2.5 py-1.5 rounded-lg bg-blue-50/70 dark:bg-blue-950/30 text-blue-800 dark:text-blue-300 flex items-center gap-1.5 border border-blue-200/60 dark:border-blue-900/40">
               <Clock className="w-3.5 h-3.5 text-blue-500 shrink-0" />
-              <span>{getIntradaySnapshotNoticeText(hasRealData)}</span>
+              <span>
+                {getIntradaySnapshotNoticeText(
+                  Boolean(displayList && displayList.length > 0 && displayList.some((i) => i.asOfDateLabel === '당일 가집계'))
+                )}
+              </span>
             </div>
           )}
         </div>

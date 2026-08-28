@@ -15,7 +15,7 @@ import {
   ReferenceLine,
 } from 'recharts';
 import { InvestorTrendResponse, TrendPeriod } from '@/lib/types';
-import { getStockName, resolveStockPriceAndChange } from '@/lib/mockData';
+import { getStockName, resolveStockPriceAndChange, computeUnifiedStatusBadge } from '@/lib/mockData';
 import { TrendingUp, TrendingDown, Calendar, Clock, Activity, RefreshCw, AlertCircle } from 'lucide-react';
 import { useTheme } from '@/providers/ThemeProvider';
 
@@ -35,6 +35,14 @@ async function fetchTrend(symbol: string, period: TrendPeriod): Promise<Investor
     throw new Error('종목 시세 데이터를 불러오는데 실패했습니다.');
   }
   return res.json();
+}
+
+/**
+ * 전 종목 통일 이동평균 추세 및 이격도 배지 산출 (Single Source of Truth)
+ */
+function getTrendBadgeInfo(closePrice: number, ma5: number | null, ma20: number | null, ma60: number | null) {
+  const res = computeUnifiedStatusBadge(closePrice, ma5, ma20, ma60);
+  return { badge: res.shortBadge, badgeStyle: res.badgeStyle };
 }
 
 interface CandlestickProps {
@@ -141,56 +149,63 @@ const CustomCandleTooltip = ({ active, payload, label }: any) => {
   const candleLabel = isUp ? `양봉 🔴 (+${intradayRate.toFixed(2)}%)` : `음봉 🔵 (${intradayRate.toFixed(2)}%)`;
 
   return (
-    <div className="bg-white/95 dark:bg-[#1a1e29]/95 border border-slate-200 dark:border-[#2a2e39] p-2.5 rounded-lg shadow-xl text-xs space-y-1 z-50 font-sans backdrop-blur-sm w-[150px] pointer-events-none">
+    <div className="bg-white/95 dark:bg-[#1a1e29]/95 border border-slate-200 dark:border-[#2a2e39] p-2.5 rounded-lg shadow-xl text-xs space-y-1 z-50 font-sans backdrop-blur-sm min-w-[195px] w-auto whitespace-nowrap pointer-events-none">
       {/* 1번째 줄: 날짜 */}
-      <div className="font-bold border-b border-slate-200 dark:border-slate-700/80 pb-1 text-slate-800 dark:text-slate-100 flex justify-between items-center text-[11px]">
+      <div className="font-bold border-b border-slate-200 dark:border-slate-700/80 pb-1 text-slate-800 dark:text-slate-100 flex justify-between items-center text-[11px] gap-3">
         <span>📅 {label}</span>
       </div>
 
       {/* 2번째 줄: 최고가 */}
-      <div className="flex justify-between items-center text-[11px]">
+      <div className="flex justify-between items-center text-[11px] gap-3">
         <span className="text-slate-500 dark:text-slate-400 font-medium">최고가:</span>
         <span className="font-mono font-bold text-red-500">{highPrice.toLocaleString()}원</span>
       </div>
 
       {/* 3번째 줄: 시가 */}
-      <div className="flex justify-between items-center text-[11px]">
+      <div className="flex justify-between items-center text-[11px] gap-3">
         <span className="text-slate-500 dark:text-slate-400 font-medium">시가:</span>
         <span className="font-mono font-semibold text-slate-700 dark:text-slate-300">{openPrice.toLocaleString()}원</span>
       </div>
 
       {/* 4번째 줄: 종가 */}
-      <div className="flex justify-between items-center text-[11px]">
+      <div className="flex justify-between items-center text-[11px] gap-3">
         <span className="text-slate-500 dark:text-slate-400 font-medium">종가:</span>
         <span className="font-mono font-bold text-slate-900 dark:text-white">{closePrice.toLocaleString()}원</span>
       </div>
 
       {/* 5번째 줄: 최저가 */}
-      <div className="flex justify-between items-center text-[11px]">
+      <div className="flex justify-between items-center text-[11px] gap-3">
         <span className="text-slate-500 dark:text-slate-400 font-medium">최저가:</span>
         <span className="font-mono font-bold text-blue-500">{lowPrice.toLocaleString()}원</span>
       </div>
 
-      {/* 6~8번째 줄: 이동평균선 그룹 (5일선 → 20일선 → 60일선) */}
-      <div className="pt-1 border-t border-slate-200 dark:border-slate-700/80 space-y-1 text-[10px]">
-        <div className="flex justify-between items-center">
-          <span className="text-amber-600 dark:text-amber-400 font-medium">5일선:</span>
-          <span className="font-mono font-bold text-amber-500">
-            {dataPoint.ma5 !== undefined ? `${Math.round(dataPoint.ma5).toLocaleString()}원` : '-'}
+      {/* 6~9번째 줄: 기술적 분석 지지구간 & 추세 요약 */}
+      <div className="pt-1.5 border-t border-slate-200 dark:border-slate-700/80 space-y-1 text-[10px]">
+        <div className="flex justify-between items-center gap-3">
+          <span className="text-slate-500 dark:text-slate-400 font-medium">🟢 추세:</span>
+          <span className="font-bold text-emerald-600 dark:text-emerald-400">
+            {dataPoint.trendStatus || '정배열 초입'}
           </span>
         </div>
 
-        <div className="flex justify-between items-center">
-          <span className="text-purple-600 dark:text-purple-400 font-medium">20일선:</span>
+        <div className="flex justify-between items-center gap-3">
+          <span className="text-orange-600 dark:text-orange-400 font-medium">🛡️ 1차 지지 (20일선):</span>
+          <span className="font-mono font-bold text-orange-500">
+            {dataPoint.ma20 !== undefined && dataPoint.ma20 !== null ? `${Math.round(dataPoint.ma20).toLocaleString()}원` : '-'}
+          </span>
+        </div>
+
+        <div className="flex justify-between items-center gap-3">
+          <span className="text-purple-600 dark:text-purple-400 font-medium">📉 2차 지지 (전저점):</span>
           <span className="font-mono font-bold text-purple-500">
-            {dataPoint.ma20 !== undefined ? `${Math.round(dataPoint.ma20).toLocaleString()}원` : '-'}
+            {dataPoint.recentLow !== undefined && dataPoint.recentLow !== null ? `${Math.round(dataPoint.recentLow).toLocaleString()}원` : '-'}
           </span>
         </div>
 
-        <div className="flex justify-between items-center">
-          <span className="text-cyan-600 dark:text-cyan-400 font-medium">60일선:</span>
-          <span className="font-mono font-bold text-cyan-500">
-            {dataPoint.ma60 !== undefined ? `${Math.round(dataPoint.ma60).toLocaleString()}원` : '-'}
+        <div className="flex justify-between items-center gap-3">
+          <span className="text-blue-600 dark:text-blue-400 font-medium">💧 침체 예측가:</span>
+          <span className="font-mono font-bold text-blue-500">
+            {dataPoint.ma20 !== undefined && dataPoint.ma20 !== null ? `${Math.round(dataPoint.ma20 * 0.95).toLocaleString()}원` : '-'}
           </span>
         </div>
       </div>
@@ -273,6 +288,7 @@ export default function RankingStockDetailChart({
   const [showOrgan, setShowOrgan] = useState(true);
   const [showPension, setShowPension] = useState(false);
   const [showProgram, setShowProgram] = useState(false);
+  const [showDisparate, setShowDisparate] = useState(false);
 
   // Intraday Metric Toggles
   const [showIntradayTotal, setShowIntradayTotal] = useState(true);
@@ -297,7 +313,7 @@ export default function RankingStockDetailChart({
   const data = isPropDataMatching ? propData : queryResult.data;
   const isLoading = propIsLoading !== undefined
     ? propIsLoading
-    : (queryResult.isLoading || queryResult.isFetching || !data || data.stockInfo?.symbol !== safeSymbol);
+    : (queryResult.isLoading || !data || data.stockInfo?.symbol !== safeSymbol);
 
   const isError = queryResult.isError;
   const refetch = queryResult.refetch;
@@ -359,6 +375,14 @@ export default function RankingStockDetailChart({
         ? item.lowPrice
         : Math.min(openPrice, closePrice);
 
+      // 20-day recent low computation for 2nd support line
+      const slice20Lows = arr.slice(Math.max(0, idx - 19), idx + 1);
+      const recentLow = Math.min(...slice20Lows.map(d => (d.lowPrice && d.lowPrice > 0 ? d.lowPrice : d.closePrice || closePrice)));
+
+      // Use unified getTrendBadgeInfo helper for exact status consistency
+      const trendBadgeObj = getTrendBadgeInfo(closePrice, ma5, ma20, ma60);
+      const trendStatus = trendBadgeObj.badge;
+
       return {
         ...item,
         stck_bsop_date: dateLabel,
@@ -373,6 +397,8 @@ export default function RankingStockDetailChart({
         ma5,
         ma20,
         ma60,
+        recentLow,
+        trendStatus,
         programNetBuyAmt: progAmt,
         cumProgramNetBuyAmt: item.cumProgramNetBuyAmt ?? cumProg,
       };
@@ -479,6 +505,42 @@ function calculateUltraTightKrxPriceAxis(minRaw: number, maxRaw: number, targetT
   return bestAxis;
 }
 
+  // 100%-Baseline Disparate Ratio & 4-Stage Status Computation
+  const disparateInfo = React.useMemo(() => {
+    if (!displayTrend || displayTrend.length === 0) {
+      return { ma5: 0, ma20: 0, ma60: 0, disparate20: 100, disparate60: 100, overbought20Price: 0, oversold60Price: 0, badge: '⚪ 이평선 수렴', badgeStyle: 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-300 dark:border-slate-700' };
+    }
+
+    const closes = displayTrend.map((d) => d.closePrice).filter((c) => c && c > 0);
+    if (closes.length === 0) {
+      return { ma5: 0, ma20: 0, ma60: 0, disparate20: 100, disparate60: 100, overbought20Price: 0, oversold60Price: 0, badge: '⚪ 이평선 수렴', badgeStyle: 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-300 dark:border-slate-700' };
+    }
+
+    const currentP = closes[closes.length - 1];
+    const slice5 = closes.slice(-Math.min(5, closes.length));
+    const slice20 = closes.slice(-Math.min(20, closes.length));
+    const slice60 = closes.slice(-Math.min(60, closes.length));
+
+    const ma5 = slice5.reduce((a, b) => a + b, 0) / slice5.length;
+    const ma20 = slice20.reduce((a, b) => a + b, 0) / slice20.length;
+    const ma60 = slice60.reduce((a, b) => a + b, 0) / slice60.length;
+
+    const disparate20 = Number(((currentP / ma20) * 100).toFixed(1));
+    const disparate60 = Number(((currentP / ma60) * 100).toFixed(1));
+
+    // Use unified getTrendBadgeInfo helper for exact status consistency
+    const { badge, badgeStyle } = getTrendBadgeInfo(currentP, ma5, ma20, ma60);
+
+    const overbought20Price = Math.round(ma20 * 1.05);
+    const oversold20Price = Math.round(ma20 * 0.95);
+    const overbought60Price = Math.round(ma60 * 1.10);
+    const oversold60Price = Math.round(ma60 * 0.90);
+    const support1Price = Math.round(ma20);
+    const recentLowPrice = Math.min(...displayTrend.map((d) => (d.lowPrice && d.lowPrice > 0 ? d.lowPrice : d.closePrice)));
+
+    return { ma5, ma20, ma60, disparate20, disparate60, overbought20Price, oversold20Price, overbought60Price, oversold60Price, support1Price, recentLowPrice, badge, badgeStyle };
+  }, [displayTrend]);
+
   const { minPrice, maxPrice, priceDomain, priceTicks } = React.useMemo(() => {
     if (!displayTrend || displayTrend.length === 0) {
       return { minPrice: 0, maxPrice: 100, priceDomain: [0, 100] as any, priceTicks: [0, 25, 50, 75, 100] };
@@ -498,12 +560,26 @@ function calculateUltraTightKrxPriceAxis(minRaw: number, maxRaw: number, targetT
       max = Math.max(max, o, h, l, c);
     });
 
+    if (showDisparate && disparateInfo) {
+      const ob20 = disparateInfo.overbought20Price || 0;
+      const os20 = disparateInfo.oversold20Price || 0;
+      const sup1 = disparateInfo.support1Price || 0;
+      const recLow = disparateInfo.recentLowPrice || 0;
+
+      [ob20, os20, sup1, recLow].forEach((p) => {
+        if (p > 0) {
+          max = Math.max(max, p);
+          min = Math.min(min, p);
+        }
+      });
+    }
+
     if (min === Infinity || max === -Infinity || min <= 0) {
       return { minPrice: 0, maxPrice: 100, priceDomain: [0, 100] as any, priceTicks: [0, 25, 50, 75, 100] };
     }
 
     return calculateUltraTightKrxPriceAxis(min, max, 6);
-  }, [displayTrend]);
+  }, [displayTrend, showDisparate, disparateInfo]);
 
   // Subplot 2 Daily Supply Domain Calculation (for grouped daily net buy/sell bars)
   const supplyDomain = React.useMemo(() => {
@@ -618,6 +694,97 @@ function calculateUltraTightKrxPriceAxis(minRaw: number, maxRaw: number, targetT
 
   return (
     <div className="bg-white dark:bg-[#131722] border border-slate-200/80 dark:border-[#2a2e39] rounded-xl p-2.5 shadow-xs flex flex-col justify-between transition-colors duration-200 w-full">
+      {/* 100%-Baseline Disparate Ratio Status Header - Ultra Space-Efficient Inline Card Layout */}
+      {activeTab === 'daily' && (
+        <div className="flex flex-col gap-1.5 p-2.5 mb-2 bg-slate-50/90 dark:bg-[#161a25]/90 border border-slate-200/80 dark:border-[#2a2e39] rounded-xl font-sans shadow-xs w-full">
+          {/* Header Row: Centered Overall Status Badge */}
+          <div className="flex items-center justify-center border-b border-slate-200/60 dark:border-[#2a2e39] pb-1 w-full">
+            <span className={`px-2.5 py-0.5 rounded text-xs font-bold border shadow-2xs ${disparateInfo.badgeStyle}`}>
+              {disparateInfo.badge}
+            </span>
+          </div>
+
+          {/* 2-Column Asymmetric Grid: Expanded 20D Card (col-span-7) & Compact 60D Card (col-span-5) */}
+          <div className="grid grid-cols-1 xl:grid-cols-12 gap-2 w-full">
+            {/* 20D Card (Expanded Width to guarantee single-line price display for high-priced stocks) */}
+            <div className="xl:col-span-7 flex flex-col gap-1.5 bg-white/90 dark:bg-[#1c202c]/90 p-2.5 rounded-lg border border-slate-200/80 dark:border-[#2a2e39] shadow-2xs">
+              {/* Row 1: Title + Percentage + Short Inline Guidelines */}
+              <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] font-sans pb-1 border-b border-slate-100 dark:border-slate-800/80">
+                <div className="flex items-center gap-1.5 shrink-0 font-mono">
+                  <span className="font-bold text-amber-600 dark:text-amber-400 text-xs font-sans">📊 20일선 이격도:</span>
+                  <strong className={`font-black text-[14px] ${disparateInfo.disparate20 >= 105 ? 'text-rose-600 dark:text-rose-400' : 'text-slate-800 dark:text-slate-100'}`}>
+                    {disparateInfo.disparate20}%
+                  </strong>
+                  <span className="text-[11px] font-sans font-bold text-slate-500 dark:text-slate-400">
+                    {disparateInfo.disparate20 >= 105 ? '(⚠️ 과열)' : disparateInfo.disparate20 <= 95 ? '(🔵 반등)' : ''}
+                  </span>
+                </div>
+                <div className="text-[11px] text-slate-500 dark:text-slate-400 font-sans flex items-center gap-x-2.5 ml-auto flex-wrap shrink-0">
+                  <span>• <strong>95% 이하</strong>: 반등 기대</span>
+                  <span>• <strong>105% 이상</strong>: 과열 경계</span>
+                </div>
+              </div>
+
+              {/* Row 2: 4개 핵심 가격선통합 (과열가 / 1차 지지 / 2차 지지 / 침체가) */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-0 text-xs font-sans pt-1 border-t border-slate-100 dark:border-slate-800/60 w-full whitespace-nowrap">
+                {/* 1. 과열가 (+5%) */}
+                <div className="flex items-center justify-center text-center text-red-600 dark:text-red-400 border-r border-slate-200/80 dark:border-slate-800/80 pr-1 shrink-0 whitespace-nowrap">
+                  <span>🔴 과열가: <strong className="font-bold font-mono text-[11px] sm:text-xs">{(disparateInfo?.overbought20Price || 0) > 0 ? `${(disparateInfo?.overbought20Price || 0).toLocaleString()}원` : '-'}</strong></span>
+                </div>
+
+                {/* 2. 1차 지지 (20일선) */}
+                <div className="flex items-center justify-center text-center text-orange-600 dark:text-orange-400 border-r border-slate-200/80 dark:border-slate-800/80 px-1 shrink-0 whitespace-nowrap">
+                  <span>🟠 1차지: <strong className="font-bold font-mono text-[11px] sm:text-xs">{(disparateInfo?.support1Price || 0) > 0 ? `${(disparateInfo?.support1Price || 0).toLocaleString()}원` : '-'}</strong></span>
+                </div>
+
+                {/* 3. 2차 지지 (전저점) */}
+                <div className="flex items-center justify-center text-center text-purple-600 dark:text-purple-400 border-r border-slate-200/80 dark:border-slate-800/80 px-1 shrink-0 whitespace-nowrap">
+                  <span>🟣 2차지: <strong className="font-bold font-mono text-[11px] sm:text-xs">{(disparateInfo?.recentLowPrice || 0) > 0 ? `${(disparateInfo?.recentLowPrice || 0).toLocaleString()}원` : '-'}</strong></span>
+                </div>
+
+                {/* 4. 침체가 (-5%) */}
+                <div className="flex items-center justify-center text-center text-blue-600 dark:text-blue-400 pl-1 shrink-0 whitespace-nowrap">
+                  <span>🔵 침체가: <strong className="font-bold font-mono text-[11px] sm:text-xs">{(disparateInfo?.oversold20Price || 0) > 0 ? `${(disparateInfo?.oversold20Price || 0).toLocaleString()}원` : '-'}</strong></span>
+                </div>
+              </div>
+            </div>
+
+            {/* 60D Card (Compact Width) */}
+            <div className="xl:col-span-5 flex flex-col gap-1.5 bg-white/90 dark:bg-[#1c202c]/90 p-2.5 rounded-lg border border-slate-200/80 dark:border-[#2a2e39] shadow-2xs">
+              {/* Row 1: Title + Percentage + Short Inline Guidelines */}
+              <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] font-sans pb-1 border-b border-slate-100 dark:border-slate-800/80">
+                <div className="flex items-center gap-1.5 shrink-0 font-mono">
+                  <span className="font-bold text-cyan-600 dark:text-cyan-400 text-xs font-sans">📈 60일선 이격도:</span>
+                  <strong className={`font-black text-[14px] ${disparateInfo.disparate60 <= 90 ? 'text-blue-600 dark:text-blue-400' : 'text-slate-800 dark:text-slate-100'}`}>
+                    {disparateInfo.disparate60}%
+                  </strong>
+                  <span className="text-[11px] font-sans font-bold text-slate-500 dark:text-slate-400">
+                    {disparateInfo.disparate60 >= 110 ? '(⚠️ 과열)' : disparateInfo.disparate60 <= 90 ? '(🔵 반등)' : ''}
+                  </span>
+                </div>
+                <div className="text-[11px] text-slate-500 dark:text-slate-400 font-sans flex items-center gap-x-2.5 ml-auto flex-wrap shrink-0">
+                  <span>• <strong>90% 이하</strong>: 반등 기대</span>
+                  <span>• <strong>110% 이상</strong>: 과열 경계</span>
+                </div>
+              </div>
+
+              {/* Row 2: Divided into 2 Equal Sub-boxes, Each Price Centered Within Its 50% Half */}
+              <div className="grid grid-cols-2 gap-0 text-xs font-sans pt-1 border-t border-slate-100 dark:border-slate-800/60 w-full whitespace-nowrap">
+                {/* Left 50% Sub-box: Overbought Price Centered */}
+                <div className="flex items-center justify-center text-center text-red-600 dark:text-red-400 border-r border-slate-200/80 dark:border-slate-800/80 pr-2 whitespace-nowrap">
+                  <span>🔴 110% 과열가: <strong className="font-bold font-mono text-xs sm:text-[13px]">{(disparateInfo?.overbought60Price || 0) > 0 ? `${(disparateInfo?.overbought60Price || 0).toLocaleString()}원` : '-'}</strong></span>
+                </div>
+
+                {/* Right 50% Sub-box: Oversold Price Centered */}
+                <div className="flex items-center justify-center text-center text-blue-600 dark:text-blue-400 pl-2 whitespace-nowrap">
+                  <span>🔵 90% 침체가: <strong className="font-bold font-mono text-xs sm:text-[13px]">{(disparateInfo?.oversold60Price || 0) > 0 ? `${(disparateInfo?.oversold60Price || 0).toLocaleString()}원` : '-'}</strong></span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Compact Integrated Control Toolbar Bar */}
       <div className="flex flex-wrap items-center justify-between gap-1.5 pb-2 border-b border-slate-100 dark:border-[#2a2e39] text-xs shrink-0">
         {/* Left: View Switcher (Daily vs Intraday) & Period (5D, 20D, 60D) */}
@@ -678,7 +845,13 @@ function calculateUltraTightKrxPriceAxis(minRaw: number, maxRaw: number, targetT
           <div className="flex items-center gap-1 flex-wrap text-[10px]">
             <button
               type="button"
-              onClick={() => setShowMA5(!showMA5)}
+              onClick={() => {
+                if (showMA5) setShowMA5(false);
+                else {
+                  setShowMA5(true);
+                  if (showDisparate) setShowDisparate(false);
+                }
+              }}
               className={`px-1.5 py-0.5 rounded font-bold border transition cursor-pointer ${
                 showMA5 ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/30' : 'bg-slate-50 text-slate-400 border-slate-200 opacity-50'
               }`}
@@ -687,21 +860,54 @@ function calculateUltraTightKrxPriceAxis(minRaw: number, maxRaw: number, targetT
             </button>
             <button
               type="button"
-              onClick={() => setShowMA20(!showMA20)}
+              onClick={() => {
+                if (showMA20) setShowMA20(false);
+                else {
+                  setShowMA20(true);
+                  if (showDisparate) setShowDisparate(false);
+                }
+              }}
               className={`px-1.5 py-0.5 rounded font-bold border transition cursor-pointer ${
-                showMA20 ? 'bg-purple-500/10 text-purple-600 dark:text-purple-400 border-purple-500/30' : 'bg-slate-50 text-slate-400 border-slate-200 opacity-50'
+                showMA20 ? 'bg-purple-500/10 text-purple-600 dark:text-purple-400 border-purple-200/30' : 'bg-slate-50 text-slate-400 border-slate-200 opacity-50'
               }`}
             >
               20일선
             </button>
             <button
               type="button"
-              onClick={() => setShowMA60(!showMA60)}
+              onClick={() => {
+                if (showMA60) setShowMA60(false);
+                else {
+                  setShowMA60(true);
+                  if (showDisparate) setShowDisparate(false);
+                }
+              }}
               className={`px-1.5 py-0.5 rounded font-bold border transition cursor-pointer ${
                 showMA60 ? 'bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 border-cyan-500/30' : 'bg-slate-50 text-slate-400 border-slate-200 opacity-50'
               }`}
             >
               60일선
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                const nextState = !showDisparate;
+                setShowDisparate(nextState);
+                if (nextState) {
+                  setShowMA5(false);
+                  setShowMA20(false);
+                  setShowMA60(false);
+                } else {
+                  setShowMA5(true);
+                  setShowMA20(true);
+                  setShowMA60(true);
+                }
+              }}
+              className={`px-1.5 py-0.5 rounded font-bold border transition cursor-pointer ${
+                showDisparate ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/30 font-black ring-1 ring-emerald-500/50' : 'bg-slate-50 text-slate-400 border-slate-200 opacity-50'
+              }`}
+            >
+              이격도
             </button>
 
             <span className="text-slate-300 dark:text-slate-700">|</span>
@@ -861,6 +1067,38 @@ function calculateUltraTightKrxPriceAxis(minRaw: number, maxRaw: number, targetT
                     {showMA5 && <Line type="linear" dataKey="ma5" name="5일 이동평균" stroke="#f59e0b" strokeWidth={1.8} strokeDasharray="5 5" dot={false} activeDot={false} connectNulls={true} />}
                     {showMA20 && <Line type="linear" dataKey="ma20" name="20일 이동평균" stroke="#a855f7" strokeWidth={2.0} strokeDasharray="5 5" dot={false} activeDot={false} connectNulls={true} />}
                     {showMA60 && <Line type="linear" dataKey="ma60" name="60일 이동평균" stroke="#06b6d4" strokeWidth={1.8} strokeDasharray="5 5" dot={false} activeDot={false} connectNulls={true} />}
+                    {showDisparate && (disparateInfo.overbought20Price || 0) > 0 && (
+                      <ReferenceLine
+                        y={disparateInfo.overbought20Price || 0}
+                        stroke="#ef4444"
+                        strokeWidth={1.5}
+                        strokeDasharray="4 4"
+                      />
+                    )}
+                    {showDisparate && (disparateInfo.support1Price || 0) > 0 && (
+                      <ReferenceLine
+                        y={disparateInfo.support1Price || 0}
+                        stroke="#f97316"
+                        strokeWidth={1.5}
+                        strokeDasharray="4 4"
+                      />
+                    )}
+                    {showDisparate && (disparateInfo.recentLowPrice || 0) > 0 && (
+                      <ReferenceLine
+                        y={disparateInfo.recentLowPrice || 0}
+                        stroke="#a855f7"
+                        strokeWidth={1.5}
+                        strokeDasharray="4 4"
+                      />
+                    )}
+                    {showDisparate && (disparateInfo.oversold20Price || 0) > 0 && (
+                      <ReferenceLine
+                        y={disparateInfo.oversold20Price || 0}
+                        stroke="#3b82f6"
+                        strokeWidth={1.5}
+                        strokeDasharray="4 4"
+                      />
+                    )}
                   </ComposedChart>
                 </ResponsiveContainer>
 

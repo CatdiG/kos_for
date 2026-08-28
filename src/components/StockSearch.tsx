@@ -1,10 +1,10 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { Search, Building2, TrendingUp, TrendingDown, RefreshCw } from 'lucide-react';
 import { StockInfo } from '@/lib/types';
 import { PRESET_STOCKS, TOP_50_STOCKS } from '@/lib/mockData';
-import { buildSearchStockList, resolveSymbolOrName } from '@/lib/stockDictionary';
+import { buildSearchStockList, getStockName, resolveSymbolOrName } from '@/lib/stockDictionary';
 
 interface StockSearchProps {
   currentSymbol: string;
@@ -23,6 +23,10 @@ export default function StockSearch({
 }: StockSearchProps) {
   const [inputVal, setInputVal] = useState<string>('');
   const [isOpen, setIsOpen] = useState<boolean>(false);
+  const [selectedIndex, setSelectedIndex] = useState<number>(-1);
+
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
 
   // Dynamic Master Stock Search Dictionary including runtime cached stocks
   const searchStockList = buildSearchStockList(PRESET_STOCKS, TOP_50_STOCKS);
@@ -44,20 +48,98 @@ export default function StockSearch({
     return matches.slice(0, 25);
   }, [query, searchStockList]);
 
-  const handleSelect = (symbol: string) => {
+  // Reset selectedIndex ONLY when search query text actually changes (not on array re-creation)
+  React.useEffect(() => {
+    setSelectedIndex(-1);
+  }, [query]);
+
+  // Auto-scroll highlighted dropdown item into view when navigating via arrow keys
+  React.useEffect(() => {
+    if (selectedIndex >= 0 && listRef.current) {
+      const children = listRef.current.children;
+      if (children[selectedIndex]) {
+        (children[selectedIndex] as HTMLElement).scrollIntoView({
+          block: 'nearest',
+          behavior: 'auto',
+        });
+      }
+    }
+  }, [selectedIndex]);
+
+  // Click outside to close dropdown
+  React.useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (wrapperRef.current && !wrapperRef.current.contains(event.target as Node)) {
+        setIsOpen(false);
+        setSelectedIndex(-1);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const handleSelect = (symbol: string, stockName?: string) => {
     onSelectSymbol(symbol);
-    setInputVal('');
+    const displayName = stockName || getStockName(symbol);
+    setInputVal(displayName !== symbol ? displayName : symbol);
     setIsOpen(false);
+    setSelectedIndex(-1);
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    // Ignore keydown during Korean IME composition to prevent double-firing
+    if (e.nativeEvent.isComposing) return;
+
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      setIsOpen(false);
+      setSelectedIndex(-1);
+      return;
+    }
+
+    if (filtered.length === 0) return;
+
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      if (!isOpen) setIsOpen(true);
+      setSelectedIndex((prev) => (prev < filtered.length - 1 ? prev + 1 : 0));
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (!isOpen) setIsOpen(true);
+      setSelectedIndex((prev) => (prev > 0 ? prev - 1 : filtered.length - 1));
+    } else if (e.key === 'Enter') {
+      if (selectedIndex >= 0 && selectedIndex < filtered.length) {
+        e.preventDefault();
+        const selected = filtered[selectedIndex];
+        handleSelect(selected.symbol, selected.name);
+      } else if (filtered.length > 0) {
+        // If no item was explicitly highlighted with Arrow keys, select 1st match on Enter
+        e.preventDefault();
+        const firstMatch = filtered[0];
+        handleSelect(firstMatch.symbol, firstMatch.name);
+      }
+    }
   };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (selectedIndex >= 0 && selectedIndex < filtered.length) {
+      const selected = filtered[selectedIndex];
+      handleSelect(selected.symbol, selected.name);
+      return;
+    }
+
     const trim = inputVal.trim();
     if (!trim) return;
 
     // Resolve Korean stock name or code to 6-digit stock code
-    const targetSymbol = resolveSymbolOrName(trim, searchStockList);
-    handleSelect(targetSymbol);
+    const matched = searchStockList.find(
+      (s) => s.name.toLowerCase() === trim.toLowerCase() || s.symbol === trim
+    );
+    const targetSymbol = matched ? matched.symbol : resolveSymbolOrName(trim, searchStockList);
+    const displayName = matched ? matched.name : getStockName(targetSymbol, trim);
+    handleSelect(targetSymbol, displayName);
   };
 
   const isUp = (stockInfo?.change || 0) >= 0;
@@ -66,7 +148,7 @@ export default function StockSearch({
     <div className="w-full bg-white dark:bg-[#131722] border border-slate-200 dark:border-[#2a2e39] rounded-xl p-4 sm:p-5 shadow-sm dark:shadow-xl transition-colors duration-200">
       <div className="flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-4">
         {/* Search Input Form & Autocomplete Dropdown */}
-        <div className="relative flex-1 max-w-lg">
+        <div ref={wrapperRef} className="relative flex-1 max-w-lg">
           <form onSubmit={handleSubmit} className="relative flex items-center">
             <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 dark:text-[#787b86]" />
             <input
@@ -77,8 +159,9 @@ export default function StockSearch({
                 setIsOpen(true);
               }}
               onFocus={() => setIsOpen(true)}
-              placeholder="한글 종목명 또는 6자리 코드 검색 (예: 삼성전자, 기아, 005930)"
-              className="w-full pl-10 pr-24 py-2.5 bg-slate-50 dark:bg-[#1e222d] border border-slate-200 dark:border-[#2a2e39] focus:border-red-500/80 rounded-lg text-sm text-slate-900 dark:text-[#e0e3eb] placeholder:text-slate-400 dark:placeholder-[#787b86] outline-none transition"
+              onKeyDown={handleKeyDown}
+              placeholder="한글 종목명 또는 6자리 코드 검색 (예: 지투파워, 삼성전자, 388050)"
+              className="w-full pl-10 pr-24 py-2.5 bg-slate-50 dark:bg-[#1e222d] border border-slate-200 dark:border-[#2a2e39] focus:border-red-500/80 rounded-lg text-sm text-slate-900 dark:text-[#e0e3eb] placeholder:text-slate-400 dark:placeholder-[#787b86] outline-none transition font-semibold"
             />
             <button
               type="submit"
@@ -88,31 +171,46 @@ export default function StockSearch({
             </button>
           </form>
 
-          {/* Dropdown Results */}
+          {/* Dropdown Results with High-Contrast Selection & Auto Scroll */}
           {isOpen && inputVal.trim() && (
-            <div className="absolute left-0 right-0 top-full mt-1 bg-white dark:bg-[#1e222d] border border-slate-200 dark:border-[#2a2e39] rounded-lg shadow-xl z-50 max-h-64 overflow-y-auto divide-y divide-slate-100 dark:divide-[#2a2e39]/50">
+            <div
+              ref={listRef}
+              className="absolute left-0 right-0 top-full mt-1 bg-white dark:bg-[#1e222d] border border-slate-200 dark:border-[#2a2e39] rounded-lg shadow-2xl z-50 max-h-64 overflow-y-auto divide-y divide-slate-100 dark:divide-[#2a2e39]/50"
+            >
               {filtered.length > 0 ? (
-                filtered.map((stock) => (
-                  <button
-                    key={stock.symbol}
-                    type="button"
-                    onClick={() => handleSelect(stock.symbol)}
-                    className="w-full px-4 py-2.5 flex items-center justify-between hover:bg-slate-100 dark:hover:bg-[#2a2e39] text-left transition cursor-pointer"
-                  >
-                    <div className="flex items-center gap-2">
-                      <Building2 className="w-4 h-4 text-slate-400 dark:text-[#787b86]" />
-                      <span className="font-bold text-sm text-slate-900 dark:text-white">
-                        {stock.name}
+                filtered.map((stock, idx) => {
+                  const isSelected = idx === selectedIndex;
+                  return (
+                    <button
+                      key={stock.symbol}
+                      type="button"
+                      onClick={() => handleSelect(stock.symbol, stock.name)}
+                      onMouseEnter={() => setSelectedIndex(idx)}
+                      className={`w-full px-4 py-2.5 flex items-center justify-between text-left transition cursor-pointer ${
+                        isSelected
+                          ? 'bg-slate-200/90 dark:bg-[#2e3445] text-slate-900 dark:text-white font-black border-l-4 border-slate-600 dark:border-slate-400 shadow-2xs'
+                          : 'hover:bg-slate-100 dark:hover:bg-[#1e222d] text-slate-900 dark:text-white'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2">
+                        <Building2 className={`w-4 h-4 ${isSelected ? 'text-slate-700 dark:text-slate-200' : 'text-slate-400 dark:text-[#787b86]'}`} />
+                        <span className={`text-sm ${isSelected ? 'font-black text-slate-900 dark:text-white' : 'font-bold text-slate-900 dark:text-white'}`}>
+                          {stock.name}
+                        </span>
+                        <span className={`text-xs font-mono ${isSelected ? 'text-slate-600 dark:text-slate-300 font-bold' : 'text-slate-400 dark:text-[#787b86]'}`}>
+                          ({stock.symbol})
+                        </span>
+                      </div>
+                      <span className={`text-xs font-mono px-2 py-0.5 rounded border ${
+                        isSelected
+                          ? 'bg-slate-300/80 dark:bg-slate-700 text-slate-900 dark:text-slate-100 border-slate-400/60 dark:border-slate-500 font-bold'
+                          : 'bg-slate-100 dark:bg-[#131722] text-slate-600 dark:text-gray-300 border-slate-200 dark:border-[#2a2e39]'
+                      }`}>
+                        {stock.market}
                       </span>
-                      <span className="text-xs text-slate-400 dark:text-[#787b86] font-mono">
-                        ({stock.symbol})
-                      </span>
-                    </div>
-                    <span className="text-xs font-mono px-2 py-0.5 rounded bg-slate-100 dark:bg-[#131722] text-slate-600 dark:text-gray-300 border border-slate-200 dark:border-[#2a2e39]">
-                      {stock.market}
-                    </span>
-                  </button>
-                ))
+                    </button>
+                  );
+                })
               ) : (
                 <div className="px-4 py-3 text-xs text-slate-500 dark:text-[#787b86]">
                   검색어 &apos;{inputVal}&apos; 직조회 (엔터 또는 조회 클릭)
@@ -129,7 +227,7 @@ export default function StockSearch({
               <div>
                 <div className="flex items-center gap-2">
                   <h2 className="text-xl font-bold text-slate-900 dark:text-white tracking-tight">
-                    {stockInfo.name}
+                    {getStockName(stockInfo.symbol, stockInfo.name)}
                   </h2>
                   <span className="text-xs font-mono text-slate-500 dark:text-[#787b86]">
                     {stockInfo.symbol}

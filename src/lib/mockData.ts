@@ -95,7 +95,7 @@ export const TOP_50_STOCKS: { symbol: string; name: string; market: 'KOSPI' | 'K
   { symbol: '021240', name: '코웨이', market: 'KOSPI', basePrice: 58500 },
   { symbol: '008770', name: '호텔신라', market: 'KOSPI', basePrice: 56200 },
   { symbol: '078930', name: 'GS', market: 'KOSPI', basePrice: 52000 },
-  { symbol: '000150', name: '두산에너빌리티', market: 'KOSPI', basePrice: 19500 },
+  { symbol: '000150', name: '두산2우B', market: 'KOSPI', basePrice: 19500 },
 ];
 
 export const PRESET_STOCKS: StockInfo[] = TOP_50_STOCKS.slice(0, 10).map((s) => ({
@@ -184,5 +184,61 @@ export function resolveStockPriceAndChange(
     currentPrice: defaultPrice,
     change: defaultChange,
     changeRate: defaultChangeRate,
+  };
+}
+
+/**
+ * 전 종목 통일 이동평균 추세 및 이격도 배지 산출 (Single Source of Truth)
+ */
+export function computeUnifiedStatusBadge(
+  closePrice: number,
+  ma5: number | null,
+  ma20: number | null,
+  ma60: number | null
+): { shortBadge: string; badgeStyle: string } {
+  if (!closePrice || !ma20) {
+    return {
+      shortBadge: '⚪ 이평선 수렴',
+      badgeStyle: 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-300 dark:border-slate-700',
+    };
+  }
+
+  const disparate20 = Number(((closePrice / ma20) * 100).toFixed(1));
+  const disparate60 = ma60 ? Number(((closePrice / ma60) * 100).toFixed(1)) : 100;
+
+  if (disparate60 <= 90 && disparate20 >= 105) {
+    return {
+      shortBadge: '🔵 바닥 반등',
+      badgeStyle: 'bg-blue-50 dark:bg-blue-950/60 text-blue-600 dark:text-blue-400 border-blue-200 dark:border-blue-800/60 font-bold',
+    };
+  }
+  if (disparate20 >= 105 || disparate60 >= 110) {
+    return {
+      shortBadge: '⚠️ 단기 과열',
+      badgeStyle: 'bg-rose-50 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400 border-rose-200 dark:border-rose-800/60 font-bold',
+    };
+  }
+  if (ma5 && ma60 && ma5 > ma20 && ma20 > ma60 && disparate20 >= 103) {
+    return {
+      shortBadge: '🚀 정배열 확산',
+      badgeStyle: 'bg-purple-50 dark:bg-purple-950/60 text-purple-600 dark:text-purple-400 border-purple-200 dark:border-purple-800/60 font-bold',
+    };
+  }
+  if (ma5 && ma5 >= ma20 && disparate20 >= 99.5) {
+    return {
+      shortBadge: '🟢 정배열 초입',
+      badgeStyle: 'bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold',
+    };
+  }
+  if (ma5 && ma5 < ma20) {
+    return {
+      shortBadge: '🔵 역배열 / 조정',
+      badgeStyle: 'bg-blue-50 dark:bg-blue-950/60 text-blue-600 dark:text-blue-400 border-blue-200 dark:border-blue-800/60 font-bold',
+    };
+  }
+
+  return {
+    shortBadge: '⚪ 이평선 수렴',
+    badgeStyle: 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-300 dark:border-slate-700',
   };
 }

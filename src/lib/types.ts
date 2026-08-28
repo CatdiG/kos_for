@@ -13,6 +13,7 @@ export interface StockInfo {
 
 export interface InvestorTrendDay {
   date: string;              // YYYYMMDD or YYYY-MM-DD
+  stck_bsop_date?: string;   // KIS API raw date field
   formattedDate: string;     // MM.DD
   openPrice?: number;        // 시가
   highPrice?: number;        // 고가
@@ -52,6 +53,8 @@ export interface InvestorMetricSummary {
   net20d: number;             // 20일 누적 순매수
   net60d: number;             // 60일 누적 순매수
   status: 'STRONG_BUY' | 'BUY' | 'NEUTRAL' | 'SELL' | 'STRONG_SELL';
+  isFallback?: boolean;       // 당일 미집계로 인한 직전 유효일 폴백 사용 여부
+  asOfDateLabel?: string;     // 기준일 라벨 (예: "(8/27 기준)" 또는 "당일 가집계")
 }
 
 export interface SupplySummary {
@@ -79,6 +82,8 @@ export interface ProgramTradeSummary {
   ratioVsVolume: number;      // 거래량 대비 프로그램 매매 비중 (%)
   status: 'STRONG_BUY' | 'BUY' | 'NEUTRAL' | 'SELL' | 'STRONG_SELL';
   intradayTrend: ProgramTradeIntradayPoint[]; // 장중 시간대별 수급 추이
+  isFallback?: boolean;
+  asOfDateLabel?: string;
 }
 
 export interface InvestorTrendResponse {
@@ -154,7 +159,12 @@ export interface RankingItem {
   programNetBuyAmt?: number;  // 프로그램 순매수 금액 (백만원)
   overlapCount?: number;      // 수급 교집합 탭 전용 중복 주체 수
   investorBadge?: string;     // 수급 교집합 탭 전용 뱃지 문구
+  statusBadge?: string;       // 이격도 추세 뱃지 (예: "🔵 바닥 반등")
+  statusBadgeStyle?: string;  // 이격도 추세 뱃지 스타일
   ranksByType?: OverlapInvestorRank[];
+  missingEntities?: Array<{ type: 'foreign' | 'organ' | 'pension' | 'program'; label: string }>;
+  asOfDateLabel?: string;
+  aiPickRank?: number;        // AI 추천 순위 배지 (1, 2, 3)
 }
 
 export interface SurgingRankItem {
@@ -169,6 +179,9 @@ export interface OverlapInvestorRank {
   rank: number;
   netBuyAmt: number;
   netBuyAmtEok: number;
+  asOfDateLabel?: string;
+  consecutiveDays?: number;
+  consecutiveText?: string;
 }
 
 export interface OverlapRankingItem extends RankingItem {

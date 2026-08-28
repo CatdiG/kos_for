@@ -1,11 +1,13 @@
-import { getStockName, resolveSymbolOrName, buildSearchStockList } from '../src/lib/stockDictionary';
+import { fetchOverlapRankingData } from '../src/lib/kisApi';
 
-console.log('--- Testing Stock Resolution ---');
-const list = buildSearchStockList();
-console.log('Total search list count:', list.length);
+async function main() {
+  console.log('Testing fetchOverlapRankingData directly...');
+  try {
+    const res = await fetchOverlapRankingData('buy', '1d', 2, 10, 'ALL');
+    console.log(`Success! Total items: ${res.list.length}`);
+  } catch (err: any) {
+    console.error('Direct Exception:', err?.stack || err);
+  }
+}
 
-const symbol = resolveSymbolOrName('대원전선', list);
-console.log('Resolved symbol for "대원전선":', symbol);
-
-const stockName = getStockName(symbol);
-console.log('Stock name for symbol:', stockName);
+main();

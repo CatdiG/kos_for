@@ -64,19 +64,19 @@ export default function SupplySummaryCards({
     return `${isNeg ? '-' : '+'}${abs.toLocaleString()}백만`;
   };
 
-  const isSelectedStock = selectedStockItem && selectedStockItem.symbol === stockInfo?.symbol;
+  const isSelectedStock = Boolean(selectedStockItem && selectedStockItem.symbol === stockInfo?.symbol);
 
-  const foreignAmt = isSelectedStock
-    ? (selectedStockItem.foreignNetBuyAmt ?? selectedStockItem.netBuyAmt)
-    : summary.foreign.todayEstimateAmt;
+  const foreignAmt = (isSelectedStock && selectedStockItem?.foreignNetBuyAmt !== undefined)
+    ? selectedStockItem.foreignNetBuyAmt
+    : (summary.foreign.todayEstimateAmt ?? 0);
 
-  const organAmt = isSelectedStock
-    ? (selectedStockItem.organNetBuyAmt ?? (selectedStockItem.type === 'organ' ? selectedStockItem.netBuyAmt : summary.organ.todayEstimateAmt))
-    : summary.organ.todayEstimateAmt;
+  const organAmt = (isSelectedStock && selectedStockItem?.organNetBuyAmt !== undefined)
+    ? selectedStockItem.organNetBuyAmt
+    : (summary.organ.todayEstimateAmt ?? 0);
 
-  const pensionAmt = isSelectedStock
-    ? (selectedStockItem.pensionNetBuyAmt ?? (selectedStockItem.type === 'pension' ? selectedStockItem.netBuyAmt : summary.pension.todayEstimateAmt))
-    : summary.pension.todayEstimateAmt;
+  const pensionAmt = (isSelectedStock && selectedStockItem?.pensionNetBuyAmt !== undefined)
+    ? selectedStockItem.pensionNetBuyAmt
+    : (summary.pension.todayEstimateAmt ?? 0);
 
   const foreignMetric = {
     ...summary.foreign,
@@ -114,36 +114,14 @@ export default function SupplySummaryCards({
     },
   ];
 
-  const programAmt = (isSelectedStock && (selectedStockItem.type === 'program' || selectedStockItem.programNetBuyAmt !== undefined))
-    ? (selectedStockItem.programNetBuyAmt ?? selectedStockItem.netBuyAmt)
+  const programAmt = (isSelectedStock && selectedStockItem?.programNetBuyAmt !== undefined)
+    ? selectedStockItem.programNetBuyAmt
     : (programTrade?.totalNetBuyAmt ?? 0);
 
   const programDirectionInfo = getSupplyDirection(programAmt);
 
   return (
-    <div className="space-y-2 w-full">
-      {/* Selected Stock Banner Sync Indicator */}
-      {stockInfo && (
-        <div className="flex flex-wrap items-center justify-between gap-2 px-1 text-xs text-slate-600 dark:text-slate-300">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
-              <span className="w-2 h-2 rounded-full bg-blue-600 animate-pulse" />
-              수급 현황 요약: <strong className="text-blue-600 dark:text-blue-400">{stockInfo.name}</strong> ({stockInfo.symbol})
-            </span>
-            <span className="text-[11px] font-mono bg-slate-100 dark:bg-[#1e222d] px-2 py-0.5 rounded-md border border-slate-200 dark:border-[#2a2e39] font-bold text-slate-800 dark:text-slate-200">
-              현재가 {stockInfo.currentPrice.toLocaleString()}원 (
-              <span className={stockInfo.changeRate >= 0 ? 'text-red-500' : 'text-blue-500'}>
-                {stockInfo.changeRate >= 0 ? '+' : ''}{stockInfo.changeRate.toFixed(2)}%
-              </span>
-              )
-            </span>
-          </div>
-          <span className="text-[10px] text-slate-400 font-medium">
-            * KIS API 단일 데이터 소스 (Single Source of Truth) 100% 실시간 연동
-          </span>
-        </div>
-      )}
-
+    <div className="w-full">
       {/* 4 Summary Cards Grid */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 w-full">
         {/* 1~3: Foreign, Institution, Pension Fund */}
@@ -197,10 +175,14 @@ export default function SupplySummaryCards({
                     {directionInfo.label}
                   </span>
                 </div>
-
                 {/* Today Estimate Main Metric */}
                 <div className="my-3 pb-3 border-b border-slate-100 dark:border-[#2a2e39]/60">
-                  <div className="text-xs text-slate-500 dark:text-[#787b86] mb-1 whitespace-nowrap">당일 추정 순매수</div>
+                  <div className="text-xs text-slate-500 dark:text-[#787b86] mb-1 whitespace-nowrap flex items-center justify-between">
+                    <span>{card.metric.isFallback ? '추정 순매수' : '당일 가집계 순매수'}</span>
+                    <span className="text-[10px] font-mono text-slate-500 dark:text-slate-400 font-semibold">
+                      {card.metric.asOfDateLabel || '당일 가집계'}
+                    </span>
+                  </div>
                   <div className="flex items-baseline justify-between gap-1">
                     <div
                       className={`text-xl sm:text-2xl font-bold font-mono tracking-tight flex items-center gap-0.5 whitespace-nowrap ${directionInfo.colorClass}`}

@@ -8,7 +8,7 @@ export const revalidate = 0;
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
-    const query = searchParams.get('query') || '';
+    const query = searchParams.get('query') || searchParams.get('q') || '';
 
     const searchList = buildSearchStockList(PRESET_STOCKS, TOP_50_STOCKS);
 
