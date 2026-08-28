@@ -33,27 +33,39 @@ function setGlobalTokenCache(cache: TokenCacheData): void {
 
 /**
  * 프로덕션/개발 응답에서 Mock/Seed 가짜 데이터 유출 방지 및 검증 가드
+ * (프로덕션 환경에서도 가짜 데이터 감지 시 응답 리스트에서 즉시 제거/빈 리스트로 차단)
  */
 export function assertNoMockLeak(res: InvestorRankingResponse | null | undefined): void {
   if (!res || !Array.isArray(res.list)) return;
   
   if (res.isMock) {
-    console.error('🚨 MOCK DATA LEAKED TO PRODUCTION RESPONSE: isMock is true!', res.type);
+    console.error('🚨 MOCK DATA LEAKED TO PRODUCTION RESPONSE: isMock is true! Purging all items.', res.type);
+    res.list = [];
+    res.isMock = false;
     if (process.env.NODE_ENV !== 'production') {
       throw new Error(`[MOCK LEAK PROTECTOR] Fake ranking data (isMock=true) attempted to bleed into response! (Type: ${res.type})`);
     }
+    return;
   }
 
-  for (const item of res.list) {
+  const originalCount = res.list.length;
+  res.list = res.list.filter((item) => {
+    if (!item) return false;
     if (item.ranksByType && item.ranksByType.length > 0) {
       const isFakeSeedBadge = item.investorBadge === '4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)';
       const isFakeSeedNetBuy = item.netBuyAmt > 0 && item.netBuyAmt % 200 === 0 && item.netBuyQty % 1000 === 0;
       if (isFakeSeedBadge && isFakeSeedNetBuy) {
-        console.error('🚨 MOCK DATA LEAKED TO PRODUCTION RESPONSE: Fake seed ranking item detected!', item.symbol, item.name);
-        if (process.env.NODE_ENV !== 'production') {
-          throw new Error(`[MOCK LEAK PROTECTOR] Fake seed ranking item (${item.symbol} ${item.name}) detected in response!`);
-        }
+        console.error('🚨 MOCK DATA LEAKED TO PRODUCTION RESPONSE - PURGED FAKE ITEM:', item.symbol, item.name);
+        return false; // PURGE ITEM FROM PRODUCTION RESPONSE
       }
+    }
+    return true;
+  });
+
+  if (res.list.length < originalCount) {
+    console.error(`🚨 MOCK DATA LEAKED TO PRODUCTION RESPONSE: Purged ${originalCount - res.list.length} fake seed item(s)!`);
+    if (process.env.NODE_ENV !== 'production') {
+      throw new Error(`[MOCK LEAK PROTECTOR] ${originalCount - res.list.length} fake seed ranking item(s) detected in response!`);
     }
   }
 }
