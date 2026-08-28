@@ -1198,7 +1198,7 @@ async function executeKisForeignInstitutionRankingFetch(
         custtype: 'P',
       },
       cache: 'no-store' as const,
-      signal: AbortSignal.timeout(4000),
+      signal: AbortSignal.timeout(8000),
     };
 
     const [resKospi, resKosdaq] = await Promise.all([
@@ -1228,7 +1228,7 @@ async function executeKisForeignInstitutionRankingFetch(
         custtype: 'P',
       },
       cache: 'no-store',
-      signal: AbortSignal.timeout(4000),
+      signal: AbortSignal.timeout(8000),
     });
 
     if (!res.ok) {
