@@ -63,8 +63,8 @@ export async function GET(request: NextRequest) {
             await resolveAndCacheMissingCredits(missingSymbols).catch(() => null);
           }
         }
-        if (type === 'pension' || type === 'program' || type === 'overlap') {
-          await runTop50BatchCollector(true, `after_batch_${type}`).catch(() => null);
+        if (type === 'pension' || type === 'program') {
+          await runTop50BatchCollector(false, `after_batch_${type}`).catch(() => null);
         }
       });
     }

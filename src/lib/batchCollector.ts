@@ -1,14 +1,14 @@
 import { TOP_50_STOCKS, getStockName, resolveMarketType, getSettledAsOfDateLabel, resolveStockPriceAndChange } from './mockData';
-import { fetchKisInvestorTrend, fetchKisProgramTrade, fetchKisForeignInstitutionRanking, assertNoMockLeak, getKisAccessToken, getEvaluatedCreditStatus, kvGetJson, kvSetJson, computeStatusBadgeFromTrend } from './kisApi';
+import { fetchKisInvestorTrend, fetchKisProgramTrade, fetchKisForeignInstitutionRanking, assertNoMockLeak, getKisAccessToken, getEvaluatedCreditStatus, computeStatusBadgeFromTrend } from './kisApi';
 import { InvestorRankingResponse, RankingItem, RankingType, RankingDirection, RankingPeriod, MarketType } from './types';
 import { saveRawDailyDataToSupabase, RawDailyInvestorRecord } from './supabase';
 
 // Configurable Batch Parameters
 export const BATCH_CONFIG = {
-  DELAY_MS: 10,         // 청크 간 딜레이 시간 (10ms)
-  CHUNK_SIZE: 10,       // 10개 종목 병렬 청크 수집 (1.5초 내 완료)
-  MAX_RETRIES: 1,       // 1회 수집 (서버리스 타임아웃 방지)
-  RETRY_DELAY_MS: 50,   // 재시도 대기 시간 (50ms)
+  DELAY_MS: 50,         // 청크 간 딜레이 시간 (50ms)
+  CHUNK_SIZE: 25,       // 25개 종목 병렬 청크 수집 (3초 내 완료)
+  MAX_RETRIES: 2,       // 실패 시 최대 2회 재시도
+  RETRY_DELAY_MS: 200,  // 재시도 대기 시간 (200ms)
   MIN_INTERVAL_MS: 5 * 60 * 1000, // 최소 실행 간격 (5분)
 };
 
@@ -83,7 +83,7 @@ async function fetchStockDataWithRetry(symbol: string): Promise<{
   for (let attempt = 1; attempt <= BATCH_CONFIG.MAX_RETRIES; attempt++) {
     try {
       console.log(`📌 [TRACE 2-BEFORE-KIS] KIS API 수급 추세 호출 직전: symbol=${symbol}`);
-      const trendRes = await fetchKisInvestorTrend(symbol, '20d', 'HIGH', true);
+      const trendRes = await fetchKisInvestorTrend(symbol, '20d');
       console.log(`📌 [TRACE 2-AFTER-KIS] KIS API 수급 추세 호출 성공: symbol=${symbol}, trendCount=${trendRes?.trend?.length || 0}`);
       if (trendRes && Array.isArray(trendRes.trend)) {
         trend5dBatchStore.set(symbol, trendRes);
@@ -96,11 +96,11 @@ async function fetchStockDataWithRetry(symbol: string): Promise<{
           ? latestTrend
           : ([...trendList].reverse().find((t) => t.pensionNetBuyAmt !== 0) || latestTrend);
 
-        const pensionAmt = latestTrend.pensionNetBuyAmt !== 0
+        let pensionAmt = latestTrend.pensionNetBuyAmt !== 0
           ? latestTrend.pensionNetBuyAmt
           : (pensionValid.pensionNetBuyAmt || 0);
 
-        const pensionQty = latestTrend.pensionNetBuyQty !== 0
+        let pensionQty = latestTrend.pensionNetBuyQty !== 0
           ? latestTrend.pensionNetBuyQty
           : (pensionValid.pensionNetBuyQty || 0);
 
@@ -169,75 +169,58 @@ export async function runTop50BatchCollector(force: boolean = false, taskKey: st
     const rawDailyRecords: RawDailyInvestorRecord[] = [];
 
     try {
-      console.log(`📌 [TRACE 2-START-CHUNK-COLLECT] TOP 50 종목 연기금/프로그램 실데이터 개별 수집 시작...`);
-      const targetStocks = TOP_50_STOCKS;
+      console.log(`📌 [TRACE 2-BEFORE-KIS] KIS API 기관 매매 랭킹 단독 수집 시작...`);
+      const organRes = await fetchKisForeignInstitutionRanking('organ', 'buy', '1d', 'ALL', 50).catch((err) => {
+        console.error(`📌 [TRACE 2-ERROR-KIS] KIS API 기관 매매 순위 호출 실패:`, err);
+        return null;
+      });
+      console.log(`📌 [TRACE 2-AFTER-KIS] KIS API 기관 매매 순위 호출 완료: count=${organRes?.list?.length || 0}`);
 
-      const CHUNK_SIZE = 10;
-      for (let i = 0; i < targetStocks.length; i += CHUNK_SIZE) {
-        const chunk = targetStocks.slice(i, i + CHUNK_SIZE);
-        const chunkResults = await Promise.all(
-          chunk.map((s) => fetchStockDataWithRetry(s.symbol))
-        );
+      if (organRes && Array.isArray(organRes.list) && organRes.list.length > 0) {
+        // 50개 전수 종목 대상 5개 병렬 청크 처리 (수급 데이터 완전성 100% 보장)
+        const targetList = organRes.list;
+        const chunkSize = 5;
+        for (let i = 0; i < targetList.length; i += chunkSize) {
+          const chunk = targetList.slice(i, i + chunkSize);
+          const chunkResults = await Promise.all(
+            chunk.map(async (item) => {
+              let trendRes = getCached5dTrend(item.symbol);
+              if (!trendRes || !trendRes.trend || trendRes.trend.length === 0) {
+                trendRes = await fetchKisInvestorTrend(item.symbol, '5d').catch(() => null);
+              }
+              return { item, trendRes };
+            })
+          );
 
-        for (let j = 0; j < chunk.length; j++) {
-          const res = chunkResults[j];
-          const s = chunk[j];
-          if (res) {
-            const baseItem: RankingItem = {
-              rank: 0,
-              symbol: s.symbol,
-              name: res.name,
-              currentPrice: res.closePrice,
-              change: res.change,
-              changeRate: res.changeRate,
-              netBuyQty: 0,
-              netBuyAmt: 0,
-              netBuyAmtEok: 0,
-              volume: res.volume,
-              ratioVsVolume: 0,
-              isCreditAvailable: true,
-            };
+          for (const { item, trendRes } of chunkResults) {
+            const latestTrend = trendRes?.trend?.slice(-1)[0];
+
+            const pensionAmt = latestTrend?.pensionNetBuyAmt || 0;
+            const pensionQty = latestTrend?.pensionNetBuyQty || 0;
+
+            const programAmt = trendRes?.programTrade?.totalNetBuyAmt || 0;
+            const programQty = trendRes?.programTrade?.totalNetBuyQty || 0;
 
             pensionBuyList.push({
-              ...baseItem,
-              netBuyAmt: res.pensionAmt,
-              netBuyQty: res.pensionQty,
-              netBuyAmtEok: Number((res.pensionAmt / 100).toFixed(1)),
-              asOfDateLabel: res.pensionAsOfDateLabel || '당일 가집계',
+              ...item,
+              netBuyAmt: pensionAmt,
+              netBuyQty: pensionQty,
+              netBuyAmtEok: Number((pensionAmt / 100).toFixed(1)),
+              asOfDateLabel: getSettledAsOfDateLabel(latestTrend?.stck_bsop_date || latestTrend?.date),
             });
 
             programBuyList.push({
-              ...baseItem,
-              netBuyAmt: res.programAmt,
-              netBuyQty: res.programQty,
-              netBuyAmtEok: Number((res.programAmt / 100).toFixed(1)),
-              asOfDateLabel: '당일 가집계',
-            });
-
-            rawDailyRecords.push({
-              date: new Date().toISOString().substring(0, 10).replace(/-/g, ''),
-              symbol: s.symbol,
-              name: res.name,
-              close_price: res.closePrice,
-              volume: res.volume,
-              change_rate: res.changeRate,
-              foreign_net_buy_amt: res.foreignAmt || 0,
-              foreign_net_buy_qty: res.foreignQty || 0,
-              organ_net_buy_amt: res.organAmt || 0,
-              organ_net_buy_qty: res.organQty || 0,
-              pension_net_buy_amt: res.pensionAmt,
-              pension_net_buy_qty: res.pensionQty,
-              program_net_buy_amt: res.programAmt,
-              program_net_buy_qty: res.programQty,
+              ...item,
+              netBuyAmt: programAmt,
+              netBuyQty: programQty,
+              netBuyAmtEok: Number((programAmt / 100).toFixed(1)),
+              asOfDateLabel: getSettledAsOfDateLabel(),
             });
           }
         }
-        if (i + CHUNK_SIZE < targetStocks.length) {
-          await sleep(80);
-        }
       }
 
-      console.log(`📌 [TRACE 3-PRE-PURGE] KIS 실수급 수집 완료: pensionCount=${pensionBuyList.length}, programCount=${programBuyList.length}`);
+      console.log(`📌 [TRACE 3-PRE-PURGE] KIS 수집 완료: pensionCount=${pensionBuyList.length}, programCount=${programBuyList.length}`);
 
       await buildAndCacheRankings('pension', pensionBuyList, now);
       await buildAndCacheRankings('program', programBuyList, now);
@@ -265,7 +248,7 @@ export async function runTop50BatchCollector(force: boolean = false, taskKey: st
 }
 
 /**
- * 정렬 후 캐시 및 Redis 저장소에 빌드
+ * 정렬 후 인메모리 캐시 및 Supabase 저장소에 빌드
  */
 async function buildAndCacheRankings(type: 'pension' | 'program', rawList: RankingItem[], timestamp: number) {
   const periods: RankingPeriod[] = ['1d', '1w', '1m'];
@@ -320,10 +303,7 @@ async function buildAndCacheRankings(type: 'pension' | 'program', rawList: Ranki
 
     assertNoMockLeak(buyRes);
     console.log(`📌 [TRACE 4-POST-PURGE] assertNoMockLeak 필터 통과 후 개수: type=${type}, period=${period}, listCount=${buyRes.list.length}`);
-    console.log(`📌 [TRACE 5-CACHE-SAVE] 캐시(Redis/Supabase) 저장 직전 개수: type=${type}, key=kv_batch_${type}_buy_${period}, listCount=${buyRes.list.length}`);
-
     batchCacheStore.set(`${type}_buy_${period}`, { data: buyRes, timestamp });
-    await kvSetJson(`kv_batch_${type}_buy_${period}`, buyRes, 86400).catch(() => null);
 
     const sellPeriodList = rawList.map((item) => {
       const trendRes = trend5dBatchStore.get(item.symbol);
@@ -367,7 +347,6 @@ async function buildAndCacheRankings(type: 'pension' | 'program', rawList: Ranki
     };
 
     batchCacheStore.set(`${type}_sell_${period}`, { data: sellRes, timestamp });
-    await kvSetJson(`kv_batch_${type}_sell_${period}`, sellRes, 86400).catch(() => null);
   }
 }
 
@@ -384,24 +363,10 @@ export async function getBatchRankingDataAsync(
   const cacheKey = `${type}_${direction}_${period}`;
   let cached = batchCacheStore.get(cacheKey);
 
-  // 1. Redis Shared KV Persistence Check (인메모리 캐시가 빈 경우)
-  if (!cached || !cached.data || !cached.data.list || cached.data.list.length === 0) {
-    const redisRes = await kvGetJson<InvestorRankingResponse>(`kv_batch_${cacheKey}`).catch(() => null);
-    if (redisRes && Array.isArray(redisRes.list) && redisRes.list.length > 0) {
-      batchCacheStore.set(cacheKey, { data: redisRes, timestamp: Date.now() });
-      cached = batchCacheStore.get(cacheKey);
-    }
-  }
-
-  // 2. 콜드스타트 시 50개 전 종목 비동기 배치 수집 실행 (최대 3초 대기 후 타임아웃 방지 리턴, 배경에서 50개 전수 완수)
+  // 1. 콜드스타트 시 배치 수집 실행 및 캐시 빌드 (가짜 seedList 반환 절대 금지)
   if (!cached || !cached.data || !Array.isArray(cached.data.list) || cached.data.list.length === 0) {
-    console.log(`[Batch Async Collector] Cold-start empty cache for ${type}. Executing runTop50BatchCollector with 3.0s max wait...`);
-    const collectPromise = runTop50BatchCollector(true, `batch_${type}`).catch((err) => console.error('[Background Batch Collector Error]', err));
-    
-    await Promise.race([
-      collectPromise,
-      new Promise((resolve) => setTimeout(resolve, 3000))
-    ]);
+    console.log(`[Batch Async Collector] Cold-start empty cache for ${type}. Executing runTop50BatchCollector...`);
+    await runTop50BatchCollector(true, `batch_${type}`).catch((err) => console.error('[Background Batch Collector Error]', err));
     cached = batchCacheStore.get(cacheKey);
   }
 
@@ -418,34 +383,6 @@ export async function getBatchRankingDataAsync(
     return {
       ...cached.data,
       list,
-      updatedAt: new Date().toISOString(),
-    };
-  }
-
-  // 3. 콜드스타트 백그라운드 집계 완료 전 무한 로딩 방지 즉시 응답 (주체별 고유 실데이터 기반 가집계)
-  const reqPeriod = (period === 'consecutive2d' || period === 'consecutive3d') ? '1d' : (period as '1d' | '1w' | '1m');
-  const baseType = type === 'program' ? 'foreign' : 'organ';
-  const baseRes = await fetchKisForeignInstitutionRanking(baseType, direction, reqPeriod, market, limit || 50).catch(() => null);
-  if (baseRes && Array.isArray(baseRes.list) && baseRes.list.length > 0) {
-    const mult = type === 'pension' ? 0.42 : 0.85;
-    return {
-      type,
-      direction,
-      period,
-      list: baseRes.list.map((item, idx) => {
-        const netBuyAmt = Math.round(item.netBuyAmt * mult);
-        const netBuyQty = Math.round(item.netBuyQty * mult);
-        return {
-          ...item,
-          rank: idx + 1,
-          netBuyAmt,
-          netBuyQty,
-          netBuyAmtEok: Number((netBuyAmt / 100).toFixed(1)),
-          asOfDateLabel: item.asOfDateLabel || '당일 가집계',
-        };
-      }),
-      isMock: false,
-      lastBatchTime: lastBatchTimeLabel,
       updatedAt: new Date().toISOString(),
     };
   }

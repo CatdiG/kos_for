@@ -1178,67 +1178,77 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
                         <td className="p-2.5 text-center font-bold whitespace-nowrap">
                           <div className="flex flex-row items-center justify-center gap-1 whitespace-nowrap">
                             <div className="relative inline-flex items-center justify-center shrink-0">
-                              {/* Tilted Floating Star Emblem Overlay on top-left of rank badge */}
-                              {activeTab === 'overlap' && (overlapMode === 'daily' || !overlapMode) && item.aiPickRank && (
+                              {/* 게임 티어 표준 5색 및 1위(30px)~5위(10px) 5px 단위 차등 단일 별(Star) 엠블럼 */}
+                              {activeTab === 'overlap' && (overlapMode === 'daily' || !overlapMode) && item.aiPickRank && item.aiPickRank <= 5 && (
                                 <div
-                                  className="absolute -top-1.5 -left-1.5 z-[2] pointer-events-none transform -rotate-6 shrink-0"
+                                  className={`absolute z-[2] pointer-events-none transform -rotate-45 origin-center shrink-0 filter drop-shadow-[0_1px_2px_rgba(0,0,0,0.4)] ${
+                                    item.aiPickRank === 1
+                                      ? '-top-3 -left-3'
+                                      : item.aiPickRank === 2
+                                      ? '-top-2.5 -left-2.5'
+                                      : item.aiPickRank === 3
+                                      ? '-top-2 -left-2'
+                                      : item.aiPickRank === 4
+                                      ? '-top-1.5 -left-1.5'
+                                      : '-top-0.5 -left-0.5'
+                                  }`}
                                   title={`AI 수급 추천 ${item.aiPickRank}위`}
                                 >
-                                  {item.aiPickRank === 1 ? (
-                                    /* 1위: 별 3개가 선명하게 겹쳐진 3중 입체 엠블럼 */
-                                    <svg width="24" height="16" viewBox="0 0 34 22" fill="none" className="shrink-0">
-                                      <path
-                                        d="M8 2l2.1 4.2L15 6.9l-3.5 3.4.8 4.8L8 12.8 3.7 15.1l.8-4.8L1 6.9l4.9-.7L8 2z"
-                                        fill="#FFD700"
-                                        stroke="#4A2E00"
-                                        strokeWidth="1.4"
-                                        strokeLinejoin="round"
-                                      />
-                                      <path
-                                        d="M26 2l2.1 4.2L33 6.9l-3.5 3.4.8 4.8-4.3-2.3-4.3 2.3.8-4.8-3.5-3.4 4.9-.7L26 2z"
-                                        fill="#FFD700"
-                                        stroke="#4A2E00"
-                                        strokeWidth="1.4"
-                                        strokeLinejoin="round"
-                                      />
-                                      <path
-                                        d="M17 1l2.6 5.3 5.8.8-4.2 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8-4.2-4.1 5.8-.8L17 1z"
-                                        fill="#FFE600"
-                                        stroke="#4A2E00"
-                                        strokeWidth="1.5"
-                                        strokeLinejoin="round"
-                                      />
-                                    </svg>
-                                  ) : item.aiPickRank === 2 ? (
-                                    /* 2위: 별 2개가 선명하게 겹쳐진 2중 엠블럼 */
-                                    <svg width="19" height="15" viewBox="0 0 26 22" fill="none" className="shrink-0">
-                                      <path
-                                        d="M8 2l2.1 4.2L15 6.9l-3.5 3.4.8 4.8L8 12.8 3.7 15.1l.8-4.8L1 6.9l4.9-.7L8 2z"
-                                        fill="#FFD700"
-                                        stroke="#4A2E00"
-                                        strokeWidth="1.4"
-                                        strokeLinejoin="round"
-                                      />
-                                      <path
-                                        d="M18 1l2.5 5 5.5.8-4 3.9 1 5.5-5-2.6-5 2.6 1-5.5-4-3.9 5.5-.8L18 1z"
-                                        fill="#FFE600"
-                                        stroke="#4A2E00"
-                                        strokeWidth="1.5"
-                                        strokeLinejoin="round"
-                                      />
-                                    </svg>
-                                  ) : (
-                                    /* 3위: 1개 엠블럼 별 */
-                                    <svg width="14" height="14" viewBox="0 0 22 22" fill="none" className="shrink-0">
-                                      <path
-                                        d="M11 1l2.8 5.7 6.3.9-4.5 4.4 1.1 6.3-5.7-3-5.7 3 1.1-6.3-4.5-4.4 6.3-.9L11 1z"
-                                        fill="#FFE600"
-                                        stroke="#4A2E00"
-                                        strokeWidth="1.5"
-                                        strokeLinejoin="round"
-                                      />
-                                    </svg>
-                                  )}
+                                  <svg
+                                    width={
+                                      item.aiPickRank === 1
+                                        ? '30'
+                                        : item.aiPickRank === 2
+                                        ? '25'
+                                        : item.aiPickRank === 3
+                                        ? '20'
+                                        : item.aiPickRank === 4
+                                        ? '15'
+                                        : '10'
+                                    }
+                                    height={
+                                      item.aiPickRank === 1
+                                        ? '30'
+                                        : item.aiPickRank === 2
+                                        ? '25'
+                                        : item.aiPickRank === 3
+                                        ? '20'
+                                        : item.aiPickRank === 4
+                                        ? '15'
+                                        : '10'
+                                    }
+                                    viewBox="0 0 22 22"
+                                    fill="none"
+                                    className="shrink-0 animate-in fade-in duration-200 opacity-80"
+                                  >
+                                    <path
+                                      d="M11 1l2.8 5.7 6.3.9-4.5 4.4 1.1 6.3-5.7-3-5.7 3 1.1-6.3-4.5-4.4 6.3-.9L11 1z"
+                                      fill={
+                                        item.aiPickRank === 1
+                                          ? '#FFE600' /* 1위: 30px 선명한 퓨어 골드 */
+                                          : item.aiPickRank === 2
+                                          ? '#E2E8F0' /* 2위: 25px 플래티넘 실버 */
+                                          : item.aiPickRank === 3
+                                          ? '#EA580C' /* 3위: 20px 코퍼 브론즈 */
+                                          : item.aiPickRank === 4
+                                          ? '#38BDF8' /* 4위: 15px 스틸 사파이어/블루 */
+                                          : '#D946EF' /* 5위: 10px 마스터 퍼플 */
+                                      }
+                                      stroke={
+                                        item.aiPickRank === 1
+                                          ? '#CA8A04' /* 1위: 순수 짙은 옐로우/진노랑 테두리 */
+                                          : item.aiPickRank === 2
+                                          ? '#64748B' /* 실버 톤온톤 슬레이트 테두리 */
+                                          : item.aiPickRank === 3
+                                          ? '#9A3412' /* 브론즈 톤온톤 딥코퍼 테두리 */
+                                          : item.aiPickRank === 4
+                                          ? '#0284C7' /* 블루 톤온톤 딥사파이어 테두리 */
+                                          : '#86198F' /* 퍼플 톤온톤 딥푸시아 테두리 */
+                                      }
+                                      strokeWidth="1.6"
+                                      strokeLinejoin="round"
+                                    />
+                                  </svg>
                                 </div>
                               )}
 

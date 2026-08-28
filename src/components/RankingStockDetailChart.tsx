@@ -16,7 +16,7 @@ import {
 } from 'recharts';
 import { InvestorTrendResponse, TrendPeriod } from '@/lib/types';
 import { getStockName, resolveStockPriceAndChange, computeUnifiedStatusBadge } from '@/lib/mockData';
-import { TrendingUp, TrendingDown, Calendar, Clock, Activity, RefreshCw, AlertCircle } from 'lucide-react';
+import { TrendingUp, TrendingDown, Calendar, Clock, Activity, RefreshCw, AlertCircle, X } from 'lucide-react';
 import { useTheme } from '@/providers/ThemeProvider';
 
 interface RankingStockDetailChartProps {
@@ -27,6 +27,7 @@ interface RankingStockDetailChartProps {
   isLoading?: boolean;
   period?: TrendPeriod;
   onPeriodChange?: (period: TrendPeriod) => void;
+  onClose?: () => void;
 }
 
 async function fetchTrend(symbol: string, period: TrendPeriod): Promise<InvestorTrendResponse> {
@@ -264,6 +265,7 @@ export default function RankingStockDetailChart({
   isLoading: propIsLoading,
   period: propPeriod,
   onPeriodChange,
+  onClose,
 }: RankingStockDetailChartProps) {
   const { theme } = useTheme();
 
@@ -697,11 +699,22 @@ function calculateUltraTightKrxPriceAxis(minRaw: number, maxRaw: number, targetT
       {/* 100%-Baseline Disparate Ratio Status Header - Ultra Space-Efficient Inline Card Layout */}
       {activeTab === 'daily' && (
         <div className="flex flex-col gap-1.5 p-2.5 mb-2 bg-slate-50/90 dark:bg-[#161a25]/90 border border-slate-200/80 dark:border-[#2a2e39] rounded-xl font-sans shadow-xs w-full">
-          {/* Header Row: Centered Overall Status Badge */}
-          <div className="flex items-center justify-center border-b border-slate-200/60 dark:border-[#2a2e39] pb-1 w-full">
+          {/* Header Row: Centered Overall Status Badge & Right-aligned Close Button */}
+          <div className="relative flex items-center justify-center border-b border-slate-200/60 dark:border-[#2a2e39] pb-1 w-full min-h-[26px]">
             <span className={`px-2.5 py-0.5 rounded text-xs font-bold border shadow-2xs ${disparateInfo.badgeStyle}`}>
               {disparateInfo.badge}
             </span>
+            {onClose && (
+              <button
+                type="button"
+                onClick={onClose}
+                className="absolute right-0 top-1/2 -translate-y-1/2 px-2.5 py-1 rounded-lg bg-slate-200/80 hover:bg-slate-300 dark:bg-[#1e222d] dark:hover:bg-[#2a2e39] text-slate-700 dark:text-slate-200 font-bold text-xs transition flex items-center gap-1 cursor-pointer shadow-2xs"
+                title="차트 닫기"
+              >
+                <span>차트 닫기</span>
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
           </div>
 
           {/* 2-Column Asymmetric Grid: Expanded 20D Card (col-span-7) & Compact 60D Card (col-span-5) */}
@@ -949,6 +962,19 @@ function calculateUltraTightKrxPriceAxis(minRaw: number, maxRaw: number, targetT
               프로그램
             </button>
           </div>
+        )}
+
+        {/* Intraday Close Button if onClose is provided */}
+        {activeTab === 'intraday' && onClose && (
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-2.5 py-1 rounded-lg bg-slate-200/80 hover:bg-slate-300 dark:bg-[#1e222d] dark:hover:bg-[#2a2e39] text-slate-700 dark:text-slate-200 font-bold text-xs transition flex items-center gap-1 cursor-pointer shadow-2xs ml-auto"
+            title="차트 닫기"
+          >
+            <span>차트 닫기</span>
+            <X className="w-3.5 h-3.5" />
+          </button>
         )}
       </div>
 

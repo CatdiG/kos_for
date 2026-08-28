@@ -165,7 +165,7 @@ export interface RankingItem {
   ranksByType?: OverlapInvestorRank[];
   missingEntities?: Array<{ type: 'foreign' | 'organ' | 'pension' | 'program'; label: string }>;
   asOfDateLabel?: string;
-  aiPickRank?: number;        // AI 추천 순위 배지 (1, 2, 3)
+  aiPickRank?: number;        // AI 추천 순위 배지 (1, 2, 3, 4, 5)
 }
 
 export interface SurgingRankItem {

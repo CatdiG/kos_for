@@ -147,18 +147,6 @@ async function kvSaveTokenCache(cache: TokenCacheData): Promise<void> {
   saveLocalFileTokenCache(cache);
 }
 
-export async function kvGetJson<T>(_key: string): Promise<T | null> {
-  return null;
-}
-
-export async function kvSetJson(_key: string, _data: any, _ttlSec?: number): Promise<void> {
-  // No-op (Redis disabled)
-}
-
-async function kvMgetJson<T>(_keys: string[]): Promise<Record<string, T | null>> {
-  return {};
-}
-
 /**
  * KIS OAuth Access Token 조회 (읽기 전용 - KIS OAuth 직접 요청 100% 차단)
  * 신규 발급은 오직 Vercel Cron (/api/cron/refresh-kis-token) 라우트에서만 실행됨
@@ -340,27 +328,19 @@ export async function enforceRateLimit(): Promise<void> {
 export async function fetchKisInvestorTrend(
   symbol: string,
   period: TrendPeriod = '20d',
-  priority: Priority = 'HIGH',
-  fastOnly: boolean = false
+  priority: Priority = 'HIGH'
 ): Promise<InvestorTrendResponse> {
-  const cacheKey = `${symbol}-${period}-v60d-full${fastOnly ? '-fast' : ''}`;
+  const cacheKey = `${symbol}-${period}-v60d-full`;
   const now = Date.now();
 
   // 1. In-Memory Cache Check
   if (trendDetailCache.has(cacheKey)) {
     const cached = trendDetailCache.get(cacheKey)!;
-    if (!cached.data || !Array.isArray(cached.data.trend) || cached.data.trend.length === 0) {
+    if (cached.data?.trend?.length < 120) {
       trendDetailCache.delete(cacheKey);
     } else if (now - cached.timestamp < TREND_CACHE_TTL_MS) {
       return cached.data;
     }
-  }
-
-  // 2. Vercel KV Redis Shared Cache Check (5 min TTL)
-  const redisTrend = await kvGetJson<InvestorTrendResponse>(`kv_trend_${cacheKey}`);
-  if (redisTrend && Array.isArray(redisTrend.trend) && redisTrend.trend.length > 0) {
-    trendDetailCache.set(cacheKey, { data: redisTrend, timestamp: now });
-    return redisTrend;
   }
 
   const appKey = process.env.KIS_APPKEY;
@@ -371,21 +351,17 @@ export async function fetchKisInvestorTrend(
   }
 
   try {
-    const response = fastOnly
-      ? await executeKisInvestorTrendFetch(symbol, period, true)
-      : await kisQueue.enqueue(
-          () => fetchWithRetry(() => executeKisInvestorTrendFetch(symbol, period, fastOnly)),
-          priority,
-          `trend-${symbol}-${period}`
-        );
+    const response = await kisQueue.enqueue(
+      () => fetchWithRetry(() => executeKisInvestorTrendFetch(symbol, period)),
+      priority,
+      `trend-${symbol}-${period}`
+    );
 
     if (response) {
       trendDetailCache.set(cacheKey, { data: response, timestamp: Date.now() });
-      await kvSetJson(`kv_trend_${cacheKey}`, response, 300); // 5분간 Vercel KV 캐싱
     }
     return response;
   } catch (err: any) {
-    if (redisTrend) return redisTrend;
     if (trendDetailCache.has(cacheKey)) {
       return trendDetailCache.get(cacheKey)!.data;
     }
@@ -395,8 +371,7 @@ export async function fetchKisInvestorTrend(
 
 async function executeKisInvestorTrendFetch(
   symbol: string,
-  period: TrendPeriod = '20d',
-  fastOnly: boolean = false
+  period: TrendPeriod = '20d'
 ): Promise<InvestorTrendResponse> {
   const appKey = process.env.KIS_APPKEY!;
   const appSecret = process.env.KIS_APPSECRET!;
@@ -412,9 +387,7 @@ async function executeKisInvestorTrendFetch(
     throw new Error(`[KIS API 인증 오류] ${detail}`);
   }
 
-  if (!fastOnly) {
-    await enforceRateLimit();
-  }
+  await enforceRateLimit();
   const today = new Date();
   const endDate = today.toISOString().slice(0, 10).replace(/-/g, '');
   const startDateObj = new Date(today);
@@ -425,9 +398,7 @@ async function executeKisInvestorTrendFetch(
   const dailyChartUrl = `${baseUrl}/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice?FID_COND_MRKT_DIV_CODE=J&FID_INPUT_ISCD=${symbol}&FID_INPUT_DATE_1=${startDate}&FID_INPUT_DATE_2=${endDate}&FID_PERIOD_DIV_CODE=D&FID_ORG_ADJ_PRC=0`;
 
   const json = await fetchWithRetry(async () => {
-    if (!fastOnly) {
-      await enforceRateLimit();
-    }
+    await enforceRateLimit();
     const res = await fetch(url, {
       method: 'GET',
       headers: {
@@ -469,44 +440,42 @@ async function executeKisInvestorTrendFetch(
   }
 
   let dpJson: any = null;
-  if (!fastOnly) {
-    try {
-      dpJson = await fetchWithRetry(async () => {
-        await enforceRateLimit();
-        const res = await fetch(dailyChartUrl, {
-          method: 'GET',
-          headers: {
-            'content-type': 'application/json; charset=utf-8',
-            authorization: `Bearer ${token}`,
-            appkey: appKey,
-            appsecret: appSecret,
-            tr_id: 'FHKST03010100',
-            custtype: 'P',
-          },
-          cache: 'no-store',
-        });
+  try {
+    dpJson = await fetchWithRetry(async () => {
+      await enforceRateLimit();
+      const res = await fetch(dailyChartUrl, {
+        method: 'GET',
+        headers: {
+          'content-type': 'application/json; charset=utf-8',
+          authorization: `Bearer ${token}`,
+          appkey: appKey,
+          appsecret: appSecret,
+          tr_id: 'FHKST03010100',
+          custtype: 'P',
+        },
+        cache: 'no-store',
+      });
 
-        const text = await res.text();
-        let parsed: any;
-        try {
-          parsed = JSON.parse(text);
-        } catch {
-          throw new Error(`[KIS API Format Error] ${text}`);
-        }
+      const text = await res.text();
+      let parsed: any;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        throw new Error(`[KIS API Format Error] ${text}`);
+      }
 
-        if (parsed.msg_cd === 'EGW00201' || parsed.msg_cd === 'EGW00202' || parsed.msg_cd === 'EGW00133' || parsed.msg1?.includes('초당') || parsed.msg1?.includes('초과')) {
-          throw new Error(`[KIS Rate Limit] ${parsed.msg1 || 'EGW00201'}`);
-        }
+      if (parsed.msg_cd === 'EGW00201' || parsed.msg_cd === 'EGW00202' || parsed.msg_cd === 'EGW00133' || parsed.msg1?.includes('초당') || parsed.msg1?.includes('초과')) {
+        throw new Error(`[KIS Rate Limit] ${parsed.msg1 || 'EGW00201'}`);
+      }
 
-        if (!res.ok || parsed.rt_cd !== '0' || !Array.isArray(parsed.output2)) {
-          throw new Error(`[KIS API Chart Error] ${parsed.msg1 || '차트 데이터 오류'}`);
-        }
+      if (!res.ok || parsed.rt_cd !== '0' || !Array.isArray(parsed.output2)) {
+        throw new Error(`[KIS API Chart Error] ${parsed.msg1 || '차트 데이터 오류'}`);
+      }
 
-        return parsed;
-      }, 4, 800);
-    } catch (e) {
-      dpJson = null;
-    }
+      return parsed;
+    }, 4, 800);
+  } catch (e) {
+    dpJson = null;
   }
 
   let fullDailyItems: any[] = [];
@@ -598,7 +567,7 @@ async function executeKisInvestorTrendFetch(
 
   const trend: InvestorTrendDay[] = fullDailyItems.map((item: any) => {
     const dateStr = item.stck_bsop_date || item.bsop_date || '';
-    const invItem = (item && (item.frgn_ntby_tr_pbmn !== undefined || item.orgn_ntby_tr_pbmn !== undefined || item.prnt_ntby_tr_pbmn !== undefined)) ? item : (investorMap.get(dateStr) || item || {});
+    const invItem = investorMap.get(dateStr) || {};
 
     let openPrice = parseInt(item.stck_oprc || '0', 10);
     let highPrice = parseInt(item.stck_hgpr || '0', 10);
@@ -640,10 +609,15 @@ async function executeKisInvestorTrendFetch(
       organQty = parseInt(invItem.orgn_ntby_qty || invItem.orgn_ntby_vol || '0', 10);
       organAmt = parseInt(invItem.orgn_ntby_tr_pbmn || invItem.orgn_ntby_amt || '0', 10);
 
-      const pnsnRawQty = invItem.pnsn_ntby_qty || invItem.pnsn_ntby_vol || invItem.prnt_ntby_qty || invItem.prnt_ntby_vol;
-      const pnsnRawAmt = invItem.pnsn_ntby_tr_pbmn || invItem.pnsn_ntby_amt || invItem.prnt_ntby_tr_pbmn || invItem.prnt_ntby_amt;
-      pensionQty = parseInt(pnsnRawQty || '0', 10);
-      pensionAmt = parseInt(pnsnRawAmt || '0', 10);
+      const pnsnRawQty = invItem.pnsn_ntby_qty || invItem.pnsn_ntby_vol;
+      const pnsnRawAmt = invItem.pnsn_ntby_tr_pbmn || invItem.pnsn_ntby_amt;
+      if (pnsnRawAmt !== undefined && pnsnRawAmt !== null && pnsnRawAmt !== '' && String(pnsnRawAmt) !== '0') {
+        pensionQty = parseInt(pnsnRawQty || '0', 10);
+        pensionAmt = parseInt(pnsnRawAmt || '0', 10);
+      } else {
+        pensionQty = Math.round(organQty * 0.38);
+        pensionAmt = Math.round(organAmt * 0.38);
+      }
     }
 
     cumForeign += foreignAmt;
@@ -770,9 +744,7 @@ async function executeKisInvestorTrendFetch(
     },
   };
 
-  const programTrade = fastOnly
-    ? { status: 'NEUTRAL' as const, totalNetBuyQty: 0, totalNetBuyAmt: 0, nonArbitrageAmt: 0, arbitrageAmt: 0, ratioVsVolume: 0, asOfDateLabel: '당일 가집계', intradayTrend: [] }
-    : await fetchKisProgramTrade(symbol, token, baseUrl, appKey, appSecret, stockInfo.currentPrice);
+  const programTrade = await fetchKisProgramTrade(symbol, token, baseUrl, appKey, appSecret, stockInfo.currentPrice);
 
   return {
     stockInfo,
@@ -931,13 +903,6 @@ export async function fetchKisCreditAvailable(symbol: string): Promise<boolean |
     }
   }
 
-  // Vercel KV Redis 24-hour Cache Check
-  const kvCredit = await kvGetJson<boolean>(`kv_credit_${symbol}`);
-  if (kvCredit !== null && kvCredit !== undefined) {
-    creditStatusCache.set(symbol, { isCredit: kvCredit, timestamp: now });
-    return kvCredit;
-  }
-
   const appKey = process.env.KIS_APPKEY;
   const appSecret = process.env.KIS_APPSECRET;
   if (!appKey || !appSecret || appKey.trim() === '') {
@@ -953,7 +918,6 @@ export async function fetchKisCreditAvailable(symbol: string): Promise<boolean |
 
     if (isCredit !== undefined) {
       creditStatusCache.set(symbol, { isCredit, timestamp: now });
-      await kvSetJson(`kv_credit_${symbol}`, isCredit, 86400); // 24-hour Redis Cache
     }
     return isCredit;
   } catch (e) {
@@ -1086,31 +1050,15 @@ export async function mergeCreditStatusToRanking(items: RankingItem[]): Promise<
     }
   });
 
-  // 3. Batch Supabase DB & Redis check for missing symbols
+  // 3. Batch Supabase DB check for missing symbols
   if (missingSymbols.length > 0) {
-    const stillMissing: string[] = [];
-
     // 3a. Supabase DB Check (Instant DB Read)
     const supabaseMap: Record<string, boolean> = await fetchCreditBatchFromSupabase(missingSymbols).catch(() => ({} as Record<string, boolean>));
     missingSymbols.forEach((sym) => {
       if (supabaseMap && supabaseMap[sym] !== undefined) {
         creditStatusCache.set(sym, { isCredit: supabaseMap[sym], timestamp: Date.now() });
-      } else {
-        stillMissing.push(sym);
       }
     });
-
-    // 3b. Redis fallback check if still missing
-    if (stillMissing.length > 0) {
-      const keys = stillMissing.map((sym) => `kv_credit_${sym}`);
-      const redisMap: Record<string, boolean | null> = await kvMgetJson<boolean>(keys).catch(() => ({} as Record<string, boolean | null>));
-      stillMissing.forEach((sym) => {
-        const val = redisMap[`kv_credit_${sym}`];
-        if (val !== null && val !== undefined) {
-          creditStatusCache.set(sym, { isCredit: val, timestamp: Date.now() });
-        }
-      });
-    }
   }
 
   return items.map((item) => ({
@@ -1160,7 +1108,7 @@ export async function resolveAndCacheMissingCredits(symbols: string[]): Promise<
 const rankingCacheStore = new Map<string, InvestorRankingResponse>();
 
 export async function fetchKisForeignInstitutionRanking(
-  type: 'foreign' | 'organ' | 'pension' | 'program' = 'foreign',
+  type: 'foreign' | 'organ' = 'foreign',
   direction: 'buy' | 'sell' = 'buy',
   period: '1d' | '1w' | '1m' = '1d',
   market: MarketType = 'ALL',
@@ -1183,13 +1131,6 @@ export async function fetchKisForeignInstitutionRanking(
     }
   }
 
-  // 2. Vercel KV Redis Shared Cache Check (5 min TTL)
-  const redisRank = await kvGetJson<InvestorRankingResponse>(`kv_${cacheKey}`);
-  if (redisRank && redisRank.list && redisRank.list.length > 0) {
-    rankingCacheStore.set(cacheKey, redisRank);
-    return redisRank;
-  }
-
   try {
     const res = await kisQueue.enqueue(
       () => fetchWithRetry(() => executeKisForeignInstitutionRankingFetch(type, direction, period, market, limit)),
@@ -1198,11 +1139,9 @@ export async function fetchKisForeignInstitutionRanking(
     );
     if (res && res.list && res.list.length > 0) {
       rankingCacheStore.set(cacheKey, res);
-      await kvSetJson(`kv_${cacheKey}`, res, 300); // 5분간 Vercel KV 캐싱
     }
     return res;
   } catch (err: any) {
-    if (redisRank) return redisRank;
     if (rankingCacheStore.has(cacheKey)) {
       const cached = rankingCacheStore.get(cacheKey)!;
       return {
@@ -1216,7 +1155,7 @@ export async function fetchKisForeignInstitutionRanking(
 }
 
 async function executeKisForeignInstitutionRankingFetch(
-  type: 'foreign' | 'organ' | 'pension' | 'program' = 'foreign',
+  type: 'foreign' | 'organ' = 'foreign',
   direction: 'buy' | 'sell' = 'buy',
   period: '1d' | '1w' | '1m' = '1d',
   market: MarketType = 'ALL',
@@ -1356,7 +1295,7 @@ async function executeKisForeignInstitutionRankingFetch(
       };
     });
 
-    // 100% 배치 스토어 및 Redis MGET 단일 왕복 병합 (0ms~10ms)
+    // 100% 배치 스토어 및 Supabase DB 병합 (0ms~10ms)
     const mergedList = await mergeCreditStatusToRanking(list);
 
     // 1주일(1w)/1개월(1m) 탭이거나 당일 가집계 값이 0인 경구 KIS 원본 종목별 실매매 동향(FHKST01010900)으로 보정
@@ -1393,7 +1332,7 @@ async function executeKisForeignInstitutionRankingFetch(
 
 async function enrichRankingWithRawInvestorData(
   list: RankingItem[],
-  type: 'foreign' | 'organ' | 'pension' | 'program',
+  type: 'foreign' | 'organ',
   direction: 'buy' | 'sell',
   period: RankingPeriod = '1d'
 ) {
@@ -1537,7 +1476,7 @@ export function computeStatusBadgeFromTrend(trend: InvestorTrendDay[]): { shortB
 }
 
 const overlapMemoryCache = new Map<string, { data: InvestorRankingResponse; timestamp: number }>();
-const OVERLAP_CACHE_TTL_MS = 15 * 1000;
+const OVERLAP_CACHE_TTL_MS = 5 * 60 * 1000; // 5분 (2일/3일 연속 탭 캐시 히트 보장)
 
 /**
  * 외국인, 기관, 연기금, 프로그램 4개 수급 랭킹의 교집합(중복 수급 종목) 추출 및 정렬
@@ -1555,14 +1494,6 @@ export async function fetchOverlapRankingData(
   const cached = overlapMemoryCache.get(masterCacheKey);
   if (cached && cached.data && Array.isArray(cached.data.list) && cached.data.list.length > 0 && Date.now() - cached.timestamp < OVERLAP_CACHE_TTL_MS) {
     masterData = cached.data;
-  }
-
-  if (!masterData) {
-    const redisRes = await kvGetJson<InvestorRankingResponse>(`kv_${masterCacheKey}`).catch(() => null);
-    if (redisRes && redisRes.list && redisRes.list.length > 0) {
-      overlapMemoryCache.set(masterCacheKey, { data: redisRes, timestamp: Date.now() });
-      masterData = redisRes;
-    }
   }
 
   if (!masterData) {
@@ -1755,7 +1686,12 @@ async function executeAsyncOverlapCalculation(
       .map((item) => {
         const overlapScore = (item.overlapCount || 2) * 100;
         const logAmtScore = Math.log(Math.max(0, item.netBuyAmtEok || 0) + 1) * 20;
-        const rawScore = overlapScore + logAmtScore;
+        const ratioScore = Math.min((item.ratioVsVolume || 0) * 1.5, 30);
+        const candleScore = item.changeRate > 0
+          ? Math.min(item.changeRate * 2.5, 20)
+          : item.changeRate < 0 ? -15 : 0;
+
+        const rawScore = overlapScore + logAmtScore + ratioScore + candleScore;
         const trendMult = getTrendMultiplier(item.statusBadge);
         return {
           symbol: item.symbol,
@@ -1764,10 +1700,10 @@ async function executeAsyncOverlapCalculation(
       })
       .sort((a, b) => b.score - a.score);
 
-    const top3Symbols = aiPickCandidates.slice(0, 3).map((c) => c.symbol);
+    const top5Symbols = aiPickCandidates.slice(0, 5).map((c) => c.symbol);
 
     finalOverlapItems.forEach((item) => {
-      const pickIdx = top3Symbols.indexOf(item.symbol);
+      const pickIdx = top5Symbols.indexOf(item.symbol);
       item.aiPickRank = pickIdx >= 0 ? pickIdx + 1 : undefined;
     });
 
@@ -1785,7 +1721,6 @@ async function executeAsyncOverlapCalculation(
 
     if (masterData.list && masterData.list.length > 0) {
       overlapMemoryCache.set(masterCacheKey, { data: masterData, timestamp: Date.now() });
-      await kvSetJson(`kv_${masterCacheKey}`, masterData, 86400).catch(() => null);
     }
     return masterData;
   } catch (err) {
@@ -1806,6 +1741,7 @@ async function executeAsyncOverlapCalculation(
 }
 
 const consecutiveOverlapMemoryCache = new Map<string, { data: InvestorRankingResponse; timestamp: number }>();
+const CONSECUTIVE_OVERLAP_CACHE_TTL_MS = 30 * 60 * 1000; // 30분 (한 번 계산하면 30분간 캐시 유지)
 
 export function clearConsecutiveOverlapCache() {
   consecutiveOverlapMemoryCache.clear();
@@ -1844,7 +1780,7 @@ export async function fetchConsecutiveNDaysOverlapRankingData(
 ): Promise<InvestorRankingResponse> {
   const cacheKey = `c_${direction}_${targetDays}d_${minOverlap}_${market}_${topLimit}`;
   const cached = consecutiveOverlapMemoryCache.get(cacheKey);
-  if (cached && Date.now() - cached.timestamp < OVERLAP_CACHE_TTL_MS) {
+  if (cached && Date.now() - cached.timestamp < CONSECUTIVE_OVERLAP_CACHE_TTL_MS) {
     return cached.data;
   }
 
@@ -1865,7 +1801,7 @@ export async function fetchConsecutiveNDaysOverlapRankingData(
   const stockTrendPromises = candidateStocks.map(async (stock) => {
     let trendRes = getCached5dTrend(stock.symbol);
     if (!trendRes || !trendRes.trend || trendRes.trend.length < targetDays) {
-      trendRes = await fetchKisInvestorTrend(stock.symbol, '20d').catch(() => null);
+      trendRes = await fetchKisInvestorTrend(stock.symbol, '5d').catch(() => null);
     }
     return { stock, trendRes };
   });
@@ -2060,19 +1996,26 @@ export async function fetchConsecutiveNDaysOverlapRankingData(
 
   const aiPickCandidates = [...results]
     .map((item) => {
-      const baseScore = (item.overlapCount || 2) * 100 + (item.netBuyAmtEok || 0);
+      const overlapScore = (item.overlapCount || 2) * 100;
+      const logAmtScore = Math.log(Math.max(0, item.netBuyAmtEok || 0) + 1) * 20;
+      const ratioScore = Math.min((item.ratioVsVolume || 0) * 1.5, 30);
+      const candleScore = item.changeRate > 0
+        ? Math.min(item.changeRate * 2.5, 20)
+        : item.changeRate < 0 ? -15 : 0;
+
+      const rawScore = overlapScore + logAmtScore + ratioScore + candleScore;
       const trendMult = getTrendMultiplier(item.statusBadge);
       return {
         symbol: item.symbol,
-        score: baseScore * trendMult,
+        score: rawScore * trendMult,
       };
     })
     .sort((a, b) => b.score - a.score);
 
-  const top3Symbols = aiPickCandidates.slice(0, 3).map((c) => c.symbol);
+  const top5Symbols = aiPickCandidates.slice(0, 5).map((c) => c.symbol);
 
   results.forEach((item) => {
-    const pickIdx = top3Symbols.indexOf(item.symbol);
+    const pickIdx = top5Symbols.indexOf(item.symbol);
     item.aiPickRank = pickIdx >= 0 ? pickIdx + 1 : undefined;
   });
 
@@ -2126,13 +2069,6 @@ export async function fetchKisSurgingStocks(
     }
   }
 
-  // 2. Redis KV Cache Check
-  const redisSurging = await kvGetJson<InvestorRankingResponse>(`kv_${cacheKey}`).catch(() => null);
-  if (redisSurging && redisSurging.list && redisSurging.list.length > 0) {
-    surgingCacheStore.set(cacheKey, redisSurging);
-    return redisSurging;
-  }
-
   try {
     const res = await kisQueue.enqueue(
       () => fetchWithRetry(() => executeKisSurgingStocksFetch(mode, market), 1, 300),
@@ -2141,7 +2077,6 @@ export async function fetchKisSurgingStocks(
     );
     if (res && res.list && res.list.length > 0) {
       surgingCacheStore.set(cacheKey, res);
-      await kvSetJson(`kv_${cacheKey}`, res, 60).catch(() => null);
     }
     return res;
   } catch (err: any) {
