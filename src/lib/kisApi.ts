@@ -1187,7 +1187,7 @@ async function executeKisForeignInstitutionRankingFetch(
     const urlKosdaq = `${baseUrl}/uapi/domestic-stock/v1/quotations/foreign-institution-total?FID_COND_MRKT_DIV_CODE=V&FID_COND_SCR_DIV_CODE=16449&FID_INPUT_ISCD=1001&FID_DIV_CLS_CODE=${divClsCode}&FID_RANK_SORT_CLS_CODE=${rankSortClsCode}&FID_ETC_CLS_CODE=${etcClsCode}`;
 
     await enforceRateLimit();
-    const resKospi = await fetch(urlKospi, {
+    const fetchOptions = {
       method: 'GET',
       headers: {
         'content-type': 'application/json; charset=utf-8',
@@ -1197,25 +1197,17 @@ async function executeKisForeignInstitutionRankingFetch(
         tr_id: 'FHPTJ04400000',
         custtype: 'P',
       },
-      cache: 'no-store',
-    });
+      cache: 'no-store' as const,
+      signal: AbortSignal.timeout(4000),
+    };
 
-    await enforceRateLimit();
-    const resKosdaq = await fetch(urlKosdaq, {
-      method: 'GET',
-      headers: {
-        'content-type': 'application/json; charset=utf-8',
-        authorization: `Bearer ${token}`,
-        appkey: appKey,
-        appsecret: appSecret,
-        tr_id: 'FHPTJ04400000',
-        custtype: 'P',
-      },
-      cache: 'no-store',
-    });
+    const [resKospi, resKosdaq] = await Promise.all([
+      fetch(urlKospi, fetchOptions).catch(() => null),
+      fetch(urlKosdaq, fetchOptions).catch(() => null),
+    ]);
 
-    const jsonKospi = resKospi.ok ? await resKospi.json() : null;
-    const jsonKosdaq = resKosdaq.ok ? await resKosdaq.json() : null;
+    const jsonKospi = resKospi && resKospi.ok ? await resKospi.json().catch(() => null) : null;
+    const jsonKosdaq = resKosdaq && resKosdaq.ok ? await resKosdaq.json().catch(() => null) : null;
 
     const listKospi = (jsonKospi && jsonKospi.rt_cd === '0' && Array.isArray(jsonKospi.output)) ? jsonKospi.output : [];
     const listKosdaq = (jsonKosdaq && jsonKosdaq.rt_cd === '0' && Array.isArray(jsonKosdaq.output)) ? jsonKosdaq.output : [];
@@ -1236,6 +1228,7 @@ async function executeKisForeignInstitutionRankingFetch(
         custtype: 'P',
       },
       cache: 'no-store',
+      signal: AbortSignal.timeout(4000),
     });
 
     if (!res.ok) {
