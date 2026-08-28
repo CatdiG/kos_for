@@ -1507,7 +1507,7 @@ export async function fetchOverlapRankingData(
   let masterData: InvestorRankingResponse | null = null;
 
   const cached = overlapMemoryCache.get(masterCacheKey);
-  if (cached && Date.now() - cached.timestamp < OVERLAP_CACHE_TTL_MS) {
+  if (cached && cached.data && Array.isArray(cached.data.list) && cached.data.list.length > 0 && Date.now() - cached.timestamp < OVERLAP_CACHE_TTL_MS) {
     masterData = cached.data;
   }
 
@@ -1698,8 +1698,10 @@ async function executeAsyncOverlapCalculation(
       updatedAt: new Date().toISOString(),
     };
 
-    overlapMemoryCache.set(masterCacheKey, { data: masterData, timestamp: Date.now() });
-    await kvSetJson(`kv_${masterCacheKey}`, masterData, 86400).catch(() => null);
+    if (masterData.list && masterData.list.length > 0) {
+      overlapMemoryCache.set(masterCacheKey, { data: masterData, timestamp: Date.now() });
+      await kvSetJson(`kv_${masterCacheKey}`, masterData, 86400).catch(() => null);
+    }
     return masterData;
   } catch (err) {
     console.error('[Async Overlap Error]', err);
