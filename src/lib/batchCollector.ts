@@ -393,10 +393,15 @@ export async function getBatchRankingDataAsync(
     }
   }
 
-  // 2. 콜드스타트 시 50개 전 종목 정석 배치 수집 실행 및 캐시 빌드 (기관 데이터 복사 폴백 전면 금지)
+  // 2. 콜드스타트 시 50개 전 종목 비동기 배치 수집 실행 (최대 3초 대기 후 타임아웃 방지 리턴, 배경에서 50개 전수 완수)
   if (!cached || !cached.data || !Array.isArray(cached.data.list) || cached.data.list.length === 0) {
-    console.log(`[Batch Async Collector] Cold-start empty cache for ${type}. Executing runTop50BatchCollector for 50 stocks...`);
-    await runTop50BatchCollector(true, `batch_${type}`).catch((err) => console.error('[Background Batch Collector Error]', err));
+    console.log(`[Batch Async Collector] Cold-start empty cache for ${type}. Executing runTop50BatchCollector with 3.0s max wait...`);
+    const collectPromise = runTop50BatchCollector(true, `batch_${type}`).catch((err) => console.error('[Background Batch Collector Error]', err));
+    
+    await Promise.race([
+      collectPromise,
+      new Promise((resolve) => setTimeout(resolve, 3000))
+    ]);
     cached = batchCacheStore.get(cacheKey);
   }
 
