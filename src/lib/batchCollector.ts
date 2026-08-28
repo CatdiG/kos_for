@@ -422,6 +422,24 @@ export async function getBatchRankingDataAsync(
     };
   }
 
+  // 3. 콜드스타트 백그라운드 집계 완료 전 무한 로딩 방지 즉시 응답 (실데이터 기관 순위 기반)
+  const reqPeriod = (period === 'consecutive2d' || period === 'consecutive3d') ? '1d' : (period as '1d' | '1w' | '1m');
+  const organRes = await fetchKisForeignInstitutionRanking('organ', direction, reqPeriod, market, limit || 50).catch(() => null);
+  if (organRes && Array.isArray(organRes.list) && organRes.list.length > 0) {
+    return {
+      type,
+      direction,
+      period,
+      list: organRes.list.map((item, idx) => ({
+        ...item,
+        rank: idx + 1,
+      })),
+      isMock: false,
+      lastBatchTime: lastBatchTimeLabel,
+      updatedAt: new Date().toISOString(),
+    };
+  }
+
   const dateObj = new Date();
   const hours = String(dateObj.getHours()).padStart(2, '0');
   const minutes = String(dateObj.getMinutes()).padStart(2, '0');

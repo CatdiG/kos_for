@@ -349,14 +349,16 @@ export async function fetchKisInvestorTrend(
   // 1. In-Memory Cache Check
   if (trendDetailCache.has(cacheKey)) {
     const cached = trendDetailCache.get(cacheKey)!;
-    if (now - cached.timestamp < TREND_CACHE_TTL_MS) {
+    if (!cached.data || !Array.isArray(cached.data.trend) || cached.data.trend.length === 0) {
+      trendDetailCache.delete(cacheKey);
+    } else if (now - cached.timestamp < TREND_CACHE_TTL_MS) {
       return cached.data;
     }
   }
 
   // 2. Vercel KV Redis Shared Cache Check (5 min TTL)
   const redisTrend = await kvGetJson<InvestorTrendResponse>(`kv_trend_${cacheKey}`);
-  if (redisTrend) {
+  if (redisTrend && Array.isArray(redisTrend.trend) && redisTrend.trend.length > 0) {
     trendDetailCache.set(cacheKey, { data: redisTrend, timestamp: now });
     return redisTrend;
   }
