@@ -66,27 +66,27 @@ function getIntradaySnapshotNoticeText(hasRealData: boolean): string {
   const minutes = now.getMinutes();
   const timeNum = hours * 100 + minutes;
 
-  let targetTimeStr = '09:30';
-  if (timeNum >= 930 && timeNum < 1120) targetTimeStr = '11시 20분';
-  else if (timeNum >= 1120 && timeNum < 1320) targetTimeStr = '오후 1시 20분';
-  else if (timeNum >= 1320 && timeNum < 1430) targetTimeStr = '오후 2시 30분';
-  else targetTimeStr = '내일 오전 09시 30분';
-
-  if (!hasRealData) {
-    return `ℹ️ 현재 KIS API 당일 장중가집계 미정산 상태입니다 (직전 장마감 8/27 기준 표시 중 / 다음 갱신 예정: ${targetTimeStr})`;
-  }
+  let snapshotLabel = '4차(14:30)';
+  let targetTimeStr = '내일 오전 09시 30분';
 
   if (timeNum < 930) {
-    return 'ℹ️ 장중가집계 스냅샷 1차 반영 완료 (다음 갱신 예정: 오전 11시 20분)';
-  } else if (timeNum < 1120) {
-    return 'ℹ️ 장중가집계 스냅샷 1차(09:30) 반영 완료 (다음 갱신 예정: 오전 11시 20분)';
-  } else if (timeNum < 1320) {
-    return 'ℹ️ 장중가집계 스냅샷 2차(11:20) 반영 완료 (다음 갱신 예정: 오후 1시 20분)';
-  } else if (timeNum < 1430) {
-    return 'ℹ️ 장중가집계 스냅샷 3차(13:20) 반영 완료 (다음 갱신 예정: 오후 2시 30분)';
+    snapshotLabel = '1차 미반영';
+    targetTimeStr = '오전 09시 30분';
+  } else if (timeNum >= 930 && timeNum < 1120) {
+    snapshotLabel = '1차(09:30)';
+    targetTimeStr = '오전 11시 20분';
+  } else if (timeNum >= 1120 && timeNum < 1320) {
+    snapshotLabel = '2차(11:20)';
+    targetTimeStr = '오후 1시 20분';
+  } else if (timeNum >= 1320 && timeNum < 1430) {
+    snapshotLabel = '3차(13:20)';
+    targetTimeStr = '오후 2시 30분';
   } else {
-    return 'ℹ️ 장중가집계 4차(14:30) 스냅샷 및 최종 수급 집계 반영 완료';
+    snapshotLabel = '4차(14:30)';
+    targetTimeStr = '내일 오전 09시 30분';
   }
+
+  return `ℹ️ [수급 시점 안내] 🟢 외국인 · 기관: 당일 가집계 반영 완료 (${snapshotLabel}) | 🔵 연기금 · 프로그램: 장중 미정산 (직전 장마감 8/27 기준 / 다음 갱신: ${targetTimeStr})`;
 }
 
 export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbol, chartData, onSelectSymbol }: InvestorRankingTableProps) {
