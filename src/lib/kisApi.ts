@@ -1498,7 +1498,7 @@ export async function fetchOverlapRankingData(
   topLimit: number = 50,
   market: MarketType = 'ALL'
 ): Promise<InvestorRankingResponse> {
-  const masterCacheKey = `master_${direction}_${period}_${minOverlap}_${market}`;
+  const masterCacheKey = `v3_master_${direction}_${period}_${minOverlap}_${market}`;
   let masterData: InvestorRankingResponse | null = null;
 
   const cached = overlapMemoryCache.get(masterCacheKey);
