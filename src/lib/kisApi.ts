@@ -1747,8 +1747,8 @@ export async function fetchConsecutive3dOverlapRankingData(
     { type: 'program', label: '프로그램' },
   ];
 
-  // Fetch 50-stock trend data with parallel chunking (5 stocks at a time) to stay well under Vercel 10s timeout
-  const CHUNK_SIZE = 5;
+  // Fetch 50-stock trend data with parallel chunking (25 stocks at a time) to finish in ~1s (sub-10s Vercel timeout guarantee)
+  const CHUNK_SIZE = 25;
   const stockTrendMap = new Map<string, any>();
 
   for (let i = 0; i < targetStocks.length; i += CHUNK_SIZE) {
