@@ -1944,11 +1944,11 @@ export async function fetchConsecutive3dOverlapRankingData(
     const stock = targetStocks[i];
     try {
       let trendRes = getCached5dTrend(stock.symbol);
-      if (!trendRes || trendRes.isMock || !trendRes.trend || trendRes.trend.length === 0) {
+      if (!trendRes || !trendRes.trend || trendRes.trend.length === 0) {
         try {
           trendRes = await fetchKisInvestorTrend(stock.symbol, '20d');
         } catch {
-          // Keep existing trendRes if fetch failed
+          trendRes = null;
         }
       }
       if (!trendRes || !trendRes.trend) continue;
