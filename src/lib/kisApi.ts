@@ -1761,23 +1761,28 @@ export async function fetchConsecutive3dOverlapRankingData(
       if (!trendRes || !trendRes.trend) continue;
       const trend = trendRes?.trend || [];
 
-      // Filter out unsettled intraday date (e.g. today's 8/28 preliminary data) to align strictly with settled previous close trading days (e.g. 8/27)
-      const todayYYYYMMDD = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-      const settledTrend = trend.length > 3 && trend[trend.length - 1]?.date === todayYYYYMMDD
-        ? trend.slice(0, -1)
-        : trend;
+      // Type-Specific Independent Evaluation (Foreigner/Organ use live 8/28 intraday; Pension/Program use settled close 8/27)
+      const fullTrend = trendRes?.trend || [];
+      if (fullTrend.length < 3) continue;
 
-      const activeDays = settledTrend.filter(
+      // Active trend days for Foreigner & Organ (including today's non-zero 8/28 intraday)
+      const activeFullDays = fullTrend.filter(
         (d: InvestorTrendDay) =>
           Math.abs(d.foreignNetBuyAmt || 0) > 0 ||
           Math.abs(d.organNetBuyAmt || 0) > 0 ||
           Math.abs(d.pensionNetBuyAmt || 0) > 0
       );
-      if (activeDays.length < 3) continue;
-      const last3Days = activeDays.slice(-3);
+      if (activeFullDays.length < 3) continue;
+      const last3FullDays = activeFullDays.slice(-3);
+
+      // Active settled trend days for Pension Fund (excluding unsettled 0-pension intraday if 0)
+      const activePensionDays = fullTrend.filter(
+        (d: InvestorTrendDay) => Math.abs(d.pensionNetBuyAmt || 0) > 0
+      );
+      const last3PensionDays = activePensionDays.length >= 3 ? activePensionDays.slice(-3) : last3FullDays;
 
       // Strict Day-by-Day Check: EVERY day in the 3-day period must have at least minOverlap (2+) entities buying
-      const dayByDayCounts = last3Days.map((d: InvestorTrendDay) => {
+      const dayByDayCounts = last3FullDays.map((d: InvestorTrendDay) => {
         let cnt = 0;
         if (isBuy ? d.foreignNetBuyAmt > 0 : d.foreignNetBuyAmt < 0) cnt++;
         if (isBuy ? d.organNetBuyAmt > 0 : d.organNetBuyAmt < 0) cnt++;
@@ -1788,24 +1793,24 @@ export async function fetchConsecutive3dOverlapRankingData(
       const isStrictConsecutiveOverlap = dayByDayCounts.every((cnt: number) => cnt >= minOverlap);
       if (!isStrictConsecutiveOverlap) continue;
 
-      // Calculate backward consecutive days for each investor entity over activeDays
+      // Calculate backward consecutive days for each investor entity over activeFullDays
       let foreignConsecutiveDays = 0;
-      for (let k = activeDays.length - 1; k >= 0; k--) {
-        const amt = activeDays[k].foreignNetBuyAmt || 0;
+      for (let k = activeFullDays.length - 1; k >= 0; k--) {
+        const amt = activeFullDays[k].foreignNetBuyAmt || 0;
         if (isBuy ? amt > 0 : amt < 0) foreignConsecutiveDays++;
         else break;
       }
 
       let organConsecutiveDays = 0;
-      for (let k = activeDays.length - 1; k >= 0; k--) {
-        const amt = activeDays[k].organNetBuyAmt || 0;
+      for (let k = activeFullDays.length - 1; k >= 0; k--) {
+        const amt = activeFullDays[k].organNetBuyAmt || 0;
         if (isBuy ? amt > 0 : amt < 0) organConsecutiveDays++;
         else break;
       }
 
       let pensionConsecutiveDays = 0;
-      for (let k = activeDays.length - 1; k >= 0; k--) {
-        const amt = activeDays[k].pensionNetBuyAmt || 0;
+      for (let k = activePensionDays.length - 1; k >= 0; k--) {
+        const amt = activePensionDays[k].pensionNetBuyAmt || 0;
         if (isBuy ? amt > 0 : amt < 0) pensionConsecutiveDays++;
         else break;
       }
@@ -1824,7 +1829,7 @@ export async function fetchConsecutive3dOverlapRankingData(
       const ranksByType: OverlapInvestorRank[] = [];
 
       if (isForeignConsecutive) {
-        const sumAmt = last3Days.reduce((acc: number, d: InvestorTrendDay) => acc + d.foreignNetBuyAmt, 0);
+        const sumAmt = last3FullDays.reduce((acc: number, d: InvestorTrendDay) => acc + d.foreignNetBuyAmt, 0);
         ranksByType.push({
           type: 'foreign',
           label: '외국인',
@@ -1833,11 +1838,12 @@ export async function fetchConsecutive3dOverlapRankingData(
           netBuyAmtEok: Number((sumAmt / 100).toFixed(1)),
           consecutiveDays: foreignConsecutiveDays,
           consecutiveText: `${foreignConsecutiveDays}일연속`,
+          asOfDateLabel: '당일 가집계',
         });
       }
 
       if (isOrganConsecutive) {
-        const sumAmt = last3Days.reduce((acc: number, d: InvestorTrendDay) => acc + d.organNetBuyAmt, 0);
+        const sumAmt = last3FullDays.reduce((acc: number, d: InvestorTrendDay) => acc + d.organNetBuyAmt, 0);
         ranksByType.push({
           type: 'organ',
           label: '기관',
@@ -1846,11 +1852,12 @@ export async function fetchConsecutive3dOverlapRankingData(
           netBuyAmtEok: Number((sumAmt / 100).toFixed(1)),
           consecutiveDays: organConsecutiveDays,
           consecutiveText: `${organConsecutiveDays}일연속`,
+          asOfDateLabel: '당일 가집계',
         });
       }
 
       if (isPensionConsecutive) {
-        const sumAmt = last3Days.reduce((acc: number, d: InvestorTrendDay) => acc + d.pensionNetBuyAmt, 0);
+        const sumAmt = last3PensionDays.reduce((acc: number, d: InvestorTrendDay) => acc + d.pensionNetBuyAmt, 0);
         ranksByType.push({
           type: 'pension',
           label: '연기금',
@@ -1859,6 +1866,7 @@ export async function fetchConsecutive3dOverlapRankingData(
           netBuyAmtEok: Number((sumAmt / 100).toFixed(1)),
           consecutiveDays: pensionConsecutiveDays,
           consecutiveText: `${pensionConsecutiveDays}일연속`,
+          asOfDateLabel: '(8/27 기준)',
         });
       }
 
@@ -1872,6 +1880,7 @@ export async function fetchConsecutive3dOverlapRankingData(
           netBuyAmtEok: Number((sumAmt / 100).toFixed(1)),
           consecutiveDays: programConsecutiveDays,
           consecutiveText: `${programConsecutiveDays}일연속`,
+          asOfDateLabel: '(8/27 기준)',
         });
       }
 
