@@ -31,6 +31,33 @@ function setGlobalTokenCache(cache: TokenCacheData): void {
   (globalThis as any)[TOKEN_CACHE_KEY] = cache;
 }
 
+/**
+ * 프로덕션/개발 응답에서 Mock/Seed 가짜 데이터 유출 방지 및 검증 가드
+ */
+export function assertNoMockLeak(res: InvestorRankingResponse | null | undefined): void {
+  if (!res || !Array.isArray(res.list)) return;
+  
+  if (res.isMock) {
+    console.error('🚨 MOCK DATA LEAKED TO PRODUCTION RESPONSE: isMock is true!', res.type);
+    if (process.env.NODE_ENV !== 'production') {
+      throw new Error(`[MOCK LEAK PROTECTOR] Fake ranking data (isMock=true) attempted to bleed into response! (Type: ${res.type})`);
+    }
+  }
+
+  for (const item of res.list) {
+    if (item.ranksByType && item.ranksByType.length > 0) {
+      const isFakeSeedBadge = item.investorBadge === '4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)';
+      const isFakeSeedNetBuy = item.netBuyAmt > 0 && item.netBuyAmt % 200 === 0 && item.netBuyQty % 1000 === 0;
+      if (isFakeSeedBadge && isFakeSeedNetBuy) {
+        console.error('🚨 MOCK DATA LEAKED TO PRODUCTION RESPONSE: Fake seed ranking item detected!', item.symbol, item.name);
+        if (process.env.NODE_ENV !== 'production') {
+          throw new Error(`[MOCK LEAK PROTECTOR] Fake seed ranking item (${item.symbol} ${item.name}) detected in response!`);
+        }
+      }
+    }
+  }
+}
+
 function getLocalFileTokenCache(appKeyHash: string, allowExpired: boolean = false): TokenCacheData | null {
   try {
     if (fs.existsSync(LOCAL_TOKEN_FILE)) {
@@ -1481,54 +1508,19 @@ export async function fetchOverlapRankingData(
   }
 
   if (!masterData) {
-    const { TOP_50_STOCKS } = await import('./mockData');
-    const { getCached5dTrend } = await import('./batchCollector');
-    const seedList: RankingItem[] = TOP_50_STOCKS.slice(0, topLimit).map((stock, idx) => {
-      const trendRes = getCached5dTrend(stock.symbol);
-      const statusInfo = computeStatusBadgeFromTrend(trendRes?.trend || []);
-      return {
-        rank: idx + 1,
-        symbol: stock.symbol,
-        name: stock.name,
-        currentPrice: stock.basePrice || 50000,
-        change: 0,
-        changeRate: 0,
-        netBuyQty: (50 - idx) * 1000,
-        netBuyAmt: (50 - idx) * 200,
-        netBuyAmtEok: Number(((50 - idx) * 2.0).toFixed(1)),
-        volume: 1000000,
-        ratioVsVolume: 5.0,
-        overlapCount: 4,
-        investorBadge: '4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)',
-        statusBadge: statusInfo?.shortBadge || '⚪ 이평선 수렴',
-        statusBadgeStyle: statusInfo?.badgeStyle || 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-300 dark:border-slate-700',
-        isCreditAvailable: getEvaluatedCreditStatus(stock.symbol, stock.name),
-        ranksByType: [
-          { type: 'foreign', label: '외국인', rank: idx + 1, netBuyAmt: (50 - idx) * 80, netBuyAmtEok: (50 - idx) * 0.8 },
-          { type: 'organ', label: '기관', rank: idx + 1, netBuyAmt: (50 - idx) * 60, netBuyAmtEok: (50 - idx) * 0.6 },
-          { type: 'pension', label: '연기금', rank: idx + 1, netBuyAmt: (50 - idx) * 40, netBuyAmtEok: (50 - idx) * 0.4 },
-          { type: 'program', label: '프로그램', rank: idx + 1, netBuyAmt: (50 - idx) * 20, netBuyAmtEok: (50 - idx) * 0.2 },
-        ],
-        missingEntities: [],
-      };
-    });
-
     const dateObj = new Date();
     const hours = String(dateObj.getHours()).padStart(2, '0');
     const minutes = String(dateObj.getMinutes()).padStart(2, '0');
 
-    const seedRes: InvestorRankingResponse = {
+    masterData = {
       type: 'overlap',
       direction,
       period,
-      list: seedList,
+      list: [],
       isMock: false,
       lastBatchTime: `${hours}:${minutes} 기준`,
       updatedAt: dateObj.toISOString(),
     };
-
-    overlapMemoryCache.set(masterCacheKey, { data: seedRes, timestamp: Date.now() });
-    masterData = seedRes;
 
     // Trigger async background calculation (non-blocking)
     executeAsyncOverlapCalculation(direction, period, minOverlap, market, masterCacheKey).catch(() => null);
@@ -1545,10 +1537,13 @@ export async function fetchOverlapRankingData(
     list = list.slice(0, topLimit);
   }
 
-  return {
+  const finalRes: InvestorRankingResponse = {
     ...masterData,
     list,
   };
+
+  assertNoMockLeak(finalRes);
+  return finalRes;
 }
 
 /**
@@ -2048,35 +2043,23 @@ export async function fetchKisSurgingStocks(
       };
     }
     
-    // Instant Seed Fallback for Cold Startup
-    const { TOP_50_STOCKS } = await import('./mockData');
-    const seedList: RankingItem[] = TOP_50_STOCKS.slice(0, 30).map((stock, idx) => ({
-      rank: idx + 1,
-      symbol: stock.symbol,
-      name: stock.name,
-      currentPrice: stock.basePrice || 50000,
-      change: (30 - idx) * 100,
-      changeRate: Number(((30 - idx) * 0.5).toFixed(2)),
-      netBuyQty: (30 - idx) * 1000,
-      netBuyAmt: (30 - idx) * 50,
-      netBuyAmtEok: Number(((30 - idx) * 0.5).toFixed(1)),
-      volume: 1000000,
-      ratioVsVolume: 5.0,
-      isCreditAvailable: getEvaluatedCreditStatus(stock.symbol, stock.name),
-    }));
+    // Cold startup fallback - return empty list instead of fake seed items
+    const dateObj = new Date();
+    const hours = String(dateObj.getHours()).padStart(2, '0');
+    const minutes = String(dateObj.getMinutes()).padStart(2, '0');
 
-    const seedRes: InvestorRankingResponse = {
+    const emptyRes: InvestorRankingResponse = {
       type: 'surging',
       direction: 'buy',
       period: '1d',
-      list: seedList,
+      list: [],
       isMock: false,
-      lastBatchTime: '당일 가집계',
-      updatedAt: new Date().toISOString(),
+      lastBatchTime: `${hours}:${minutes} 기준`,
+      updatedAt: dateObj.toISOString(),
     };
 
-    surgingCacheStore.set(cacheKey, seedRes);
-    return seedRes;
+    assertNoMockLeak(emptyRes);
+    return emptyRes;
   }
 }
 
@@ -2119,6 +2102,7 @@ async function executeKisSurgingStocksFetch(
       url = `${baseUrl}/uapi/domestic-stock/v1/quotations/volume-rank?FID_COND_MRKT_DIV_CODE=J&FID_COND_SCR_DIV_CODE=20171&FID_INPUT_ISCD=${iscdParam}&FID_DIV_CLS_CODE=0&FID_BLNG_CLS_CODE=${blngCode}&FID_TRGT_CLS_CODE=111111111&FID_TRGT_EXLS_CLS_CODE=000000000&FID_INPUT_PRICE_1=0&FID_INPUT_PRICE_2=0&FID_VOL_CNT=0&FID_INPUT_CNT_1=${offset}`;
     }
 
+    await enforceRateLimit();
     const res = await fetch(url, {
       method: 'GET',
       headers: {

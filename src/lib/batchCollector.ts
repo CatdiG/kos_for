@@ -43,53 +43,13 @@ export function getCached5dTrend(symbol: string): any {
     return trend5dBatchStore.get(symbol);
   }
 
-  // Instant seed trend fallback for cold startup (0ms latency, zero socket locking)
-  const stock = TOP_50_STOCKS.find((s) => s.symbol === symbol) || { symbol, name: getStockName(symbol), basePrice: 50000 };
-  const baseP = stock.basePrice || 50000;
-  
-  const mockTrendDays: any[] = [];
-  const today = new Date();
-  
-  for (let d = 30; d >= 0; d--) {
-    const dt = new Date(today);
-    dt.setDate(dt.getDate() - d);
-    const dateStr = dt.toISOString().slice(0, 10).replace(/-/g, '');
-
-    // Seed top overlap stocks (including Samsung Heavy 010140) with 3-day consecutive overlap
-    const is3dOverlapStock = ['010140', '373220', '055550', '005930', '000660', '005490', '066970', '105560', '000150', '086790', '028260', '078930', '003550', '021240', '263750', '011170'].includes(symbol);
-    const isConsecutiveDay = d >= 1 && d <= 3; // 8/25, 8/26, 8/27
-
-    const foreignNetBuyAmt = is3dOverlapStock && isConsecutiveDay ? 5000 + (3 - d) * 1000 : (15 - d) * 200;
-    const organNetBuyAmt = is3dOverlapStock && isConsecutiveDay ? 3000 + (3 - d) * 500 : (15 - d) * 150;
-    const pensionNetBuyAmt = is3dOverlapStock && isConsecutiveDay ? 1000 + (3 - d) * 200 : (15 - d) * 50;
-
-    mockTrendDays.push({
-      date: dateStr,
-      closePrice: baseP + (30 - d) * 100,
-      openPrice: baseP + (30 - d) * 90,
-      highPrice: baseP + (30 - d) * 120,
-      lowPrice: baseP + (30 - d) * 80,
-      volume: 1000000,
-      changeRate: 0.5,
-      priceChange: 100,
-      foreignNetBuyAmt,
-      organNetBuyAmt,
-      pensionNetBuyAmt,
-      foreignNetBuyQty: Math.round((foreignNetBuyAmt * 1000000) / baseP),
-      organNetBuyQty: Math.round((organNetBuyAmt * 1000000) / baseP),
-      pensionNetBuyQty: Math.round((pensionNetBuyAmt * 1000000) / baseP),
-    });
-  }
-
-  const seedObj = {
-    stockInfo: { symbol, name: stock.name, currentPrice: baseP },
-    trend: mockTrendDays,
-    programTrade: { totalNetBuyAmt: 500, totalNetBuyQty: 10000, status: 'STRONG_BUY' },
-    isMock: true,
+  const stockName = getStockName(symbol);
+  return {
+    stockInfo: { symbol, name: stockName, currentPrice: 0 },
+    trend: [],
+    programTrade: { totalNetBuyAmt: 0, totalNetBuyQty: 0, status: 'NEUTRAL' },
+    isMock: false,
   };
-
-  trend5dBatchStore.set(symbol, seedObj);
-  return seedObj;
 }
 
 /**
@@ -440,40 +400,23 @@ export async function getBatchRankingDataAsync(
     }
   }
 
-  // 2. 콜드스타트 시 논블로킹 시드 캐시 배치 및 비동기 수집 트리거 (소켓 락 100% 방지)
-  if (!cached || !cached.data || !cached.data.list || cached.data.list.length === 0) {
+  // 2. 콜드스타트 시 비동기 배경 수집 트리거 (가짜 seedList 반환 절대 금지)
+  if (!cached || !cached.data || !cached.data.list) {
     const dateObj = new Date();
     const hours = String(dateObj.getHours()).padStart(2, '0');
     const minutes = String(dateObj.getMinutes()).padStart(2, '0');
 
-    // 시드 캐시 0ms 즉시 생성하여 HTTP 소켓 차단 방지
-    const seedList: RankingItem[] = TOP_50_STOCKS.map((stock, idx) => ({
-      rank: idx + 1,
-      symbol: stock.symbol,
-      name: stock.name,
-      currentPrice: stock.basePrice || 50000,
-      change: 0,
-      changeRate: 0,
-      netBuyQty: (50 - idx) * 1000,
-      netBuyAmt: (50 - idx) * 50,
-      netBuyAmtEok: Number(((50 - idx) * 0.5).toFixed(1)),
-      volume: 1000000,
-      ratioVsVolume: 5.0,
-      isCreditAvailable: true,
-      asOfDateLabel: '(8/27 기준)',
-    }));
-
-    const seedRes: InvestorRankingResponse = {
+    const emptyRes: InvestorRankingResponse = {
       type,
       direction,
       period,
-      list: seedList,
+      list: [],
       isMock: false,
       lastBatchTime: `${hours}:${minutes} 기준`,
       updatedAt: dateObj.toISOString(),
     };
 
-    batchCacheStore.set(cacheKey, { data: seedRes, timestamp: Date.now() });
+    batchCacheStore.set(cacheKey, { data: emptyRes, timestamp: Date.now() });
     cached = batchCacheStore.get(cacheKey);
 
     // 비동기 배경 배치 수집 트리거 (HTTP 요청을 대기시키지 않음)
