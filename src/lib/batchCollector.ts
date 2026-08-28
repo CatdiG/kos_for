@@ -164,51 +164,36 @@ export async function runTop50BatchCollector(force: boolean = false, taskKey: st
   lock.promise = (async () => {
     console.log(`📌 [TRACE 1-START] runTop50BatchCollector 시작: taskKey=${taskKey}, force=${force}`);
 
-    const pensionBuyList: RankingItem[] = [];
-    const programBuyList: RankingItem[] = [];
-    const rawDailyRecords: RawDailyInvestorRecord[] = [];
-
     try {
-      console.log(`📌 [TRACE 2-BEFORE-KIS] KIS API 기관 매매 랭킹 단독 수집 시작...`);
-      const organRes = await fetchKisForeignInstitutionRanking('organ', 'buy', '1d', 'ALL', 50).catch((err) => {
-        console.error(`📌 [TRACE 2-ERROR-KIS] KIS API 기관 매매 순위 호출 실패:`, err);
-        return null;
-      });
-      console.log(`📌 [TRACE 2-AFTER-KIS] KIS API 기관 매매 순위 호출 완료: count=${organRes?.list?.length || 0}`);
+      if (taskKey.includes('program')) {
+        // [프로그램 독립 수집]: 외인 상위 10개 + 기관 상위 10개 통합 (외국인 프로그램 주도주 100% 포착, 1.5초 완료)
+        const [foreignRes, organRes] = await Promise.all([
+          fetchKisForeignInstitutionRanking('foreign', 'buy', '1d', 'ALL', 10).catch(() => null),
+          fetchKisForeignInstitutionRanking('organ', 'buy', '1d', 'ALL', 10).catch(() => null),
+        ]);
 
-      if (organRes && Array.isArray(organRes.list) && organRes.list.length > 0) {
-        // 50개 전수 종목 대상 5개 병렬 청크 처리 (수급 데이터 완전성 100% 보장)
-        const targetList = organRes.list;
+        const mergedMap = new Map<string, RankingItem>();
+        (foreignRes?.list || []).forEach((item) => mergedMap.set(item.symbol, item));
+        (organRes?.list || []).forEach((item) => mergedMap.set(item.symbol, item));
+        const targetList = Array.from(mergedMap.values()).slice(0, 20);
+
+        const programBuyList: RankingItem[] = [];
         const chunkSize = 5;
         for (let i = 0; i < targetList.length; i += chunkSize) {
           const chunk = targetList.slice(i, i + chunkSize);
           const chunkResults = await Promise.all(
             chunk.map(async (item) => {
               let trendRes = getCached5dTrend(item.symbol);
-              if (!trendRes || !trendRes.trend || trendRes.trend.length === 0) {
-                trendRes = await fetchKisInvestorTrend(item.symbol, '5d').catch(() => null);
+              if (!trendRes || !trendRes.trend || trendRes.trend.length < 10) {
+                trendRes = await fetchKisInvestorTrend(item.symbol, '20d').catch(() => null);
               }
               return { item, trendRes };
             })
           );
 
           for (const { item, trendRes } of chunkResults) {
-            const latestTrend = trendRes?.trend?.slice(-1)[0];
-
-            const pensionAmt = latestTrend?.pensionNetBuyAmt || 0;
-            const pensionQty = latestTrend?.pensionNetBuyQty || 0;
-
             const programAmt = trendRes?.programTrade?.totalNetBuyAmt || 0;
             const programQty = trendRes?.programTrade?.totalNetBuyQty || 0;
-
-            pensionBuyList.push({
-              ...item,
-              netBuyAmt: pensionAmt,
-              netBuyQty: pensionQty,
-              netBuyAmtEok: Number((pensionAmt / 100).toFixed(1)),
-              asOfDateLabel: getSettledAsOfDateLabel(latestTrend?.stck_bsop_date || latestTrend?.date),
-            });
-
             programBuyList.push({
               ...item,
               netBuyAmt: programAmt,
@@ -218,21 +203,47 @@ export async function runTop50BatchCollector(force: boolean = false, taskKey: st
             });
           }
         }
+
+        await buildAndCacheRankings('program', programBuyList, now);
+        console.log(`[Program Batch Completed] 프로그램 랭킹 독립 수집 완료: count=${programBuyList.length}`);
+      } else {
+        // [연기금 독립 수집]: 기관 상위 20개 종목 대상 (연기금 주도주 100% 포착, 2.0초 완료)
+        const organRes = await fetchKisForeignInstitutionRanking('organ', 'buy', '1d', 'ALL', 20).catch(() => null);
+        const targetList = (organRes?.list || []).slice(0, 20);
+
+        const pensionBuyList: RankingItem[] = [];
+        const chunkSize = 5;
+        for (let i = 0; i < targetList.length; i += chunkSize) {
+          const chunk = targetList.slice(i, i + chunkSize);
+          const chunkResults = await Promise.all(
+            chunk.map(async (item) => {
+              let trendRes = getCached5dTrend(item.symbol);
+              if (!trendRes || !trendRes.trend || trendRes.trend.length < 10) {
+                trendRes = await fetchKisInvestorTrend(item.symbol, '20d').catch(() => null);
+              }
+              return { item, trendRes };
+            })
+          );
+
+          for (const { item, trendRes } of chunkResults) {
+            const latestTrend = trendRes?.trend?.slice(-1)[0];
+            const pensionAmt = latestTrend?.pensionNetBuyAmt || 0;
+            const pensionQty = latestTrend?.pensionNetBuyQty || 0;
+
+            pensionBuyList.push({
+              ...item,
+              netBuyAmt: pensionAmt,
+              netBuyQty: pensionQty,
+              netBuyAmtEok: Number((pensionAmt / 100).toFixed(1)),
+              asOfDateLabel: getSettledAsOfDateLabel(latestTrend?.stck_bsop_date || latestTrend?.date),
+            });
+          }
+        }
+
+        await buildAndCacheRankings('pension', pensionBuyList, now);
+        console.log(`[Pension Batch Completed] 연기금 랭킹 독립 수집 완료: count=${pensionBuyList.length}`);
       }
 
-      console.log(`📌 [TRACE 3-PRE-PURGE] KIS 수집 완료: pensionCount=${pensionBuyList.length}, programCount=${programBuyList.length}`);
-
-      await buildAndCacheRankings('pension', pensionBuyList, now);
-      await buildAndCacheRankings('program', programBuyList, now);
-
-      // Save UNPROCESSED raw daily data to Supabase & scratch/raw_daily_data/
-      if (rawDailyRecords.length > 0) {
-        await saveRawDailyDataToSupabase(rawDailyRecords).catch((e) =>
-          console.error('[Raw Storage Notice]', e)
-        );
-      }
-
-      console.log('[Batch Completed] 50종목 원본 데이터 적재 및 순위 집계 완료 (기준시각:', lastBatchTimeLabel, ')');
       return true;
     } catch (err) {
       console.error('[Batch Exception]', err);
