@@ -1121,7 +1121,9 @@ export async function fetchKisForeignInstitutionRanking(
   // 1. In-Memory Cache Check
   if (rankingCacheStore.has(cacheKey)) {
     const cached = rankingCacheStore.get(cacheKey)!;
-    return cached;
+    if (cached && Array.isArray(cached.list) && cached.list.length > 0) {
+      return cached;
+    }
   }
 
   // 2. Vercel KV Redis Shared Cache Check (5 min TTL)
