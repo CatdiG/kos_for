@@ -12,7 +12,7 @@ import {
   RankingType,
   SurgingMode,
 } from '@/lib/types';
-import { getStockName, registerRuntimeStockName, resolveStockPriceAndChange, updateRuntimeStockPrice, TOP_50_STOCKS, resolveMarketType } from '@/lib/mockData';
+import { getStockName, registerRuntimeStockName, resolveStockPriceAndChange, updateRuntimeStockPrice, TOP_50_STOCKS, resolveMarketType, getSettledAsOfDateLabel } from '@/lib/mockData';
 import RankingStockDetailChart from './RankingStockDetailChart';
 import {
   Globe2,
@@ -46,7 +46,7 @@ async function fetchRanking(
   type: RankingType,
   direction: RankingDirection,
   period: RankingPeriod,
-  mode: 'daily' | 'consecutive3d' = 'daily',
+  mode: 'daily' | 'consecutive2d' | 'consecutive3d' = 'daily',
   limit: number = 50,
   market: MarketType = 'ALL'
 ): Promise<InvestorRankingResponse> {
@@ -86,7 +86,7 @@ function getIntradaySnapshotNoticeText(hasRealData: boolean): string {
     targetTimeStr = '내일 오전 09시 30분';
   }
 
-  return `ℹ️ [수급 시점 안내] 🟢 외국인 · 기관: 당일 가집계 반영 완료 (${snapshotLabel}) | 🔵 연기금 · 프로그램: 장중 미정산 (직전 장마감 8/27 기준 / 다음 갱신: ${targetTimeStr})`;
+  return `ℹ️ [수급 시점 안내] 🟢 외국인 · 기관: 당일 가집계 반영 완료 (${snapshotLabel}) | 🔵 연기금 · 프로그램: 장중 미정산 (직전 장마감 ${getSettledAsOfDateLabel()} / 다음 갱신: ${targetTimeStr})`;
 }
 
 export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbol, chartData, onSelectSymbol }: InvestorRankingTableProps) {
@@ -96,7 +96,7 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
   const [period, setPeriod] = useState<RankingPeriod>('1d');
   const [sortField, setSortField] = useState<keyof RankingItem>('netBuyAmt');
   const [sortAsc, setSortAsc] = useState<boolean>(false);
-  const [overlapMode, setOverlapMode] = useState<'daily' | 'consecutive3d'>('daily');
+  const [overlapMode, setOverlapMode] = useState<'daily' | 'consecutive2d' | 'consecutive3d'>('daily');
   const [overlapLimit, setOverlapLimit] = useState<number>(50);
   const [creditOnly, setCreditOnly] = useState<boolean>(false);
   const [surgingMode, setSurgingMode] = useState<SurgingMode>('fluctuation');
@@ -560,6 +560,28 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
     }
   };
 
+  const programAsOf = (data as any)?.programTrade?.asOfDateLabel || (data as any)?.summary?.program?.asOfDateLabel || getSettledAsOfDateLabel();
+  const foreignAsOf = (data as any)?.summary?.foreign?.asOfDateLabel || '당일 가집계';
+  const organAsOf = (data as any)?.summary?.organ?.asOfDateLabel || '당일 가집계';
+  const pensionAsOf = (data as any)?.summary?.pension?.asOfDateLabel || getSettledAsOfDateLabel();
+
+  const formatParenLabel = (str: string) => {
+    const clean = str.replace(/^\((.*)\)$/, '$1');
+    return `(${clean})`;
+  };
+
+  const isAllSettled = pensionAsOf.includes('기준') &&
+    (foreignAsOf.includes('기준') || foreignAsOf.includes('마감') || foreignAsOf === pensionAsOf) &&
+    (programAsOf.includes('기준') || programAsOf.includes('마감') || programAsOf === pensionAsOf);
+
+  const foreignOrganPart = foreignAsOf === organAsOf
+    ? `외·기 ${formatParenLabel(foreignAsOf)}`
+    : `외 ${formatParenLabel(foreignAsOf)} · 기 ${formatParenLabel(organAsOf)}`;
+
+  const dynamicNoticeText = isAllSettled
+    ? `${formatParenLabel(pensionAsOf)} 전 주체 종가 정산 완료`
+    : `${foreignOrganPart} · 연 ${formatParenLabel(pensionAsOf)} · 프 ${formatParenLabel(programAsOf)}`;
+
   return (
     <div className="flex flex-col gap-6 w-full">
       {/* Top Section: Full Width Investor Ranking Table */}
@@ -575,7 +597,9 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
               {activeTab === 'overlap' && (
                 <span className="text-[11px] px-2.5 py-0.5 rounded-full font-bold bg-gradient-to-r from-purple-600 to-amber-600 text-white flex items-center gap-1 shadow-xs animate-pulse whitespace-nowrap shrink-0">
                   {overlapMode === 'consecutive3d' ? <Rocket className="w-3 h-3 shrink-0" /> : <Zap className="w-3 h-3 shrink-0" />}
-                  {overlapMode === 'consecutive3d' ? '3일연속 수급교집합' : '당일 수급교집합'}
+                  {overlapMode === 'consecutive3d'
+                    ? '3일연속 수급교집합'
+                    : (overlapMode === 'consecutive2d' ? '2일연속 수급교집합' : '당일 수급교집합')}
                 </span>
               )}
               {activeTab === 'surging' && (
@@ -584,12 +608,10 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
                   실시간 60초 자동 갱신
                 </span>
               )}
-              {data?.lastBatchTime && activeTab !== 'overlap' && (
-                <span className="text-[10px] px-2 py-0.5 rounded-full font-medium bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20 flex items-center gap-1 whitespace-nowrap shrink-0">
-                  <Clock className="w-3 h-3 shrink-0" />
-                  기준시각: {data.lastBatchTime}
-                </span>
-              )}
+              <span className="text-[10px] px-2 py-0.5 rounded-full font-medium bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20 flex items-center gap-1 whitespace-nowrap shrink-0 font-mono">
+                <Clock className="w-3 h-3 shrink-0" />
+                {dynamicNoticeText}
+              </span>
             </div>
 
             {/* Direction & Market & Refresh Controls */}
@@ -980,6 +1002,18 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
                 </button>
                 <button
                   type="button"
+                  onClick={() => setOverlapMode('consecutive2d')}
+                  className={`px-2.5 py-1 rounded-lg transition whitespace-nowrap cursor-pointer text-xs font-bold flex items-center gap-1 shrink-0 ${
+                    overlapMode === 'consecutive2d'
+                      ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-xs'
+                      : 'text-purple-700 dark:text-purple-300 hover:text-purple-900'
+                  }`}
+                >
+                  <Zap className="w-3 h-3 shrink-0" />
+                  <span>2일연속 교집합</span>
+                </button>
+                <button
+                  type="button"
                   onClick={() => setOverlapMode('consecutive3d')}
                   className={`px-2.5 py-1 rounded-lg transition whitespace-nowrap cursor-pointer text-xs font-bold flex items-center gap-1 shrink-0 ${
                     overlapMode === 'consecutive3d'
@@ -995,7 +1029,12 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
               {/* Dynamic Overlap Total Count Badge */}
               <div className="bg-purple-100/80 dark:bg-purple-950/40 text-purple-700 dark:text-purple-300 px-3 py-1 rounded-xl flex items-center text-xs font-bold border border-purple-200 dark:border-purple-800/50 gap-1.5 shrink-0 shadow-2xs">
                 <Flame className="w-3.5 h-3.5 text-purple-600 dark:text-purple-400 shrink-0" />
-                <span>당일 교집합: <strong className="text-purple-900 dark:text-purple-100 font-black">{displayList.length}개 종목</strong> 포착</span>
+                <span>
+                  {overlapMode === 'consecutive3d'
+                    ? '3일연속 교집합: '
+                    : (overlapMode === 'consecutive2d' ? '2일연속 교집합: ' : '당일 교집합: ')}
+                  <strong className="text-purple-900 dark:text-purple-100 font-black">{displayList.length}개 종목</strong> 포착
+                </span>
               </div>
             </div>
           )}
@@ -1004,7 +1043,11 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
           {isLoading ? (
             <div className="h-64 flex flex-col items-center justify-center gap-2 text-slate-400 dark:text-slate-500 text-xs animate-pulse">
               <RefreshCw className="w-6 h-6 animate-spin" />
-              <span>{overlapMode === 'consecutive3d' ? '3일 연속 수급 교집합 데이터 분석 중...' : '매매 순위 데이터를 로딩하는 중입니다...'}</span>
+              <span>
+                {overlapMode === 'consecutive3d'
+                  ? '3일 연속 수급 교집합 데이터 분석 중...'
+                  : (overlapMode === 'consecutive2d' ? '2일 연속 수급 교집합 데이터 분석 중...' : '매매 순위 데이터를 로딩하는 중입니다...')}
+              </span>
             </div>
           ) : isError ? (
             <div className="p-6 text-center text-xs text-red-500 bg-red-50 dark:bg-red-950/20 rounded-xl border border-red-200 dark:border-red-900">
@@ -1013,8 +1056,8 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
           ) : displayList.length === 0 ? (
             <div className="p-8 text-center text-xs text-slate-400 dark:text-slate-500 bg-slate-50/50 dark:bg-[#1e222d]/30 rounded-xl border border-dashed border-slate-200 dark:border-[#2a2e39]">
               {activeTab === 'overlap'
-                ? (overlapMode === 'consecutive3d'
-                    ? '3일 이상 연속 수급이 2개 이상 주체에서 동시에 진행 중인 종목이 없습니다.'
+                ? (overlapMode !== 'daily'
+                    ? `${overlapMode === 'consecutive2d' ? '2일' : '3일'} 이상 연속 수급이 2개 이상 주체에서 동시에 진행 중인 종목이 없습니다.`
                     : '조건에 부합하는 수급 교집합 종목 데이터가 없습니다.')
                 : `${activeTabLabel} ${isBuy ? '순매수' : '순매도'}${market !== 'ALL' ? ` (${market === 'KOSPI' ? '코스피' : '코스닥'})` : ''} 조건에 부합하는 종목 데이터가 없습니다.`}
             </div>
@@ -1023,63 +1066,63 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
             <div ref={tableContainerRef} className="overflow-y-auto max-h-[740px] rounded-xl border border-slate-200 dark:border-[#2a2e39] scrollbar-thin scrollbar-thumb-slate-300 dark:scrollbar-thumb-slate-700">
               <table className="w-full text-left border-collapse text-xs">
                 {/* Sticky Header */}
-                <thead className="sticky top-0 z-10 bg-slate-100 dark:bg-[#1a1e29] shadow-xs">
+                <thead className="sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29] shadow-xs">
                   <tr className="border-b border-slate-200 dark:border-[#2a2e39] text-slate-500 dark:text-[#787b86] font-semibold bg-slate-100 dark:bg-[#1a1e29]">
-                    <th className="p-2.5 text-center min-w-[50px] whitespace-nowrap shrink-0 sticky top-0 z-10 bg-slate-100 dark:bg-[#1a1e29]">순위</th>
-                    <th className="p-2.5 whitespace-nowrap min-w-[110px] sticky top-0 z-10 bg-slate-100 dark:bg-[#1a1e29]">종목명</th>
+                    <th className="p-2.5 text-center min-w-[50px] whitespace-nowrap shrink-0 sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]">순위</th>
+                    <th className="p-2.5 whitespace-nowrap min-w-[110px] sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]">종목명</th>
 
                     {activeTab === 'overlap' ? (
-                      <th className="p-2.5 whitespace-nowrap min-w-[200px] sticky top-0 z-10 bg-slate-100 dark:bg-[#1a1e29]">
+                      <th className="p-2.5 whitespace-nowrap min-w-[200px] sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]">
                         {overlapMode === 'consecutive3d' ? '주체별 연속 순매수' : '주체별 상세 순위'}
                       </th>
                     ) : null}
 
                     {isComprehensive ? (
                       <>
-                        <th className="p-2.5 text-right whitespace-nowrap sticky top-0 z-10 bg-slate-100 dark:bg-[#1a1e29]">현재가</th>
-                        <th className="p-2.5 text-right whitespace-nowrap sticky top-0 z-10 bg-slate-100 dark:bg-[#1a1e29]">등락률</th>
-                        <th className="p-2.5 text-center whitespace-nowrap sticky top-0 z-10 bg-slate-100 dark:bg-[#1a1e29]">종합점수 (총점)</th>
-                        <th className="p-2.5 whitespace-nowrap sticky top-0 z-10 bg-slate-100 dark:bg-[#1a1e29]">외국인 수급</th>
-                        <th className="p-2.5 whitespace-nowrap sticky top-0 z-10 bg-slate-100 dark:bg-[#1a1e29]">기관 수급</th>
-                        <th className="p-2.5 text-center whitespace-nowrap sticky top-0 z-10 bg-slate-100 dark:bg-[#1a1e29]">7개 세부 지표</th>
+                        <th className="p-2.5 text-right whitespace-nowrap sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]">현재가</th>
+                        <th className="p-2.5 text-right whitespace-nowrap sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]">등락률</th>
+                        <th className="p-2.5 text-center whitespace-nowrap sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]">종합점수 (총점)</th>
+                        <th className="p-2.5 whitespace-nowrap sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]">외국인 수급</th>
+                        <th className="p-2.5 whitespace-nowrap sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]">기관 수급</th>
+                        <th className="p-2.5 text-center whitespace-nowrap sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]">7개 세부 지표</th>
                       </>
                     ) : activeTab === 'surging' ? (
                       surgingMode === 'overlap' ? (
                         <>
-                          <th className="p-2.5 text-right whitespace-nowrap sticky top-0 z-10 bg-slate-100 dark:bg-[#1a1e29]">현재가</th>
-                          <th className="p-2.5 text-right whitespace-nowrap sticky top-0 z-10 bg-slate-100 dark:bg-[#1a1e29]">등락률</th>
-                          <th className="p-2.5 text-right whitespace-nowrap sticky top-0 z-10 bg-slate-100 dark:bg-[#1a1e29]">거래량</th>
-                          <th className="p-2.5 text-right whitespace-nowrap sticky top-0 z-10 bg-slate-100 dark:bg-[#1a1e29]">거래대금</th>
-                          <th className="p-2.5 whitespace-nowrap min-w-[180px] sticky top-0 z-10 bg-slate-100 dark:bg-[#1a1e29]">급등 상세 순위</th>
-                          <th className="p-2.5 whitespace-nowrap sticky top-0 z-10 bg-slate-100 dark:bg-[#1a1e29]">외국인 수급</th>
-                          <th className="p-2.5 whitespace-nowrap sticky top-0 z-10 bg-slate-100 dark:bg-[#1a1e29]">기관 수급</th>
+                          <th className="p-2.5 text-right whitespace-nowrap sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]">현재가</th>
+                          <th className="p-2.5 text-right whitespace-nowrap sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]">등락률</th>
+                          <th className="p-2.5 text-right whitespace-nowrap sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]">거래량</th>
+                          <th className="p-2.5 text-right whitespace-nowrap sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]">거래대금</th>
+                          <th className="p-2.5 whitespace-nowrap min-w-[180px] sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]">급등 상세 순위</th>
+                          <th className="p-2.5 whitespace-nowrap sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]">외국인 수급</th>
+                          <th className="p-2.5 whitespace-nowrap sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]">기관 수급</th>
                         </>
                       ) : (
                         <>
-                          <th className="p-2.5 text-right whitespace-nowrap sticky top-0 z-10 bg-slate-100 dark:bg-[#1a1e29]">현재가</th>
-                          <th className="p-2.5 text-right whitespace-nowrap sticky top-0 z-10 bg-slate-100 dark:bg-[#1a1e29]">등락률</th>
-                          <th className="p-2.5 text-right whitespace-nowrap sticky top-0 z-10 bg-slate-100 dark:bg-[#1a1e29]">거래량</th>
-                          <th className="p-2.5 text-right whitespace-nowrap sticky top-0 z-10 bg-slate-100 dark:bg-[#1a1e29]">거래대금</th>
-                          <th className="p-2.5 text-right whitespace-nowrap sticky top-0 z-10 bg-slate-100 dark:bg-[#1a1e29]">전일대비 거래량</th>
+                          <th className="p-2.5 text-right whitespace-nowrap sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]">현재가</th>
+                          <th className="p-2.5 text-right whitespace-nowrap sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]">등락률</th>
+                          <th className="p-2.5 text-right whitespace-nowrap sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]">거래량</th>
+                          <th className="p-2.5 text-right whitespace-nowrap sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]">거래대금</th>
+                          <th className="p-2.5 text-right whitespace-nowrap sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]">전일대비 거래량</th>
                         </>
                       )
                     ) : (
                       <>
-                        <th className="p-2.5 text-right whitespace-nowrap sticky top-0 z-10 bg-slate-100 dark:bg-[#1a1e29]">
+                        <th className="p-2.5 text-right whitespace-nowrap sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]">
                           <button type="button" onClick={() => handleSort('currentPrice')} className="inline-flex items-center gap-1 hover:text-slate-900 dark:hover:text-white cursor-pointer">
                             현재가
                             <ArrowUpDown className="w-3 h-3 opacity-60 shrink-0" />
                           </button>
                         </th>
 
-                        <th className="p-2.5 text-right whitespace-nowrap sticky top-0 z-10 bg-slate-100 dark:bg-[#1a1e29]">
+                        <th className="p-2.5 text-right whitespace-nowrap sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]">
                           <button type="button" onClick={() => handleSort('netBuyQty')} className="inline-flex items-center gap-1 hover:text-slate-900 dark:hover:text-white cursor-pointer font-semibold text-slate-600 dark:text-slate-400">
                             {isBuy ? '순매수 수량' : '순매도 수량'}
                             <ArrowUpDown className="w-3 h-3 opacity-60 shrink-0" />
                           </button>
                         </th>
 
-                        <th className="p-2.5 text-right whitespace-nowrap sticky top-0 z-10 bg-slate-100 dark:bg-[#1a1e29]">
+                        <th className="p-2.5 text-right whitespace-nowrap sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]">
                           <button type="button" onClick={() => handleSort('netBuyAmt')} className="inline-flex items-center gap-1 hover:text-slate-900 dark:hover:text-white font-bold text-slate-700 dark:text-slate-300 cursor-pointer">
                             {activeTab === 'overlap'
                               ? overlapMode === 'consecutive3d'
@@ -1136,9 +1179,9 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
                           <div className="flex flex-row items-center justify-center gap-1 whitespace-nowrap">
                             <div className="relative inline-flex items-center justify-center shrink-0">
                               {/* Tilted Floating Star Emblem Overlay on top-left of rank badge */}
-                              {activeTab === 'overlap' && overlapMode === 'consecutive3d' && item.aiPickRank && (
+                              {activeTab === 'overlap' && (overlapMode === 'daily' || !overlapMode) && item.aiPickRank && (
                                 <div
-                                  className="absolute -top-1.5 -left-1.5 z-10 pointer-events-none transform -rotate-6 shrink-0"
+                                  className="absolute -top-1.5 -left-1.5 z-[2] pointer-events-none transform -rotate-6 shrink-0"
                                   title={`AI 수급 추천 ${item.aiPickRank}위`}
                                 >
                                   {item.aiPickRank === 1 ? (
@@ -1236,22 +1279,15 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
                               const mkt = resolveMarketType(item.symbol, item.name, item.market);
                               const isKosdaq = mkt === 'KOSDAQ';
                               return (
-                                <>
-                                  <span
-                                    className={`text-[9px] px-1 py-0.2 rounded font-sans font-bold shrink-0 border ${
-                                      isKosdaq
-                                        ? 'bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60'
-                                        : 'bg-blue-50 dark:bg-blue-950/60 text-blue-600 dark:text-blue-400 border-blue-200 dark:border-blue-800/60'
-                                    }`}
-                                  >
-                                    {isKosdaq ? '코스닥' : '코스피'}
-                                  </span>
-                                  {item.isCreditAvailable === undefined && (
-                                    <span className="text-[9px] px-1 py-0.2 rounded font-sans font-bold shrink-0 bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border border-slate-300 dark:border-slate-700">
-                                      확인필요
-                                    </span>
-                                  )}
-                                </>
+                                <span
+                                  className={`text-[9px] px-1 py-0.2 rounded font-sans font-bold shrink-0 border ${
+                                    isKosdaq
+                                      ? 'bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60'
+                                      : 'bg-blue-50 dark:bg-blue-950/60 text-blue-600 dark:text-blue-400 border-blue-200 dark:border-blue-800/60'
+                                  }`}
+                                >
+                                  {isKosdaq ? '코스닥' : '코스피'}
+                                </span>
                               );
                             })()}
                           </div>
@@ -1263,11 +1299,11 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
                             <div className="flex items-center gap-1 flex-nowrap overflow-x-auto scrollbar-none py-0.5">
                               <span
                                 className={`inline-flex items-center gap-1 text-[9px] px-1.5 py-0.5 rounded font-bold border whitespace-nowrap shrink-0 ${
-                                  item.statusBadgeStyle || 'bg-amber-50 dark:bg-amber-950/60 text-amber-600 dark:text-amber-400 border-amber-200 dark:border-amber-800/60 font-bold'
+                                  item.statusBadgeStyle || 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-300 dark:border-slate-700'
                                 }`}
-                                title={item.statusBadge || '🔍 확인필요'}
+                                title={item.statusBadge || '⚪ 이평선 수렴'}
                               >
-                                {item.statusBadge || '🔍 확인필요'}
+                                {item.statusBadge || '⚪ 이평선 수렴'}
                               </span>
                               {item.ranksByType?.map((r) => (
                                   <span
@@ -1278,9 +1314,11 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
                                   >
                                     <span>{r.label}</span>
                                     <strong className="font-mono text-[10px]">
-                                      {overlapMode === 'consecutive3d'
-                                        ? (r.consecutiveText || `${r.consecutiveDays || 3}일연속`)
-                                        : `${r.rank}위`}
+                                       {overlapMode !== 'daily'
+                                         ? (r.consecutiveText || `${r.consecutiveDays || 2}일연속`)
+                                        : (r.type === 'pension' || r.type === 'program'
+                                            ? (r.netBuyAmt >= 0 ? '순매수' : '순매도')
+                                            : `${r.rank}위`)}
                                     </strong>
                                   </span>
                                 ))}
@@ -1670,19 +1708,10 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
             </span>
             <span className="text-[10px] text-slate-400">마우스 휠로 고정 스크롤</span>
           </div>
-          {activeTab === 'surging' ? (
+          {activeTab === 'surging' && (
             <div className="text-[11px] px-2.5 py-1.5 rounded-lg bg-slate-100/80 dark:bg-[#1a1e29] text-slate-500 dark:text-slate-400 flex items-center gap-1.5 border border-slate-200/60 dark:border-[#2a2e39]">
               <Info className="w-3.5 h-3.5 text-blue-500 shrink-0" />
               <span>ℹ️ 관리종목(SHD 등)은 KIS API 정책상 본 랭킹에서 제외됩니다.</span>
-            </div>
-          ) : (
-            <div className="text-[11px] px-2.5 py-1.5 rounded-lg bg-blue-50/70 dark:bg-blue-950/30 text-blue-800 dark:text-blue-300 flex items-center gap-1.5 border border-blue-200/60 dark:border-blue-900/40">
-              <Clock className="w-3.5 h-3.5 text-blue-500 shrink-0" />
-              <span>
-                {getIntradaySnapshotNoticeText(
-                  Boolean(displayList && displayList.length > 0 && displayList.some((i) => i.asOfDateLabel === '당일 가집계'))
-                )}
-              </span>
             </div>
           )}
         </div>

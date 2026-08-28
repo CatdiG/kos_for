@@ -3,7 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { InvestorTrendDay, InvestorTrendResponse, KisTokenResponse, ProgramTradeIntradayPoint, ProgramTradeSummary, SupplySummary, TrendPeriod, InvestorRankingResponse, RankingItem, RankingDirection, RankingPeriod, RankingType, OverlapInvestorRank, MarketType, SurgingRankItem, ScoreBreakdown, SurgingMode, isEtfOrEtn } from './types';
-import { getStockName, resolveStockPriceAndChange, updateRuntimeStockPrice, resolveMarketType, computeUnifiedStatusBadge } from './mockData';
+import { getStockName, resolveStockPriceAndChange, updateRuntimeStockPrice, resolveMarketType, computeUnifiedStatusBadge, getSettledAsOfDateLabel } from './mockData';
 import { fetchTokenFromSupabase, fetchCreditBatchFromSupabase, saveCreditBatchToSupabase } from './supabase';
 export { resolveStockPriceAndChange, computeUnifiedStatusBadge };
 
@@ -701,15 +701,29 @@ async function executeKisInvestorTrendFetch(
   const net5dPension = trend.slice(-5).reduce((s, i) => s + i.pensionNetBuyAmt, 0);
   const net20dPension = trend.slice(-20).reduce((s, i) => s + i.pensionNetBuyAmt, 0);
 
+  const now = new Date();
+  const utc = now.getTime() + now.getTimezoneOffset() * 60000;
+  const kstDate = new Date(utc + 9 * 60 * 60000);
+  const hour = kstDate.getHours();
+  const minute = kstDate.getMinutes();
+  const timeNum = hour * 100 + minute;
+  const dayOfWeek = kstDate.getDay();
+  const isMarketOpen = dayOfWeek >= 1 && dayOfWeek <= 5 && timeNum >= 900 && timeNum < 1530;
+
   const formatBsopDateLabel = (dateStr?: string, isFallback?: boolean) => {
-    if (!isFallback || !dateStr) return '당일 가집계';
-    const cleaned = dateStr.replace(/-/g, '');
-    if (cleaned.length === 8) {
-      const month = parseInt(cleaned.substring(4, 6), 10);
-      const day = parseInt(cleaned.substring(6, 8), 10);
-      return `(${month}/${day} 기준)`;
+    if (isMarketOpen && !isFallback) {
+      return '당일 가집계';
     }
-    return `(${dateStr} 기준)`;
+    if (dateStr) {
+      const cleaned = dateStr.replace(/-/g, '');
+      if (cleaned.length === 8) {
+        const month = parseInt(cleaned.substring(4, 6), 10);
+        const day = parseInt(cleaned.substring(6, 8), 10);
+        return `(${month}/${day} 기준)`;
+      }
+      return `(${dateStr} 기준)`;
+    }
+    return getSettledAsOfDateLabel();
   };
 
   const isForeignFallback = latest.foreignNetBuyAmt === 0 && (latestValidDay.foreignNetBuyAmt || 0) !== 0;
@@ -764,26 +778,44 @@ async function executeKisInvestorTrendFetch(
   };
 }
 
-/**
- * KIS 국내주식 종목별 프로그램 매매동향 API 호출 (FHPST01060000)
- */
 export async function fetchKisProgramTrade(
   symbol: string,
-  token: string,
-  baseUrl: string,
-  appKey: string,
-  appSecret: string,
+  token?: string,
+  baseUrl?: string,
+  appKey?: string,
+  appSecret?: string,
   currentPrice: number = 70000
 ): Promise<ProgramTradeSummary> {
   try {
-    const url = `${baseUrl}/uapi/domestic-stock/v1/quotations/program-trade-by-stock?FID_COND_MRKT_DIV_CODE=J&FID_INPUT_ISCD=${symbol}&FID_INPUT_HOUR_1=`;
+    const tk = token || (await getKisAccessToken());
+    if (!tk) {
+      return {
+        status: 'NEUTRAL',
+        totalNetBuyQty: 0,
+        totalNetBuyAmt: 0,
+        nonArbitrageAmt: 0,
+        arbitrageAmt: 0,
+        ratioVsVolume: 0,
+        asOfDateLabel: '당일 가집계',
+        intradayTrend: [],
+      };
+    }
+    const isVirtual = process.env.KIS_VIRTUAL === 'true';
+    const defaultBaseUrl = isVirtual 
+      ? 'https://openapivts.koreainvestment.com:29443' 
+      : 'https://openapi.koreainvestment.com:9443';
+    const urlBase = baseUrl || process.env.KIS_BASE_URL || defaultBaseUrl;
+    const key = appKey || process.env.KIS_APPKEY || '';
+    const sec = appSecret || process.env.KIS_APPSECRET || '';
+
+    const url = `${urlBase}/uapi/domestic-stock/v1/quotations/program-trade-by-stock?FID_COND_MRKT_DIV_CODE=J&FID_INPUT_ISCD=${symbol}&FID_INPUT_HOUR_1=`;
     const res = await fetch(url, {
       method: 'GET',
       headers: {
         'content-type': 'application/json; charset=utf-8',
-        authorization: `Bearer ${token}`,
-        appkey: appKey,
-        appsecret: appSecret,
+        authorization: `Bearer ${tk}`,
+        appkey: key,
+        appsecret: sec,
         tr_id: 'FHPST01060000',
         custtype: 'P',
       },
@@ -829,6 +861,19 @@ export async function fetchKisProgramTrade(
         else if (totalAmt < -500) status = 'STRONG_SELL';
         else if (totalAmt < -100) status = 'SELL';
 
+        const now = new Date();
+        const utc = now.getTime() + now.getTimezoneOffset() * 60000;
+        const kstDate = new Date(utc + 9 * 60 * 60000);
+        const hour = kstDate.getHours();
+        const minute = kstDate.getMinutes();
+        const timeNum = hour * 100 + minute;
+        const dayOfWeek = kstDate.getDay();
+        const isMarketOpen = dayOfWeek >= 1 && dayOfWeek <= 5 && timeNum >= 900 && timeNum < 1530;
+
+        const programAsOfDateLabel = isMarketOpen
+          ? ((last && last.time) ? `당일 실시간 (${last.time})` : '당일 실시간')
+          : getSettledAsOfDateLabel();
+
         return {
           arbitrageAmt: last.arbitrageAmt,
           nonArbitrageAmt: last.nonArbitrageAmt,
@@ -836,6 +881,7 @@ export async function fetchKisProgramTrade(
           totalNetBuyQty: last.totalNetBuyQty,
           ratioVsVolume: 14.8,
           status,
+          asOfDateLabel: programAsOfDateLabel,
           intradayTrend,
         };
       }
@@ -851,6 +897,7 @@ export async function fetchKisProgramTrade(
     totalNetBuyQty: 0,
     ratioVsVolume: 0,
     status: 'NEUTRAL',
+    asOfDateLabel: getSettledAsOfDateLabel(),
     intradayTrend: [],
   };
 }
@@ -1413,7 +1460,7 @@ async function enrichRankingWithRawInvestorData(
                   : parseInt(todayRow?.orgn_ntby_tr_pbmn || todayRow?.orgn_ntby_amt || '0', 10);
 
                 if (todayAmt === 0) {
-                  item.asOfDateLabel = '(8/27 기준)';
+                  item.asOfDateLabel = getSettledAsOfDateLabel();
                 } else {
                   item.asOfDateLabel = '당일 가집계';
                 }
@@ -1466,17 +1513,11 @@ async function enrichRankingWithRawInvestorData(
 
 
 export function computeStatusBadgeFromTrend(trend: InvestorTrendDay[]): { shortBadge: string; badgeStyle: string } {
-  if (!trend || trend.length === 0) {
-    return {
-      shortBadge: '🔍 확인필요',
-      badgeStyle: 'bg-amber-50 dark:bg-amber-950/60 text-amber-600 dark:text-amber-400 border-amber-200 dark:border-amber-800/60 font-bold',
-    };
-  }
-  const closes = trend.map((d) => d.closePrice).filter((c) => c && c > 0);
+  const closes = (trend || []).map((d) => d.closePrice).filter((c) => c && c > 0);
   if (closes.length === 0) {
     return {
-      shortBadge: '🔍 확인필요',
-      badgeStyle: 'bg-amber-50 dark:bg-amber-950/60 text-amber-600 dark:text-amber-400 border-amber-200 dark:border-amber-800/60 font-bold',
+      shortBadge: '⚪ 이평선 수렴',
+      badgeStyle: 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-300 dark:border-slate-700',
     };
   }
 
@@ -1551,17 +1592,27 @@ async function executeAsyncOverlapCalculation(
   market: MarketType,
   masterCacheKey: string
 ): Promise<InvestorRankingResponse> {
+  function getTrendMultiplier(statusBadge?: string) {
+    if (statusBadge?.includes('정배열')) return 1.5;   // 1위: 정배열 상승 추세
+    if (statusBadge?.includes('바닥 반등')) return 1.4; // 2위: 바닥 반등 타점
+    if (statusBadge?.includes('이평선 수렴')) return 1.0; // 3위: 이평선 수렴/관망
+    if (statusBadge?.includes('단기 과열')) return 0.9; // 4위: 단기 과열
+    if (statusBadge?.includes('역배열')) return 0.7;   // 5위: 역배열 하락 (오픈)
+    return 1.0;
+  }
+
   try {
     const { getBatchRankingData, getCached5dTrend } = await import('./batchCollector');
     const candidateLimit = 50;
 
+    const reqPeriod = (period === 'consecutive2d' || period === 'consecutive3d') ? '1d' : (period as '1d' | '1w' | '1m');
     const [foreignRes, organRes] = await Promise.all([
-      fetchKisForeignInstitutionRanking('foreign', direction, period, market, candidateLimit),
-      fetchKisForeignInstitutionRanking('organ', direction, period, market, candidateLimit),
+      fetchKisForeignInstitutionRanking('foreign', direction, reqPeriod, market, candidateLimit),
+      fetchKisForeignInstitutionRanking('organ', direction, reqPeriod, market, candidateLimit),
     ]);
 
-    const pensionRes = getBatchRankingData('pension', direction, period, market);
-    const programRes = getBatchRankingData('program', direction, period, market);
+    const pensionRes = getBatchRankingData('pension', direction, reqPeriod, market);
+    const programRes = getBatchRankingData('program', direction, reqPeriod, market);
 
     const map = new Map<
       string,
@@ -1620,8 +1671,12 @@ async function executeAsyncOverlapCalculation(
     const overlapItems: RankingItem[] = [];
 
     map.forEach((value) => {
+      const hasForeign = value.ranksByType.some((r) => r.type === 'foreign');
+      const hasOrgan = value.ranksByType.some((r) => r.type === 'organ');
       const overlapCount = value.ranksByType.length;
-      if (overlapCount >= minOverlap) {
+
+      // 수급 교집합: 외국인과 기관이 동시에 매수한 진짜 교집합 종목만 포함 (단일 기관 종목 배제)
+      if (hasForeign && hasOrgan && overlapCount >= minOverlap) {
         const investorLabels = value.ranksByType.map((r) => r.label);
         const totalNetBuyAmt = value.ranksByType.reduce((sum, r) => sum + r.netBuyAmt, 0);
         const totalNetBuyAmtEok = Number((totalNetBuyAmt / 100).toFixed(1));
@@ -1672,16 +1727,41 @@ async function executeAsyncOverlapCalculation(
       return (b.overlapCount || 0) - (a.overlapCount || 0);
     });
 
-    const finalOverlapItems = overlapItems.map((item, index) => {
-      const trendRes = getCached5dTrend(item.symbol);
-      const trendData = trendRes?.trend || [];
-      const statusInfo = computeStatusBadgeFromTrend(trendData);
-      return {
-        ...item,
-        rank: index + 1,
-        statusBadge: statusInfo?.shortBadge || '⚪ 이평선 수렴',
-        statusBadgeStyle: statusInfo?.badgeStyle || 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-300 dark:border-slate-700',
-      };
+    const finalOverlapItems = await Promise.all(
+      overlapItems.map(async (item, index) => {
+        let trendRes = getCached5dTrend(item.symbol);
+        if (!trendRes || !trendRes.trend || trendRes.trend.length === 0) {
+          trendRes = await fetchKisInvestorTrend(item.symbol, '20d').catch(() => null);
+        }
+        const trendData = trendRes?.trend || [];
+        const statusInfo = computeStatusBadgeFromTrend(trendData);
+        return {
+          ...item,
+          rank: index + 1,
+          statusBadge: statusInfo.shortBadge,
+          statusBadgeStyle: statusInfo.badgeStyle,
+        };
+      })
+    );
+
+    const aiPickCandidates = [...finalOverlapItems]
+      .map((item) => {
+        const overlapScore = (item.overlapCount || 2) * 100;
+        const logAmtScore = Math.log(Math.max(0, item.netBuyAmtEok || 0) + 1) * 20;
+        const rawScore = overlapScore + logAmtScore;
+        const trendMult = getTrendMultiplier(item.statusBadge);
+        return {
+          symbol: item.symbol,
+          score: rawScore * trendMult,
+        };
+      })
+      .sort((a, b) => b.score - a.score);
+
+    const top3Symbols = aiPickCandidates.slice(0, 3).map((c) => c.symbol);
+
+    finalOverlapItems.forEach((item) => {
+      const pickIdx = top3Symbols.indexOf(item.symbol);
+      item.aiPickRank = pickIdx >= 0 ? pickIdx + 1 : undefined;
     });
 
     const mergedList = await mergeCreditStatusToRanking(finalOverlapItems);
@@ -1718,6 +1798,24 @@ async function executeAsyncOverlapCalculation(
   }
 }
 
+const consecutiveOverlapMemoryCache = new Map<string, { data: InvestorRankingResponse; timestamp: number }>();
+
+export function clearConsecutiveOverlapCache() {
+  consecutiveOverlapMemoryCache.clear();
+}
+
+/**
+ * 2일 이상 연속 순매수(또는 순매도)가 진행 중인 주체 2개 이상 중복 교집합 종목 추출
+ */
+export async function fetchConsecutive2dOverlapRankingData(
+  direction: RankingDirection = 'buy',
+  minOverlap: number = 2,
+  topLimit: number = 50,
+  market: MarketType = 'ALL'
+): Promise<InvestorRankingResponse> {
+  return fetchConsecutiveNDaysOverlapRankingData(direction, minOverlap, topLimit, market, 2);
+}
+
 /**
  * 3일 이상 연속 순매수(또는 순매도)가 진행 중인 주체 2개 이상 중복 교집합 종목 추출
  */
@@ -1727,15 +1825,28 @@ export async function fetchConsecutive3dOverlapRankingData(
   topLimit: number = 50,
   market: MarketType = 'ALL'
 ): Promise<InvestorRankingResponse> {
+  return fetchConsecutiveNDaysOverlapRankingData(direction, minOverlap, topLimit, market, 3);
+}
+
+export async function fetchConsecutiveNDaysOverlapRankingData(
+  direction: RankingDirection = 'buy',
+  minOverlap: number = 2,
+  topLimit: number = 50,
+  market: MarketType = 'ALL',
+  targetDays: number = 3
+): Promise<InvestorRankingResponse> {
+  const cacheKey = `c_${direction}_${targetDays}d_${minOverlap}_${market}_${topLimit}`;
+  const cached = consecutiveOverlapMemoryCache.get(cacheKey);
+  if (cached && Date.now() - cached.timestamp < OVERLAP_CACHE_TTL_MS) {
+    return cached.data;
+  }
+
   const isBuy = direction === 'buy';
-  const { TOP_50_STOCKS } = await import('./mockData');
   const { getCached5dTrend } = await import('./batchCollector');
 
-  const results: RankingItem[] = [];
-  let targetStocks = TOP_50_STOCKS;
-  if (market && market !== 'ALL') {
-    targetStocks = TOP_50_STOCKS.filter((s) => s.market === market);
-  }
+  // Get candidate stocks from real-time market overlap ranking (no fixed stock list restriction!)
+  const dailyOverlapRes = await fetchOverlapRankingData(direction, '1d', 2, 50, market).catch(() => null);
+  const candidateStocks = dailyOverlapRes?.list || [];
 
   const ALL_ENTITIES: Array<{ type: 'foreign' | 'organ' | 'pension' | 'program'; label: string }> = [
     { type: 'foreign', label: '외국인' },
@@ -1744,174 +1855,179 @@ export async function fetchConsecutive3dOverlapRankingData(
     { type: 'program', label: '프로그램' },
   ];
 
-  // Use instant cached trend store (0ms latency, zero socket locking / zero Vercel timeout risk)
-  for (let i = 0; i < targetStocks.length; i++) {
-    const stock = targetStocks[i];
-    try {
-      const trendRes = getCached5dTrend(stock.symbol);
-      if (!trendRes || !trendRes.trend) continue;
-      const trend = trendRes?.trend || [];
+  const stockTrendPromises = candidateStocks.map(async (stock) => {
+    let trendRes = getCached5dTrend(stock.symbol);
+    if (!trendRes || !trendRes.trend || trendRes.trend.length < targetDays) {
+      trendRes = await fetchKisInvestorTrend(stock.symbol, '20d').catch(() => null);
+    }
+    return { stock, trendRes };
+  });
 
-      // Type-Specific Independent Evaluation (Foreigner/Organ use live 8/28 intraday; Pension/Program use settled close 8/27)
-      const fullTrend = trendRes?.trend || [];
-      if (fullTrend.length < 3) continue;
+  const stockTrends = await Promise.all(stockTrendPromises);
 
-      // Active trend days for Foreigner & Organ (including today's non-zero 8/28 intraday)
-      const activeFullDays = fullTrend.filter(
-        (d: InvestorTrendDay) =>
-          Math.abs(d.foreignNetBuyAmt || 0) > 0 ||
-          Math.abs(d.organNetBuyAmt || 0) > 0 ||
-          Math.abs(d.pensionNetBuyAmt || 0) > 0
-      );
-      if (activeFullDays.length < 3) continue;
-      const last3FullDays = activeFullDays.slice(-3);
+  const results: RankingItem[] = [];
 
-      // Active settled trend days for Pension Fund (excluding unsettled 0-pension intraday if 0)
-      const activePensionDays = fullTrend.filter(
-        (d: InvestorTrendDay) => Math.abs(d.pensionNetBuyAmt || 0) > 0
-      );
-      const last3PensionDays = activePensionDays.length >= 3 ? activePensionDays.slice(-3) : last3FullDays;
+  for (const { stock, trendRes } of stockTrends) {
+    if (!trendRes || !trendRes.trend || trendRes.trend.length === 0) continue;
+    const trend = trendRes.trend;
+    const fullTrend = trend;
+    if (fullTrend.length < targetDays) continue;
 
-      // Strict Day-by-Day Check: EVERY day in the 3-day period must have at least minOverlap (2+) entities buying
-      const dayByDayCounts = last3FullDays.map((d: InvestorTrendDay) => {
-        let cnt = 0;
-        if (isBuy ? d.foreignNetBuyAmt > 0 : d.foreignNetBuyAmt < 0) cnt++;
-        if (isBuy ? d.organNetBuyAmt > 0 : d.organNetBuyAmt < 0) cnt++;
-        if (isBuy ? d.pensionNetBuyAmt > 0 : d.pensionNetBuyAmt < 0) cnt++;
-        return cnt;
+    // Active trend days for Foreigner & Organ
+    const activeFullDays = fullTrend.filter(
+      (d: InvestorTrendDay) =>
+        Math.abs(d.foreignNetBuyAmt || 0) > 0 ||
+        Math.abs(d.organNetBuyAmt || 0) > 0 ||
+        Math.abs(d.pensionNetBuyAmt || 0) > 0
+    );
+    if (activeFullDays.length < targetDays) continue;
+    const lastNDays = activeFullDays.slice(-targetDays);
+
+    // Active settled trend days for Pension Fund
+    const activePensionDays = fullTrend.filter(
+      (d: InvestorTrendDay) => Math.abs(d.pensionNetBuyAmt || 0) > 0
+    );
+    const lastNPensionDays = activePensionDays.length >= targetDays ? activePensionDays.slice(-targetDays) : lastNDays;
+
+    // Strict Day-by-Day Check: EVERY day in the N-day period must have at least minOverlap (2+) entities buying
+    const dayByDayCounts = lastNDays.map((d: InvestorTrendDay) => {
+      let cnt = 0;
+      if (isBuy ? d.foreignNetBuyAmt > 0 : d.foreignNetBuyAmt < 0) cnt++;
+      if (isBuy ? d.organNetBuyAmt > 0 : d.organNetBuyAmt < 0) cnt++;
+      if (isBuy ? d.pensionNetBuyAmt > 0 : d.pensionNetBuyAmt < 0) cnt++;
+      return cnt;
+    });
+
+    const isStrictConsecutiveOverlap = dayByDayCounts.every((cnt: number) => cnt >= minOverlap);
+    if (!isStrictConsecutiveOverlap) continue;
+
+    // Calculate backward consecutive days for each investor entity over activeFullDays
+    let foreignConsecutiveDays = 0;
+    for (let k = activeFullDays.length - 1; k >= 0; k--) {
+      const amt = activeFullDays[k].foreignNetBuyAmt || 0;
+      if (isBuy ? amt > 0 : amt < 0) foreignConsecutiveDays++;
+      else break;
+    }
+
+    let organConsecutiveDays = 0;
+    for (let k = activeFullDays.length - 1; k >= 0; k--) {
+      const amt = activeFullDays[k].organNetBuyAmt || 0;
+      if (isBuy ? amt > 0 : amt < 0) organConsecutiveDays++;
+      else break;
+    }
+
+    let pensionConsecutiveDays = 0;
+    for (let k = activePensionDays.length - 1; k >= 0; k--) {
+      const amt = activePensionDays[k].pensionNetBuyAmt || 0;
+      if (isBuy ? amt > 0 : amt < 0) pensionConsecutiveDays++;
+      else break;
+    }
+
+    let programConsecutiveDays = targetDays;
+
+    const isForeignConsecutive = foreignConsecutiveDays >= targetDays;
+    const isOrganConsecutive = organConsecutiveDays >= targetDays;
+    const isPensionConsecutive = pensionConsecutiveDays >= targetDays;
+
+    const programTrade = trendRes.programTrade;
+    const isProgramConsecutive = isBuy
+      ? (programTrade?.totalNetBuyAmt || 0) > 0
+      : (programTrade?.totalNetBuyAmt || 0) < 0;
+
+    const ranksByType: OverlapInvestorRank[] = [];
+
+    if (isForeignConsecutive) {
+      const sumAmt = lastNDays.reduce((acc: number, d: InvestorTrendDay) => acc + d.foreignNetBuyAmt, 0);
+      ranksByType.push({
+        type: 'foreign',
+        label: '외국인',
+        rank: 1,
+        netBuyAmt: sumAmt,
+        netBuyAmtEok: Number((sumAmt / 100).toFixed(1)),
+        consecutiveDays: foreignConsecutiveDays,
+        consecutiveText: `${foreignConsecutiveDays}일연속`,
+        asOfDateLabel: '당일 가집계',
       });
+    }
 
-      const isStrictConsecutiveOverlap = dayByDayCounts.every((cnt: number) => cnt >= minOverlap);
-      if (!isStrictConsecutiveOverlap) continue;
+    if (isOrganConsecutive) {
+      const sumAmt = lastNDays.reduce((acc: number, d: InvestorTrendDay) => acc + d.organNetBuyAmt, 0);
+      ranksByType.push({
+        type: 'organ',
+        label: '기관',
+        rank: 1,
+        netBuyAmt: sumAmt,
+        netBuyAmtEok: Number((sumAmt / 100).toFixed(1)),
+        consecutiveDays: organConsecutiveDays,
+        consecutiveText: `${organConsecutiveDays}일연속`,
+        asOfDateLabel: '당일 가집계',
+      });
+    }
 
-      // Calculate backward consecutive days for each investor entity over activeFullDays
-      let foreignConsecutiveDays = 0;
-      for (let k = activeFullDays.length - 1; k >= 0; k--) {
-        const amt = activeFullDays[k].foreignNetBuyAmt || 0;
-        if (isBuy ? amt > 0 : amt < 0) foreignConsecutiveDays++;
-        else break;
-      }
+    if (isPensionConsecutive) {
+      const sumAmt = lastNPensionDays.reduce((acc: number, d: InvestorTrendDay) => acc + d.pensionNetBuyAmt, 0);
+      ranksByType.push({
+        type: 'pension',
+        label: '연기금',
+        rank: 1,
+        netBuyAmt: sumAmt,
+        netBuyAmtEok: Number((sumAmt / 100).toFixed(1)),
+        consecutiveDays: pensionConsecutiveDays,
+        consecutiveText: `${pensionConsecutiveDays}일연속`,
+        asOfDateLabel: getSettledAsOfDateLabel(),
+      });
+    }
 
-      let organConsecutiveDays = 0;
-      for (let k = activeFullDays.length - 1; k >= 0; k--) {
-        const amt = activeFullDays[k].organNetBuyAmt || 0;
-        if (isBuy ? amt > 0 : amt < 0) organConsecutiveDays++;
-        else break;
-      }
+    if (isProgramConsecutive && programTrade) {
+      const sumAmt = programTrade.totalNetBuyAmt;
+      ranksByType.push({
+        type: 'program',
+        label: '프로그램',
+        rank: 1,
+        netBuyAmt: sumAmt,
+        netBuyAmtEok: Number((sumAmt / 100).toFixed(1)),
+        consecutiveDays: programConsecutiveDays,
+        consecutiveText: `${programConsecutiveDays}일연속`,
+        asOfDateLabel: getSettledAsOfDateLabel(),
+      });
+    }
 
-      let pensionConsecutiveDays = 0;
-      for (let k = activePensionDays.length - 1; k >= 0; k--) {
-        const amt = activePensionDays[k].pensionNetBuyAmt || 0;
-        if (isBuy ? amt > 0 : amt < 0) pensionConsecutiveDays++;
-        else break;
-      }
+    const hasForeign = ranksByType.some((r) => r.type === 'foreign');
+    const hasOrgan = ranksByType.some((r) => r.type === 'organ');
+    const overlapCount = ranksByType.length;
 
-      let programConsecutiveDays = 3;
+    if (hasForeign && hasOrgan && overlapCount >= minOverlap) {
+      const latest = trend[trend.length - 1];
+      const investorLabels = ranksByType.map((r) => r.label);
+      const totalNetBuyAmt = ranksByType.reduce((sum, r) => sum + r.netBuyAmt, 0);
+      const totalNetBuyAmtEok = Number((totalNetBuyAmt / 100).toFixed(1));
+      const investorBadge = `${overlapCount}개 주체 중복 (${investorLabels.join(' · ')})`;
+      const missingEntities = ALL_ENTITIES.filter((e) => !ranksByType.some((r) => r.type === e.type));
 
-      const isForeignConsecutive = foreignConsecutiveDays >= 3;
-      const isOrganConsecutive = organConsecutiveDays >= 3;
-      const isPensionConsecutive = pensionConsecutiveDays >= 3;
-
-      const programTrade = trendRes.programTrade;
-      const isProgramConsecutive = isBuy
-        ? (programTrade?.totalNetBuyAmt || 0) > 0
-        : (programTrade?.totalNetBuyAmt || 0) < 0;
-
-      const ranksByType: OverlapInvestorRank[] = [];
-
-      if (isForeignConsecutive) {
-        const sumAmt = last3FullDays.reduce((acc: number, d: InvestorTrendDay) => acc + d.foreignNetBuyAmt, 0);
-        ranksByType.push({
-          type: 'foreign',
-          label: '외국인',
-          rank: 1,
-          netBuyAmt: sumAmt,
-          netBuyAmtEok: Number((sumAmt / 100).toFixed(1)),
-          consecutiveDays: foreignConsecutiveDays,
-          consecutiveText: `${foreignConsecutiveDays}일연속`,
-          asOfDateLabel: '당일 가집계',
-        });
-      }
-
-      if (isOrganConsecutive) {
-        const sumAmt = last3FullDays.reduce((acc: number, d: InvestorTrendDay) => acc + d.organNetBuyAmt, 0);
-        ranksByType.push({
-          type: 'organ',
-          label: '기관',
-          rank: 1,
-          netBuyAmt: sumAmt,
-          netBuyAmtEok: Number((sumAmt / 100).toFixed(1)),
-          consecutiveDays: organConsecutiveDays,
-          consecutiveText: `${organConsecutiveDays}일연속`,
-          asOfDateLabel: '당일 가집계',
-        });
-      }
-
-      if (isPensionConsecutive) {
-        const sumAmt = last3PensionDays.reduce((acc: number, d: InvestorTrendDay) => acc + d.pensionNetBuyAmt, 0);
-        ranksByType.push({
-          type: 'pension',
-          label: '연기금',
-          rank: 1,
-          netBuyAmt: sumAmt,
-          netBuyAmtEok: Number((sumAmt / 100).toFixed(1)),
-          consecutiveDays: pensionConsecutiveDays,
-          consecutiveText: `${pensionConsecutiveDays}일연속`,
-          asOfDateLabel: '(8/27 기준)',
-        });
-      }
-
-      if (isProgramConsecutive && programTrade) {
-        const sumAmt = programTrade.totalNetBuyAmt;
-        ranksByType.push({
-          type: 'program',
-          label: '프로그램',
-          rank: 1,
-          netBuyAmt: sumAmt,
-          netBuyAmtEok: Number((sumAmt / 100).toFixed(1)),
-          consecutiveDays: programConsecutiveDays,
-          consecutiveText: `${programConsecutiveDays}일연속`,
-          asOfDateLabel: '(8/27 기준)',
-        });
-      }
-
-      const overlapCount = ranksByType.length;
-
-      if (overlapCount >= minOverlap) {
-        const latest = trend[trend.length - 1];
-        const investorLabels = ranksByType.map((r) => r.label);
-        const totalNetBuyAmt = ranksByType.reduce((sum, r) => sum + r.netBuyAmt, 0);
-        const totalNetBuyAmtEok = Number((totalNetBuyAmt / 100).toFixed(1));
-        const investorBadge = `${overlapCount}개 주체 중복 (${investorLabels.join(' · ')})`;
-        const missingEntities = ALL_ENTITIES.filter((e) => !ranksByType.some((r) => r.type === e.type));
-
-        const statusInfo = computeStatusBadgeFromTrend(trend);
-        results.push({
-          rank: 0,
-          symbol: stock.symbol,
-          name: getStockName(stock.symbol, trendRes.stockInfo?.name),
-          currentPrice: latest.closePrice || stock.basePrice,
-          change: latest.priceChange || 0,
-          changeRate: latest.changeRate || 0,
-          netBuyQty: 0,
-          netBuyAmt: totalNetBuyAmt,
-          netBuyAmtEok: totalNetBuyAmtEok,
-          volume: latest.volume || 1000000,
-          ratioVsVolume: 0,
-          overlapCount,
-          investorBadge,
-          statusBadge: statusInfo?.shortBadge,
-          statusBadgeStyle: statusInfo?.badgeStyle,
-          ranksByType,
-          missingEntities,
-        });
-      }
-    } catch (e) {
-      console.warn(`[3d Overlap] ${stock.symbol} error:`, e);
+      const statusInfo = computeStatusBadgeFromTrend(trend);
+      results.push({
+        rank: 0,
+        symbol: stock.symbol,
+        name: getStockName(stock.symbol, trendRes.stockInfo?.name || stock.name),
+        currentPrice: latest.closePrice || stock.currentPrice || 0,
+        change: latest.priceChange || 0,
+        changeRate: latest.changeRate || 0,
+        netBuyQty: 0,
+        netBuyAmt: totalNetBuyAmt,
+        netBuyAmtEok: totalNetBuyAmtEok,
+        volume: latest.volume || 1000000,
+        ratioVsVolume: 0,
+        overlapCount,
+        investorBadge,
+        statusBadge: statusInfo?.shortBadge,
+        statusBadgeStyle: statusInfo?.badgeStyle,
+        ranksByType,
+        missingEntities,
+      });
     }
   }
 
-  // Sort: 1. overlapCount descending (4 > 3 > 2), 2. 3-day cumulative netBuyAmt
+  // Sort: 1. overlapCount descending (4 > 3 > 2), 2. cumulative netBuyAmt
   results.sort((a, b) => {
     const countA = a.overlapCount || 0;
     const countB = b.overlapCount || 0;
@@ -1927,12 +2043,11 @@ export async function fetchConsecutive3dOverlapRankingData(
 
   // Calculate Risk-Adjusted AI Pick Candidates (Matching 1st~6th Buy Timing Hierarchy)
   function getTrendMultiplier(statusBadge?: string) {
-    if (statusBadge?.includes('정배열 초입')) return 1.5; // 1위 (최적의 매수 타점)
-    if (statusBadge?.includes('바닥 반등')) return 1.4;   // 2위 (손익비 우수 반등 타점)
-    if (statusBadge?.includes('정배열 확산')) return 1.3; // 3위 (강력한 추세 모멘텀 타점)
-    if (statusBadge?.includes('이평선 수렴')) return 1.0; // 4위 (에너지 축적/관망)
-    if (statusBadge?.includes('단기 과열')) return 0.3;   // 5위 (추격 매수 위험/페널티)
-    if (statusBadge?.includes('역배열')) return 0.2;     // 6위 (하락 추세/페널티)
+    if (statusBadge?.includes('정배열')) return 1.5;   // 1위 (정배열 상승 추세)
+    if (statusBadge?.includes('바닥 반등')) return 1.4; // 2위 (손익비 우수 반등 타점)
+    if (statusBadge?.includes('이평선 수렴')) return 1.0; // 3위 (에너지 축적/관망)
+    if (statusBadge?.includes('단기 과열')) return 0.9; // 4위 (돌파 모멘텀 인정/소폭 차감)
+    if (statusBadge?.includes('역배열')) return 0.7;   // 5위 (하락 추세/오픈)
     return 1.0;
   }
 
@@ -1956,30 +2071,19 @@ export async function fetchConsecutive3dOverlapRankingData(
 
   const mergedList = await mergeCreditStatusToRanking(results);
 
-  // Raw calculation audit log for historical verification & auditability
-  const auditLog = {
-    evaluatedStockCount: mergedList.length,
-    evaluatedAt: new Date().toISOString(),
-    stockRawBreakdown: mergedList.map((item) => ({
-      symbol: item.symbol,
-      name: item.name,
-      overlapCount: item.overlapCount,
-      ranksByType: item.ranksByType,
-    })),
-  };
-
-  console.log(`[3D Overlap Audit Log] 3일 연속 수급교집합 연산 완료 (${mergedList.length}개 종목 검증)`);
-
-  return {
+  const masterData: InvestorRankingResponse = {
     type: 'overlap',
     direction,
-    period: '1d',
+    period: `consecutive${targetDays}d` as any,
     list: mergedList,
-    isMock: false,
-    lastBatchTime: '오늘 08:30 배치 기준',
     updatedAt: new Date().toISOString(),
-    auditLog,
   };
+
+  if (masterData.list && masterData.list.length > 0) {
+    consecutiveOverlapMemoryCache.set(cacheKey, { data: masterData, timestamp: Date.now() });
+  }
+
+  return masterData;
 }
 
 import { registerRuntimeStockName } from './mockData';

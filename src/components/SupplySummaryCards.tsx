@@ -2,8 +2,9 @@
 
 import React from 'react';
 import { SupplySummary, ProgramTradeSummary, RankingItem } from '@/lib/types';
-import { Globe2, Landmark, Coins, Cpu, Zap } from 'lucide-react';
+import { Globe2, Landmark, Coins, Cpu, Zap, Clock } from 'lucide-react';
 import { getSupplyDirection } from '@/lib/supplyUtils';
+import { getSettledAsOfDateLabel } from '@/lib/mockData';
 
 interface SupplySummaryCardsProps {
   summary?: SupplySummary;
@@ -118,7 +119,22 @@ export default function SupplySummaryCards({
     ? selectedStockItem.programNetBuyAmt
     : (programTrade?.totalNetBuyAmt ?? 0);
 
+  const programQty = (isSelectedStock && selectedStockItem?.netBuyQty !== undefined)
+    ? (selectedStockItem.programNetBuyAmt !== undefined ? selectedStockItem.netBuyQty : (programTrade?.totalNetBuyQty ?? 0))
+    : (programTrade?.totalNetBuyQty ?? 0);
+
   const programDirectionInfo = getSupplyDirection(programAmt);
+  const ProgramIcon = programDirectionInfo.Icon;
+
+  const nonArbAmt = programTrade?.nonArbitrageAmt ?? Math.round(programAmt * 0.9);
+  const arbAmt = programTrade?.arbitrageAmt ?? Math.round(programAmt * 0.1);
+  const nonArbDir = getSupplyDirection(nonArbAmt);
+  const arbDir = getSupplyDirection(arbAmt);
+
+  const programAsOfDateLabel = programTrade?.asOfDateLabel || summary.program?.asOfDateLabel || getSettledAsOfDateLabel();
+  const foreignAsOfDateLabel = summary.foreign.asOfDateLabel || '당일 가집계';
+  const organAsOfDateLabel = summary.organ.asOfDateLabel || '당일 가집계';
+  const pensionAsOfDateLabel = summary.pension.asOfDateLabel || getSettledAsOfDateLabel();
 
   return (
     <div className="w-full">
@@ -179,12 +195,14 @@ export default function SupplySummaryCards({
                 <div className="my-3 pb-3 border-b border-slate-100 dark:border-[#2a2e39]/60">
                   <div className="text-xs text-slate-500 dark:text-[#787b86] mb-1 whitespace-nowrap flex items-center justify-between">
                     <span>
-                      {card.metric.asOfDateLabel?.includes('8/27') || card.title.includes('연기금')
+                      {card.title.includes('연기금')
                         ? '마감 정산 순매수'
                         : (card.metric.isFallback ? '추정 순매수' : '당일 가집계 순매수')}
                     </span>
                     <span className="text-[10px] font-mono text-slate-500 dark:text-slate-400 font-semibold">
-                      {card.metric.asOfDateLabel || (card.title.includes('외국인') || card.title.includes('기관') ? '당일 가집계' : '(8/27 기준)')}
+                      {card.title.includes('연기금')
+                        ? (card.metric.asOfDateLabel || getSettledAsOfDateLabel())
+                        : (card.metric.asOfDateLabel || '당일 가집계')}
                     </span>
                   </div>
                   <div className="flex items-baseline justify-between gap-1">
@@ -247,92 +265,90 @@ export default function SupplySummaryCards({
           );
         })}
 
-        {/* 4: Program Trade Status Card (Right next to Pension Fund) */}
-        {programTrade && (() => {
-          const ProgramIcon = programDirectionInfo.Icon;
-          return (
-            <div className="bg-white dark:bg-[#131722] border border-slate-200 dark:border-[#2a2e39] rounded-2xl p-4 sm:p-5 shadow-sm dark:shadow-lg relative overflow-hidden transition hover:border-slate-300 dark:hover:border-[#363c4e] flex flex-col justify-between">
-              <div
-                className={`absolute -right-6 -bottom-6 w-28 h-28 rounded-full blur-2xl pointer-events-none opacity-10 dark:opacity-15 ${
-                  programDirectionInfo.direction === 'BUY'
-                    ? 'bg-purple-500'
-                    : programDirectionInfo.direction === 'SELL'
-                    ? 'bg-blue-500'
-                    : 'bg-slate-400'
-                }`}
-              />
+        {/* 4: Program Trade Status Card (Unified Outer Design + Date Label) */}
+        <div className="bg-white dark:bg-[#131722] border border-slate-200 dark:border-[#2a2e39] rounded-2xl p-4 sm:p-5 shadow-sm dark:shadow-lg relative overflow-hidden transition hover:border-slate-300 dark:hover:border-[#363c4e] flex flex-col justify-between">
+          <div
+            className={`absolute -right-6 -bottom-6 w-28 h-28 rounded-full blur-2xl pointer-events-none opacity-10 dark:opacity-15 ${
+              programDirectionInfo.direction === 'BUY'
+                ? 'bg-red-500'
+                : programDirectionInfo.direction === 'SELL'
+                ? 'bg-blue-500'
+                : 'bg-slate-400'
+            }`}
+          />
 
-              <div>
-                {/* Header Row - Single line, shrink-0 badge */}
-                <div className="flex items-center justify-between gap-2 mb-3">
-                  <div className="flex items-center gap-2.5 min-w-0">
-                    <div className="p-2.5 rounded-xl bg-purple-50 dark:bg-purple-950/40 border border-purple-200 dark:border-purple-800/40 text-purple-600 dark:text-purple-400 shrink-0">
-                      <Cpu className="w-4 h-4 sm:w-5 sm:h-5" />
-                    </div>
-                    <div className="min-w-0">
-                      <h3 className="font-bold text-xs sm:text-sm text-slate-900 dark:text-white tracking-tight whitespace-nowrap truncate">
-                        프로그램 매매 현황
-                      </h3>
-                      <p className="text-[11px] text-purple-600 dark:text-purple-400 font-mono font-semibold flex items-center gap-0.5 whitespace-nowrap truncate">
-                        <Zap className="w-3 h-3 text-amber-500 shrink-0" />
-                        Program Trading
-                      </p>
-                    </div>
-                  </div>
-
-                  <span className={`text-[10px] sm:text-[11px] font-bold px-2 sm:px-2.5 py-0.5 rounded-full border shrink-0 whitespace-nowrap ${programDirectionInfo.bgClass}`}>
-                    프로그램 {programDirectionInfo.badgeLabel}
-                  </span>
+          <div>
+            {/* Header Row */}
+            <div className="flex items-center justify-between gap-2 mb-3">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <div
+                  className={`p-2.5 rounded-xl border shrink-0 ${
+                    programDirectionInfo.direction === 'BUY'
+                      ? 'bg-red-50 dark:bg-red-950/40 border-red-200 dark:border-red-800/40 text-red-600 dark:text-red-400'
+                      : programDirectionInfo.direction === 'SELL'
+                      ? 'bg-blue-50 dark:bg-blue-950/40 border-blue-200 dark:border-blue-800/40 text-blue-600 dark:text-blue-400'
+                      : 'bg-slate-100 dark:bg-gray-800 border-slate-200 dark:border-gray-700 text-slate-500 dark:text-gray-400'
+                  }`}
+                >
+                  <Cpu className="w-4 h-4 sm:w-5 sm:h-5" />
                 </div>
-
-                {/* Total Program Net Buy Main Metric */}
-                <div className="my-3 pb-3 border-b border-slate-100 dark:border-[#2a2e39]/60">
-                  <div className="text-xs text-slate-500 dark:text-[#787b86] mb-1 flex items-center justify-between whitespace-nowrap">
-                    <span>전체 프로그램 순매수</span>
-                    <span className="text-[11px] font-mono text-purple-600 dark:text-purple-400 shrink-0">비중 {programTrade.ratioVsVolume}%</span>
-                  </div>
-                  <div className="flex items-baseline justify-between gap-1">
-                    <div className={`text-xl sm:text-2xl font-bold font-mono tracking-tight flex items-center gap-0.5 whitespace-nowrap ${programDirectionInfo.colorClass}`}>
-                      <ProgramIcon className="w-5 h-5 shrink-0" />
-                      <span>{formatAmount(programAmt)}</span>
-                    </div>
-                    <span className="text-[11px] sm:text-xs text-slate-500 dark:text-[#787b86] font-mono whitespace-nowrap shrink-0">
-                      {programTrade.totalNetBuyQty >= 0 ? '+' : ''}
-                      {programTrade.totalNetBuyQty.toLocaleString()}주
-                    </span>
-                  </div>
+                <div className="min-w-0">
+                  <h3 className="font-bold text-xs sm:text-sm text-slate-900 dark:text-white tracking-tight whitespace-nowrap truncate">
+                    프로그램 수급 현황
+                  </h3>
+                  <p className="text-[11px] text-slate-400 dark:text-[#787b86] font-mono whitespace-nowrap truncate">
+                    Program Trading
+                  </p>
                 </div>
               </div>
 
-              {/* Breakdown Grid (Non-Arbitrage vs Arbitrage) */}
-              <div className="grid grid-cols-2 gap-2 text-center pt-1">
-                {(() => {
-                  const nonArbDir = getSupplyDirection(programTrade.nonArbitrageAmt);
-                  return (
-                    <div className="bg-slate-50 dark:bg-[#1e222d] p-1.5 sm:p-2 rounded-lg border border-slate-200/80 dark:border-[#2a2e39]/50">
-                      <div className="text-[10px] text-slate-500 dark:text-[#787b86] mb-0.5 whitespace-nowrap">비차익 순매수</div>
-                      <div className={`text-[11px] sm:text-xs font-bold font-mono whitespace-nowrap ${nonArbDir.colorClass}`}>
-                        {formatAmount(programTrade.nonArbitrageAmt)}
-                      </div>
-                    </div>
-                  );
-                })()}
+              <span className={`text-[10px] sm:text-[11px] font-bold px-2 sm:px-2.5 py-0.5 rounded-full border shrink-0 whitespace-nowrap ${programDirectionInfo.bgClass}`}>
+                {programDirectionInfo.label}
+              </span>
+            </div>
 
-                {(() => {
-                  const arbDir = getSupplyDirection(programTrade.arbitrageAmt);
-                  return (
-                    <div className="bg-slate-50 dark:bg-[#1e222d] p-1.5 sm:p-2 rounded-lg border border-slate-200/80 dark:border-[#2a2e39]/50">
-                      <div className="text-[10px] text-slate-500 dark:text-[#787b86] mb-0.5 whitespace-nowrap">차익 순매수</div>
-                      <div className={`text-[11px] sm:text-xs font-bold font-mono whitespace-nowrap ${arbDir.colorClass}`}>
-                        {formatAmount(programTrade.arbitrageAmt)}
-                      </div>
-                    </div>
-                  );
-                })()}
+            {/* Total Program Net Buy Main Metric */}
+            <div className="my-3 pb-3 border-b border-slate-100 dark:border-[#2a2e39]/60">
+              <div className="text-xs text-slate-500 dark:text-[#787b86] mb-1 flex items-center justify-between whitespace-nowrap">
+                <span>
+                  {programAsOfDateLabel.includes('실시간')
+                    ? '당일 실시간 순매수'
+                    : (programAsOfDateLabel.includes('가집계') ? '당일 가집계 순매수' : '마감 정산 순매수')}
+                </span>
+                <span className="text-[10px] font-mono text-slate-500 dark:text-slate-400 font-semibold">
+                  {programAsOfDateLabel}
+                </span>
+              </div>
+              <div className="flex items-baseline justify-between gap-1">
+                <div className={`text-xl sm:text-2xl font-bold font-mono tracking-tight flex items-center gap-0.5 whitespace-nowrap ${programDirectionInfo.colorClass}`}>
+                  <ProgramIcon className="w-5 h-5 shrink-0" />
+                  <span>{formatAmount(programAmt)}</span>
+                </div>
+                <span className="text-[11px] sm:text-xs text-slate-500 dark:text-[#787b86] font-mono whitespace-nowrap shrink-0">
+                  {programQty >= 0 ? '+' : ''}
+                  {programQty.toLocaleString()}주
+                </span>
               </div>
             </div>
-          );
-        })()}
+          </div>
+
+          {/* Breakdown Grid (Non-Arbitrage vs Arbitrage) */}
+          <div className="grid grid-cols-2 gap-2 text-center pt-1">
+            <div className="bg-slate-50 dark:bg-[#1e222d] p-1.5 sm:p-2 rounded-lg border border-slate-200/80 dark:border-[#2a2e39]/50 min-w-0 overflow-hidden">
+              <div className="text-[9px] sm:text-[10px] text-slate-500 dark:text-[#787b86] mb-0.5 whitespace-nowrap truncate">비차익 순매수</div>
+              <div className={`text-[10px] sm:text-[11px] font-bold font-mono whitespace-nowrap truncate ${nonArbDir.colorClass}`}>
+                {formatAmount(nonArbAmt)}
+              </div>
+            </div>
+
+            <div className="bg-slate-50 dark:bg-[#1e222d] p-1.5 sm:p-2 rounded-lg border border-slate-200/80 dark:border-[#2a2e39]/50 min-w-0 overflow-hidden">
+              <div className="text-[9px] sm:text-[10px] text-slate-500 dark:text-[#787b86] mb-0.5 whitespace-nowrap truncate">차익 순매수</div>
+              <div className={`text-[10px] sm:text-[11px] font-bold font-mono whitespace-nowrap truncate ${arbDir.colorClass}`}>
+                {formatAmount(arbAmt)}
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   );

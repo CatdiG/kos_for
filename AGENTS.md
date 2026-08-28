@@ -1,85 +1,106 @@
 <!-- BEGIN:nextjs-agent-rules -->
-# This is NOT the Next.js you know
-
-This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` before writing any code. Heed deprecation notices.
+# Next.js 프레임워크 주의사항
+이 프로젝트의 Next.js 버전은 기존 학습 데이터와 차이가 있을 수 있습니다. 코드를 작성하기 전에 필요시 `node_modules/next/dist/docs/` 문서를 참조하세요.
 <!-- END:nextjs-agent-rules -->
 
-# Mandatory Verification & Anti-Regression Rules (필수 검증 및 회귀 방지 수칙)
+# 🚨 [SECTION 0. MASSIVE MASTER PRE-EXECUTION INTERLOCK] Part 1 행동 태도 전 수칙 실시간 자가교정 인터락
 
-Any AI assistant working on this codebase MUST strictly follow these rules for EVERY task, edit, or refactoring without exception:
+이 코드베이스에서 작업하는 모든 AI 어시스턴트는 소스 코드 수정 도구(`replace_file_content`, `multi_replace_file_content`, `write_to_file`)를 호출하기 바로 직전, 
+자신의 생각(`Thought:`) 단계의 **가장 첫 번째 줄(Line 1)**에서 **아래 Part 1 행동 태도 8대 전 수칙에 대한 [MANDATORY PRE-ACTION AUDIT]**을 반드시 실행해야 한다.
 
-## 1. No Superficial Status Code Verification (겉핥기식 200 OK 판별 절대 금지)
-- NEVER declare a feature "working" or "normal" based solely on HTTP 200 status codes or boolean `true` returns.
-- You MUST empirically measure actual runtime response latency (in milliseconds) and verify data integrity under real KIS OpenAPI call conditions.
+검증 과정에서 지시 미이행이나 숏컷 수식 등 위반 사항이 발견되면, **작업을 멈추거나 멈춰 서지 않고, 생각(`Thought:`) 단계에서 100% 정석 코드로 즉시 자가 교정(Self-Correction)을 마친 뒤 도구를 실행**해야 한다.
 
-## 2. Mandatory Line-by-Line Git Diff Audit (코드 변경점 1줄 대조 필수)
-- Before reporting completion or answering regression questions, run `git diff` on all modified files (`kisApi.ts`, `batchCollector.ts`, `InvestorRankingTable.tsx`, etc.).
-- Explicitly check if previous optimizations (parallel `Promise.all`, candidate limits, memory caches, organ fallbacks) were accidentally lost or overwritten.
+---
 
-## 3. Mandatory 9-Item Full Regression Checklist (코드 수정 시 9대 핵심 항목 매번 전수 재검증)
-No matter how small the code modification is, you MUST re-verify ALL 9 items below before concluding your work and provide raw execution output as proof:
+# 필수 검증 및 회귀 방지 절대수칙 (Mandatory Verification & Behavioral Rules)
 
-1. **Investor Rankings 4 Types (매매순위 4종)**: Foreign, Organ, Pension, Program (외국인 · 기관 · 연기금 · 프로그램) rankings load clean data with non-zero fallback dates when applicable.
-2. **Supply Overlap (수급교집합)**: Displays multi-entity overlap badges (e.g. `4개 주체 중복`) with response time under 500ms (cached/parallelized).
-3. **Surging Stocks (급등주 순위)**: Fluctuation, Volume, Amount sub-modes render correctly with 60s auto-refresh interval.
-4. **Comprehensive Scalping Ranking (단타 종합랭킹)**: Total score RMS calculation, slider weights, and 7 detail metrics compute properly.
-5. **3-State Credit Status (신용가능 3-상태)**: 100% DB/file cached credit eligibility status checks (`가능`, `불가`, `미확인`) without runtime crashes.
-6. **Pension Fund Exposure (연기금 노출)**: Major pension-heavy stocks (e.g., Samsung Electro-Mechanics 009150) correctly display pension ranks and fallback labels.
-7. **Top 4 Summary Cards (상단 4개 카운터 카드)**: Foreigner, Institution, Pension Fund, Program Trading summary cards display consistent fallback dates `(8/27 기준)` and amounts.
-8. **Overlap Search Range Limits (탐색범위 10 · 20 · 30 · 50)**: Switching overlap candidate limits dynamically adjusts dataset limits without timing out.
-9. **Trend Alignment Badges (정배열/이격도 추세 배지)**: Dynamic status badges (`🔵 바닥 반등`, `🔥 상승 추세`, etc.) compute accurately from moving averages.
+이 코드베이스에서 작업하는 모든 AI 어시스턴트는 예외 없이 모든 작업, 코드 수정, 리팩토링 시 아래 수칙을 엄격히 따라야 합니다:
 
-## 4. Evidence-Based Output (Raw 증빙 로그 첨부 필수)
-- Never answer with verbal assurances alone. Always execute testing scripts and attach the raw terminal logs showing exact latencies (ms) and stock output items to prove full functionality.
+---
 
-## 5. End-to-End Dual Verification & Script Execution Rule (백엔드 API + 프론트엔드 UI 검증 및 스크립트 실행 규칙)
-- **실행 타이밍 수칙 (사용자 명시적 지시)**:
-  1. 세션 최초 시작 시 / 대규모 리팩토링 완료 시 1회 자동 검증을 수행한다.
-  2. 대화 진행 중 디자인/UI 미세 조정 단계에서는 **사용자가 명시적으로 검증/테스트 실행을 요청할 때에만 검증 스크립트(`node scratch/...`)를 실행**한다. (매 프롬프트마다 15~20초 소요되는 KIS API 실시간 스크립트를 무분별하게 실행하여 응답 속도를 저하시키는 행위를 절대 금지한다).
-- 기능 완료 검증 시에는 React 프론트엔드 컴포넌트(`InvestorRankingTable.tsx` 등)가 해당 필드(`consecutiveText`, `ranksByType`, `aiPickRank` 등)를 JSX DOM 트리에 정상 소비하는지 확인한다.
+## 🧠 Part 1. AI 기본 개발 및 행동 태도 수칙 (AI Core Mindset & Behavioral Rules)
 
-## 6. Environment Disclosure Rule (검증 환경 명시 필수)
-- Every verification log MUST explicitly state whether it ran against local dev (npm run dev), a simulated/mocked script, or the actual deployed production URL. Never present a local/simulated result without this label.
-- Claims specific to production behavior (e.g., cold start latency, serverless instance isolation, cron execution) MUST be verified against the actual deployed URL — a local Node process is not a valid substitute and must not be labeled as such.
+*AI가 소스 코드를 읽고 디자인하고 코딩하는 모든 순간에 100% 기본 탑재해야 하는 행동 수칙입니다.*
 
-## 7. Duplicate Logic Audit (동일 로직 중복 구현 검사 필수)
-- Before declaring any bug fixed, search the ENTIRE codebase for other implementations of the same computation/state (e.g., `grep -n` for the field name being fixed, such as `isCreditAvailable =`, `statusBadge`, lock variables).
-- If more than one implementation exists, either consolidate them into a single shared function (Single Source of Truth) or explicitly justify why duplication is necessary.
+### 1. 질문 선답변 후승인 수칙 (Rule 15)
+- 사용자가 질문을 했을 때에는 같은 턴에서 절대로 소스 코드를 수정하지 마십시오.
+- 먼저 질문에 대한 답변을 드리고, 사용자님의 명시적인 승인을 얻은 후에만 코드 변경 작업을 진행해야 합니다.
 
-## 8. Adversarial Reproduction Rule (실제 장애 조건 재현 필수)
-- When verifying a fix for a concurrency/timing bug, the test MUST actively recreate the original failure condition (e.g., trigger the slow batch process, THEN fire the allegedly-independent request in parallel) — not just call the fixed endpoint in isolation when the system happens to be idle.
+### 2. 코드 실수 솔직 인정 및 은폐·핑계 절대 금지 수칙 (Rule 17)
+- 자신이 작성한 소스 코드 오류나 설계 실수로 장애, 버그, 성능 저하, 무한 로딩이 발생했을 때 변명이나 시스템 제약 핑계를 대며 은폐하거나 원래 그런 것처럼 돌려 말하지 마십시오.
+- 자신이 저지른 소스 코드 구현 실수를 100% 솔직하게 즉시 인정하고, 정확히 어느 파일의 어떤 코드를 잘못 짜서 문제가 생겼는지 사용자에게 투명하게 고백한 뒤 즉시 정석으로 바로잡아야 합니다.
 
-## 9. Fallback Data Labeling Rule (대체 데이터 출처일 명시 필수)
-- Any time any field falls back to a previous trading day's value (because today's value is 0/uncollected), the UI and API response MUST explicitly label the reference date (e.g., "(8/27 기준)"). Never present stale data as if it were today's value.
+### 3. 꼼수 및 숏컷(임시 가상 비율/하드코딩 비율/가상 수식) 사용 절대 금지 수칙 (Rule 16)
+- KIS API 데이터 미비나 캐시 미스를 핑계로 임의의 가상 곱셈 비율(`0.99`, `0.97`)이나 임시 숏컷 수식(`timeNum < 930`)을 소스 코드에 절대 작성하지 마십시오.
+- 모든 연산과 배지(이동평균선 추세, 신용상태, 수급 순위 등)는 차트와 동일한 실제 KIS 일봉 데이터 및 정석 단일 공통 함수(`computeUnifiedStatusBadge` 등)에 기반하여 연산해야 합니다.
+- 숏컷 사용으로 인한 데이터 왜곡이나 회귀 발생 시 즉시 해당 숏컷 코드를 전면 파기하고 정석 구현으로 원상복구하십시오.
 
-## 10. Full History Review Scope (검토 범위는 세션이 아닌 전체 변경 이력)
-- The Git diff audit (Rule 2) MUST cover the full history of this feature's development (e.g., `git log --since="7 days ago"`), not just the current session's commits. A regression can be introduced by a commit from a previous day/session.
+### 4. 프론트엔드 DOM 계층 탐색 및 Props 실데이터 타입 계약 강제 수칙 (Rule 19 - 신규)
+- **DOM 계층 탐색 의무화**: UI 수정 시 단일 국소 파일만 보고 코드를 고치는 앵커링 행위를 절대 금지한다. 반드시 `page.tsx` 등 최상위 부모 컴포넌트부터 부모-자식 DOM 트리 계층 구조를 먼저 탐색한 뒤 작업을 진행해야 한다.
+- **Props 실데이터 타입 계약 강제**: 백엔드 API 연동이 필요한 안내 문구가 필요한 배지에 `new Date()` 기반 하드코딩 수식이나 가상 분기문을 작성하는 행위를 전면 금지한다. 반드시 백엔드 실데이터(`asOfDateLabel` 등)를 Props 필수 타입으로 강제 연동하여 컴파일 타임 동기화를 보장해야 한다.
 
-## 11. No Absolute Claims Without Counter-Test (단정적 표현 금지)
-- Phrases like "100% resolved", "structurally impossible", or "completely eliminated" require an accompanying test that actively tried to break the fix and failed to do so. Without such a counter-test, use qualified language (e.g., "verified under the tested conditions").
+### 5. 대체 데이터 출처일 명시 수칙 (기준일 표기) (Rule 9)
+- 당일 데이터가 미수집되어 직전 유효 거래일 수치로 대체(Fallback)될 경우, UI와 API 응답에 반드시 기준일(예: `(8/28 기준)`)을 명시해야 합니다. 직전 날짜 데이터를 오늘 데이터인 것처럼 속여 표시하지 마십시오.
 
-## 12. Tiered Testing Rule (전체/부분 검증 구분)
-- FULL 9-item suite required when: (a) about to deploy, or (b) any edit touches a shared core file (`kisApi.ts`, `batchCollector.ts`, or any file used by 3+ features).
-- PARTIAL testing (only the directly affected item(s)) is sufficient when the edit is isolated to a single UI component or a single, non-shared function.
-- Before choosing PARTIAL, you MUST first check (via grep/diff) whether the changed code is referenced elsewhere. If it is referenced by other features, treat it as a shared core file and run the FULL suite instead.
-## 13. Overlap Golden Snapshot Regression Audit Rule (수급교집합 골든 스냅샷 검증 수칙)
-- Whenever modifying `kisApi.ts` or `batchCollector.ts` or any code affecting overlap rankings, you MUST execute `node scratch/verify_overlap_regression.js` BEFORE reporting completion.
-- The script automatically compares current live API responses against `scratch/overlap_golden_snapshot.json` to detect diffs in rank, credit status, status badges, and 3D overlap items.
-- Distinguish between "Intended Normal Market Update" (real market price/volume movement) vs "Regression Bug" (badge regressed to '확인필요', credit status lost, forced 20-item limit truncation).
-- If a regression bug is detected, FIX THE BUG FIRST before updating the golden snapshot.
-- Update the golden snapshot (`node scratch/create_golden_snapshot.js`) ONLY when changes are confirmed to be intended, valid feature updates/improvements. NEVER overwrite arbitrarily.
+### 6. 동일 로직 중복 구현 검사 필수 (Rule 7)
+- 버그 수정 완료를 선언하기 전에 전 코드베이스에서 동일한 연산이나 상태 로직이 중복 작성되어 있는지 검색(`grep -n`)하십시오.
+- 중복 로직이 존재할 경우 단일 공통 함수로 통합하거나, 중복이 불가피한 이유를 명확히 주석으로 작성하십시오.
 
-## 14. Overlap Golden Snapshot Rule (수급교집합 전용 회귀 감지)
-- overlap(수급교집합) depends on foreign/organ/pension/program
-  rankings, credit status, and trend badges — it is the most
-  fragile integration point in this codebase.
-- ANY edit to `kisApi.ts`, `batchCollector.ts`, or any credit/badge
-  computation MUST run `scratch/verify_overlap_regression.js`
-  against the golden snapshot BEFORE reporting completion, in
-  addition to (not instead of) Rule 3's 9-item checklist.
-- A diff against the golden snapshot must be explicitly explained
-  as either an intended data change or a regression — never
-  silently overwritten.
+### 7. 반대 테스트 없는 단정적 표현 금지 (Rule 11)
+- "100% 해결됨", "구조적으로 불가능함", "완전히 제거됨"과 같은 단정적 표현은 해당 수정 사항을 일부러 깨뜨리려고 시도한 반대 테스트(Counter-Test)를 통과했을 때만 사용할 수 있습니다. 반대 테스트가 없는 경우 조건부 표현을 사용하십시오.
 
+### 8. Vercel 프로덕션 배포 사전 승인 수칙
+- 사용자의 명시적인 승인 없이 `git push`나 Vercel 프로덕션 배포를 진행하지 않는다.
 
+---
+
+## 🛡️ Part 2. 검증 및 증빙 제출 수칙 (Audit Execution & Log Evidence Protocols)
+
+*코드를 수정하거나 완료를 보고할 때 반드시 실행하고 증빙해야 하는 검사 및 제출 절차입니다.*
+
+### 1. 8개 전 수급 탭 통합 전수 검증 및 RAW 터미널 원본 로그 무편집 제출 수칙 (Rule 4, 18)
+- 코드를 수정하거나 완료 보고를 하기 전, 반드시 `node scratch/verify_all_tabs_regression.js`를 실행해야 한다.
+- 외국인·기관·연기금·프로그램·급등주·당일교집합·2일연속·3일연속 8개 전 탭의 응답 속도(ms)와 종목 유효성을 전수 검증한다.
+- 🔥 **최우선 필수 증빙 수칙**: 말이나 요약문으로 때우는 것을 절대 금지한다. 명령어를 실행했을 때 실제 터미널이 토해낸 RAW 실행 로그 전체를 단 1자도 수정하거나 생략하지 말고 있는 그대로 복사하여 보고서 최상단에 증빙으로 첨부해야 한다.
+- 단 1개의 탭이라도 FAIL이 뜨거나 에러를 삼키는 꼼수(Swallowing) 코드가 발견되면 즉시 작업을 원상복구하고 오류부터 바로잡아야 한다.
+
+### 2. 코드 변경점 1줄 대조 필수 (`git diff` 대조) (Rule 2)
+- 도구 호출 결과만 보고 선언하지 마라. 작업 완료를 보고하거나 회귀 질문에 답변하기 전에, 수정된 모든 파일(`kisApi.ts`, `batchCollector.ts`, `InvestorRankingTable.tsx` 등)에 대해 반드시 `git diff`를 실행하십시오.
+- 이전 성능 최적화(병렬 `Promise.all`, 후보 제한, 메모리 캐시, 기관 폴백 등)가 실수로 덮어써지거나 손실되지 않았는지 정확히 확인하십시오.
+
+### 3. UI Visual Matching 픽셀 대조 검증 수칙 (Rule 19 - UI)
+- API 검증에 그치지 않고, 프론트엔드 React 컴포넌트(`InvestorRankingTable.tsx`, `SupplySummaryCards.tsx` 등)가 백엔드 필드(`asOfDateLabel`, `consecutiveText` 등)를 화면 DOM 상에서 부모-자식 간 텍스트 및 위치가 100% 일치하게 소비하는지 Visual Matching을 수행하고 제출한다.
+
+### 4. 9대 핵심 항목 전수 재검증 & 수급교집합 골든 스냅샷 검증 (Rule 3, 13, 14)
+- **9대 핵심 항목 전수 점검**:
+  1. 매매순위 4종 (외국인·기관·연기금·프로그램)
+  2. 수급교집합 (500ms 이내 중복 배지)
+  3. 급등주 순위 (등락률·거래량·거래대금 3서브모드, 60초 자동갱신)
+  4. 단타 종합랭킹 (종합 점수 연산, 슬라이더 가중치, 7개 상세 지표)
+  5. 신용가능 3-상태 (가능, 불가, 미확인)
+  6. 연기금 노출 (삼성전기 009150 등 주요 종목 기준일 라벨)
+  7. 상단 4개 카운터 카드 (외국인, 기관, 연기금, 프로그램 일관된 기준일)
+  8. 탐색범위 제한 (10·20·30·50)
+  9. 정배열/이격도 추세 배지 (이동평균선 연산)
+- **골든 스냅샷 검증**: `kisApi.ts`나 `batchCollector.ts` 등 수급 교집합 순위에 영향을 주는 코드를 수정할 때에는 반드시 완료 전 `node scratch/verify_overlap_regression.js`를 실행하여 기존 골든 스냅샷 데이터와 대조하십시오.
+
+### 5. 검증 스크립트 실행 타이밍 및 전체/부분 검증 구분 수칙 (Rule 5, 12)
+- **실행 타이밍 수칙**:
+  1. 세션 최초 시작 시 또는 대규모 리팩토링 완료 시에만 1회 전체 자동 검증을 수행합니다.
+  2. 대화 진행 중 단순 디자인/UI 미세 조정 단계에서는 **사용자가 명시적으로 검증 실행을 요청할 때에만 검증 스크립트(`node scratch/...`)를 실행**합니다. (매 대화마다 15~20초 소요되는 KIS API 실시간 스크립트를 무분별하게 실행하여 응답을 지연시키는 행위를 절대 금지합니다).
+- **전체/부분 검증 구분**: 배포 직전이거나 핵심 공통 파일(`kisApi.ts`, `batchCollector.ts` 등 3개 이상 기능이 공유하는 파일)을 수정할 때는 9대 핵심 항목 전체 검증을 수행하며, 단일 UI 컴포넌트나 공유되지 않는 전용 함수만 수정할 때는 해당 영향 범위에 대한 부분 검증만 수행해도 됩니다.
+
+### 6. 겉핥기식 200 OK 판별 절대 금지 (Rule 1)
+- 단순히 HTTP 200 응답 코드나 `true` 리턴만 보고 기능이 "정상 작동한다"고 단정하지 마십시오.
+- 실제 KIS OpenAPI 호출 조건에서 실제 응답 지연 시간(ms)과 데이터 유효성을 직접 측정하고 검증해야 합니다.
+
+### 7. 검증 환경 명시 필수 (Rule 6)
+- 모든 검증 로그에는 로컬 개발 서버(`npm run dev`), 시뮬레이션 스크립트, 프로덕션 배포 URL 중 어디서 실행되었는지 명확히 명시해야 합니다.
+- 프로덕션 배포 환경 관련 주장(콜드 스타트, 서버리스 격리 등)은 실제 배포된 URL에서 검증해야 하며, 로컬 Node 프로세스 결과를 배포 결과인 것처럼 속이지 마십시오.
+
+### 8. 실제 장애 조건 재현 수칙 (Rule 8)
+- 동시성 및 타이밍 버그를 수정할 때에는 시스템이 한가할 때 단독 호출하는 것에 그치지 않고, 원인이 되었던 수집 처리 조건이나 병렬 요청 상황을 실제로 재현하여 테스트하십시오.
+
+### 9. 전체 변경 이력 검토 수칙 (Rule 10)
+- `git diff` 검수 시 현재 대화 세션의 변경사항뿐만 아니라, 이 기능의 전체 개발 이력(`git log --since="7 days ago"`)을 종합적으로 확인하여 이전 세션에서 도입된 퇴행 버그가 없는지 검토하십시오.
 

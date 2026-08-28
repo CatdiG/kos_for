@@ -1,60 +1,60 @@
 {
-  "generatedAt": "2026-08-28T10:22:09.941Z",
+  "generatedAt": "2026-08-28T13:21:27.666Z",
   "environment": "Local Dev (http://localhost:3000)",
   "daily": {
-    "totalItems": 50,
-    "lastBatchTime": "19:22 기준",
+    "totalItems": 13,
+    "lastBatchTime": "22:21 기준",
     "items": [
       {
         "rank": 1,
-        "symbol": "005930",
-        "name": "삼성전자",
-        "currentPrice": 74500,
-        "changeRate": 0,
+        "symbol": "009150",
+        "name": "삼성전기",
+        "currentPrice": 1421000,
+        "changeRate": 2.6,
         "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
+        "statusBadge": "⚠️ 단기 과열",
+        "statusBadgeStyle": "bg-rose-50 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400 border-rose-200 dark:border-rose-800/60 font-bold",
         "isCreditAvailable": true,
         "ranksByType": [
           {
             "type": "foreign",
             "label": "외국인",
             "rank": 1,
-            "netBuyAmt": 4000,
-            "netBuyAmtEok": 40
+            "netBuyAmt": 179046,
+            "netBuyAmtEok": 1790.5
           },
           {
             "type": "organ",
             "label": "기관",
             "rank": 1,
-            "netBuyAmt": 3000,
-            "netBuyAmtEok": 30
+            "netBuyAmt": 34104,
+            "netBuyAmtEok": 341
           },
           {
             "type": "pension",
             "label": "연기금",
             "rank": 1,
-            "netBuyAmt": 2000,
-            "netBuyAmtEok": 20
+            "netBuyAmt": 34104,
+            "netBuyAmtEok": 341,
+            "asOfDateLabel": "(8/28 기준)"
           },
           {
             "type": "program",
             "label": "프로그램",
             "rank": 1,
-            "netBuyAmt": 1000,
-            "netBuyAmtEok": 10
+            "netBuyAmt": 34104,
+            "netBuyAmtEok": 341,
+            "asOfDateLabel": "(8/28 기준)"
           }
         ]
       },
       {
         "rank": 2,
-        "symbol": "000660",
-        "name": "SK하이닉스",
-        "currentPrice": 186000,
-        "changeRate": 0,
+        "symbol": "035420",
+        "name": "NAVER",
+        "currentPrice": 220500,
+        "changeRate": 1.85,
         "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
         "statusBadge": "🟢 정배열 초입",
         "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
         "isCreditAvailable": true,
@@ -62,335 +62,343 @@
           {
             "type": "foreign",
             "label": "외국인",
-            "rank": 2,
-            "netBuyAmt": 3920,
-            "netBuyAmtEok": 39.2
+            "rank": 10,
+            "netBuyAmt": 8379,
+            "netBuyAmtEok": 83.8
           },
           {
             "type": "organ",
             "label": "기관",
-            "rank": 2,
-            "netBuyAmt": 2940,
-            "netBuyAmtEok": 29.4
+            "rank": 4,
+            "netBuyAmt": 17640,
+            "netBuyAmtEok": 176.4
           },
           {
             "type": "pension",
             "label": "연기금",
-            "rank": 2,
-            "netBuyAmt": 1960,
-            "netBuyAmtEok": 19.6
+            "rank": 4,
+            "netBuyAmt": 17640,
+            "netBuyAmtEok": 176.4,
+            "asOfDateLabel": "(8/28 기준)"
           },
           {
             "type": "program",
             "label": "프로그램",
-            "rank": 2,
-            "netBuyAmt": 980,
-            "netBuyAmtEok": 9.8
+            "rank": 4,
+            "netBuyAmt": 17640,
+            "netBuyAmtEok": 176.4,
+            "asOfDateLabel": "(8/28 기준)"
           }
         ]
       },
       {
         "rank": 3,
-        "symbol": "373220",
-        "name": "LG에너지솔루션",
-        "currentPrice": 382000,
-        "changeRate": 0,
+        "symbol": "034020",
+        "name": "두산에너빌리티",
+        "currentPrice": 88200,
+        "changeRate": 2.68,
         "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
+        "statusBadge": "⚠️ 단기 과열",
+        "statusBadgeStyle": "bg-rose-50 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400 border-rose-200 dark:border-rose-800/60 font-bold",
+        "isCreditAvailable": false,
         "ranksByType": [
           {
             "type": "foreign",
             "label": "외국인",
-            "rank": 3,
-            "netBuyAmt": 3840,
-            "netBuyAmtEok": 38.400000000000006
+            "rank": 4,
+            "netBuyAmt": 29282,
+            "netBuyAmtEok": 292.8
           },
           {
             "type": "organ",
             "label": "기관",
-            "rank": 3,
-            "netBuyAmt": 2880,
-            "netBuyAmtEok": 28.799999999999997
+            "rank": 10,
+            "netBuyAmt": 8467,
+            "netBuyAmtEok": 84.7
           },
           {
             "type": "pension",
             "label": "연기금",
-            "rank": 3,
-            "netBuyAmt": 1920,
-            "netBuyAmtEok": 19.200000000000003
+            "rank": 10,
+            "netBuyAmt": 8467,
+            "netBuyAmtEok": 84.7,
+            "asOfDateLabel": "(8/28 기준)"
           },
           {
             "type": "program",
             "label": "프로그램",
-            "rank": 3,
-            "netBuyAmt": 960,
-            "netBuyAmtEok": 9.600000000000001
+            "rank": 10,
+            "netBuyAmt": 8467,
+            "netBuyAmtEok": 84.7,
+            "asOfDateLabel": "(8/28 기준)"
           }
         ]
       },
       {
         "rank": 4,
-        "symbol": "207940",
-        "name": "삼성바이오로직스",
-        "currentPrice": 812000,
-        "changeRate": 0,
+        "symbol": "090430",
+        "name": "아모레퍼시픽",
+        "currentPrice": 150600,
+        "changeRate": 5.76,
         "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
+        "statusBadge": "⚠️ 단기 과열",
+        "statusBadgeStyle": "bg-rose-50 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400 border-rose-200 dark:border-rose-800/60 font-bold",
         "isCreditAvailable": true,
         "ranksByType": [
           {
             "type": "foreign",
             "label": "외국인",
-            "rank": 4,
-            "netBuyAmt": 3760,
-            "netBuyAmtEok": 37.6
+            "rank": 6,
+            "netBuyAmt": 14759,
+            "netBuyAmtEok": 147.6
           },
           {
             "type": "organ",
             "label": "기관",
-            "rank": 4,
-            "netBuyAmt": 2820,
-            "netBuyAmtEok": 28.2
+            "rank": 5,
+            "netBuyAmt": 11144,
+            "netBuyAmtEok": 111.4
           },
           {
             "type": "pension",
             "label": "연기금",
-            "rank": 4,
-            "netBuyAmt": 1880,
-            "netBuyAmtEok": 18.8
+            "rank": 5,
+            "netBuyAmt": 11144,
+            "netBuyAmtEok": 111.4,
+            "asOfDateLabel": "(8/28 기준)"
           },
           {
             "type": "program",
             "label": "프로그램",
-            "rank": 4,
-            "netBuyAmt": 940,
-            "netBuyAmtEok": 9.4
+            "rank": 5,
+            "netBuyAmt": 11144,
+            "netBuyAmtEok": 111.4,
+            "asOfDateLabel": "(8/28 기준)"
           }
         ]
       },
       {
         "rank": 5,
-        "symbol": "005935",
-        "name": "삼성전자우",
-        "currentPrice": 62500,
-        "changeRate": 0,
+        "symbol": "196170",
+        "name": "알테오젠",
+        "currentPrice": 320000,
+        "changeRate": 2.73,
         "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
+        "statusBadge": "⚠️ 단기 과열",
+        "statusBadgeStyle": "bg-rose-50 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400 border-rose-200 dark:border-rose-800/60 font-bold",
         "isCreditAvailable": true,
         "ranksByType": [
           {
             "type": "foreign",
             "label": "외국인",
-            "rank": 5,
-            "netBuyAmt": 3680,
-            "netBuyAmtEok": 36.800000000000004
+            "rank": 32,
+            "netBuyAmt": 17920,
+            "netBuyAmtEok": 179.2
           },
           {
             "type": "organ",
             "label": "기관",
-            "rank": 5,
-            "netBuyAmt": 2760,
-            "netBuyAmtEok": 27.599999999999998
+            "rank": 31,
+            "netBuyAmt": 7680,
+            "netBuyAmtEok": 76.8
           },
           {
             "type": "pension",
             "label": "연기금",
-            "rank": 5,
-            "netBuyAmt": 1840,
-            "netBuyAmtEok": 18.400000000000002
+            "rank": 13,
+            "netBuyAmt": 7680,
+            "netBuyAmtEok": 76.8,
+            "asOfDateLabel": "(8/28 기준)"
           },
           {
             "type": "program",
             "label": "프로그램",
-            "rank": 5,
-            "netBuyAmt": 920,
-            "netBuyAmtEok": 9.200000000000001
+            "rank": 13,
+            "netBuyAmt": 7680,
+            "netBuyAmtEok": 76.8,
+            "asOfDateLabel": "(8/28 기준)"
           }
         ]
       },
       {
         "rank": 6,
-        "symbol": "005380",
-        "name": "현대차",
-        "currentPrice": 245000,
-        "changeRate": 0,
+        "symbol": "003490",
+        "name": "대한항공",
+        "currentPrice": 28700,
+        "changeRate": 1.77,
         "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
+        "statusBadge": "⚠️ 단기 과열",
+        "statusBadgeStyle": "bg-rose-50 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400 border-rose-200 dark:border-rose-800/60 font-bold",
         "isCreditAvailable": true,
         "ranksByType": [
           {
             "type": "foreign",
             "label": "외국인",
-            "rank": 6,
-            "netBuyAmt": 3600,
-            "netBuyAmtEok": 36
+            "rank": 5,
+            "netBuyAmt": 18024,
+            "netBuyAmtEok": 180.2
           },
           {
             "type": "organ",
             "label": "기관",
-            "rank": 6,
-            "netBuyAmt": 2700,
-            "netBuyAmtEok": 27
+            "rank": 21,
+            "netBuyAmt": 3272,
+            "netBuyAmtEok": 32.7
           },
           {
             "type": "pension",
             "label": "연기금",
-            "rank": 6,
-            "netBuyAmt": 1800,
-            "netBuyAmtEok": 18
+            "rank": 25,
+            "netBuyAmt": 3272,
+            "netBuyAmtEok": 32.7,
+            "asOfDateLabel": "(8/28 기준)"
           },
           {
             "type": "program",
             "label": "프로그램",
-            "rank": 6,
-            "netBuyAmt": 900,
-            "netBuyAmtEok": 9
+            "rank": 25,
+            "netBuyAmt": 3272,
+            "netBuyAmtEok": 32.7,
+            "asOfDateLabel": "(8/28 기준)"
           }
         ]
       },
       {
         "rank": 7,
-        "symbol": "000270",
-        "name": "기아",
-        "currentPrice": 118500,
-        "changeRate": 0,
+        "symbol": "010950",
+        "name": "S-Oil",
+        "currentPrice": 149200,
+        "changeRate": 9.14,
         "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
+        "statusBadge": "⚠️ 단기 과열",
+        "statusBadgeStyle": "bg-rose-50 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400 border-rose-200 dark:border-rose-800/60 font-bold",
         "isCreditAvailable": true,
         "ranksByType": [
           {
             "type": "foreign",
             "label": "외국인",
-            "rank": 7,
-            "netBuyAmt": 3520,
-            "netBuyAmtEok": 35.2
+            "rank": 8,
+            "netBuyAmt": 12980,
+            "netBuyAmtEok": 129.8
           },
           {
             "type": "organ",
             "label": "기관",
-            "rank": 7,
-            "netBuyAmt": 2640,
-            "netBuyAmtEok": 26.4
+            "rank": 22,
+            "netBuyAmt": 2686,
+            "netBuyAmtEok": 26.9
           },
           {
             "type": "pension",
             "label": "연기금",
-            "rank": 7,
-            "netBuyAmt": 1760,
-            "netBuyAmtEok": 17.6
+            "rank": 28,
+            "netBuyAmt": 2686,
+            "netBuyAmtEok": 26.9,
+            "asOfDateLabel": "(8/28 기준)"
           },
           {
             "type": "program",
             "label": "프로그램",
-            "rank": 7,
-            "netBuyAmt": 880,
-            "netBuyAmtEok": 8.8
+            "rank": 28,
+            "netBuyAmt": 2686,
+            "netBuyAmtEok": 26.9,
+            "asOfDateLabel": "(8/28 기준)"
           }
         ]
       },
       {
         "rank": 8,
-        "symbol": "068270",
-        "name": "셀트리온",
-        "currentPrice": 179500,
-        "changeRate": 0,
+        "symbol": "214450",
+        "name": "파마리서치",
+        "currentPrice": 461500,
+        "changeRate": 6.71,
         "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
+        "statusBadge": "⚠️ 단기 과열",
+        "statusBadgeStyle": "bg-rose-50 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400 border-rose-200 dark:border-rose-800/60 font-bold",
         "isCreditAvailable": true,
         "ranksByType": [
           {
             "type": "foreign",
             "label": "외국인",
-            "rank": 8,
-            "netBuyAmt": 3440,
-            "netBuyAmtEok": 34.4
+            "rank": 31,
+            "netBuyAmt": 17999,
+            "netBuyAmtEok": 180
           },
           {
             "type": "organ",
             "label": "기관",
-            "rank": 8,
-            "netBuyAmt": 2580,
-            "netBuyAmtEok": 25.8
+            "rank": 49,
+            "netBuyAmt": 923,
+            "netBuyAmtEok": 9.2
           },
           {
             "type": "pension",
             "label": "연기금",
-            "rank": 8,
-            "netBuyAmt": 1720,
-            "netBuyAmtEok": 17.2
+            "rank": 49,
+            "netBuyAmt": 923,
+            "netBuyAmtEok": 9.2,
+            "asOfDateLabel": "(8/28 기준)"
           },
           {
             "type": "program",
             "label": "프로그램",
-            "rank": 8,
-            "netBuyAmt": 860,
-            "netBuyAmtEok": 8.6
+            "rank": 49,
+            "netBuyAmt": 923,
+            "netBuyAmtEok": 9.2,
+            "asOfDateLabel": "(8/28 기준)"
           }
         ]
       },
       {
         "rank": 9,
-        "symbol": "035420",
-        "name": "NAVER",
-        "currentPrice": 172000,
-        "changeRate": 0,
+        "symbol": "066570",
+        "name": "LG전자",
+        "currentPrice": 201500,
+        "changeRate": 1.61,
         "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
+        "statusBadge": "⚠️ 단기 과열",
+        "statusBadgeStyle": "bg-rose-50 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400 border-rose-200 dark:border-rose-800/60 font-bold",
         "isCreditAvailable": true,
         "ranksByType": [
           {
             "type": "foreign",
             "label": "외국인",
             "rank": 9,
-            "netBuyAmt": 3360,
-            "netBuyAmtEok": 33.6
+            "netBuyAmt": 12090,
+            "netBuyAmtEok": 120.9
           },
           {
             "type": "organ",
             "label": "기관",
-            "rank": 9,
-            "netBuyAmt": 2520,
-            "netBuyAmtEok": 25.2
+            "rank": 24,
+            "netBuyAmt": 2418,
+            "netBuyAmtEok": 24.2
           },
           {
             "type": "pension",
             "label": "연기금",
-            "rank": 9,
-            "netBuyAmt": 1680,
-            "netBuyAmtEok": 16.8
+            "rank": 31,
+            "netBuyAmt": 2418,
+            "netBuyAmtEok": 24.2,
+            "asOfDateLabel": "(8/28 기준)"
           },
           {
             "type": "program",
             "label": "프로그램",
-            "rank": 9,
-            "netBuyAmt": 840,
-            "netBuyAmtEok": 8.4
+            "rank": 31,
+            "netBuyAmt": 2418,
+            "netBuyAmtEok": 24.2,
+            "asOfDateLabel": "(8/28 기준)"
           }
         ]
       },
       {
         "rank": 10,
-        "symbol": "005490",
-        "name": "POSCO홀딩스",
-        "currentPrice": 365000,
-        "changeRate": 0,
+        "symbol": "028260",
+        "name": "삼성물산",
+        "currentPrice": 375000,
+        "changeRate": -0.13,
         "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
         "statusBadge": "🟢 정배열 초입",
         "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
         "isCreditAvailable": true,
@@ -398,335 +406,128 @@
           {
             "type": "foreign",
             "label": "외국인",
-            "rank": 10,
-            "netBuyAmt": 3280,
-            "netBuyAmtEok": 32.800000000000004
+            "rank": 17,
+            "netBuyAmt": 5625,
+            "netBuyAmtEok": 56.3
           },
           {
             "type": "organ",
             "label": "기관",
-            "rank": 10,
-            "netBuyAmt": 2460,
-            "netBuyAmtEok": 24.599999999999998
+            "rank": 20,
+            "netBuyAmt": 3375,
+            "netBuyAmtEok": 33.8
           },
           {
             "type": "pension",
             "label": "연기금",
-            "rank": 10,
-            "netBuyAmt": 1640,
-            "netBuyAmtEok": 16.400000000000002
+            "rank": 24,
+            "netBuyAmt": 3375,
+            "netBuyAmtEok": 33.8,
+            "asOfDateLabel": "(8/28 기준)"
           },
           {
             "type": "program",
             "label": "프로그램",
-            "rank": 10,
-            "netBuyAmt": 820,
-            "netBuyAmtEok": 8.200000000000001
+            "rank": 24,
+            "netBuyAmt": 3375,
+            "netBuyAmtEok": 33.8,
+            "asOfDateLabel": "(8/28 기준)"
           }
         ]
       },
       {
         "rank": 11,
-        "symbol": "035720",
-        "name": "카카오",
-        "currentPrice": 42500,
-        "changeRate": 0,
+        "symbol": "403870",
+        "name": "HPSP",
+        "currentPrice": 51100,
+        "changeRate": 1.19,
         "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
+        "statusBadge": "⚠️ 단기 과열",
+        "statusBadgeStyle": "bg-rose-50 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400 border-rose-200 dark:border-rose-800/60 font-bold",
         "isCreditAvailable": true,
         "ranksByType": [
           {
             "type": "foreign",
             "label": "외국인",
-            "rank": 11,
-            "netBuyAmt": 3200,
-            "netBuyAmtEok": 32
+            "rank": 42,
+            "netBuyAmt": 1584,
+            "netBuyAmtEok": 15.8
           },
           {
             "type": "organ",
             "label": "기관",
-            "rank": 11,
-            "netBuyAmt": 2400,
+            "rank": 38,
+            "netBuyAmt": 2402,
             "netBuyAmtEok": 24
           },
           {
             "type": "pension",
             "label": "연기금",
-            "rank": 11,
-            "netBuyAmt": 1600,
-            "netBuyAmtEok": 16
+            "rank": 32,
+            "netBuyAmt": 2402,
+            "netBuyAmtEok": 24,
+            "asOfDateLabel": "(8/28 기준)"
           },
           {
             "type": "program",
             "label": "프로그램",
-            "rank": 11,
-            "netBuyAmt": 800,
-            "netBuyAmtEok": 8
+            "rank": 32,
+            "netBuyAmt": 2402,
+            "netBuyAmtEok": 24,
+            "asOfDateLabel": "(8/28 기준)"
           }
         ]
       },
       {
         "rank": 12,
-        "symbol": "012330",
-        "name": "현대모비스",
-        "currentPrice": 228000,
-        "changeRate": 0,
+        "symbol": "096530",
+        "name": "씨젠",
+        "currentPrice": 35650,
+        "changeRate": 11.76,
         "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
+        "statusBadge": "⚠️ 단기 과열",
+        "statusBadgeStyle": "bg-rose-50 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400 border-rose-200 dark:border-rose-800/60 font-bold",
         "isCreditAvailable": true,
         "ranksByType": [
           {
             "type": "foreign",
             "label": "외국인",
-            "rank": 12,
-            "netBuyAmt": 3120,
-            "netBuyAmtEok": 31.200000000000003
+            "rank": 36,
+            "netBuyAmt": 3102,
+            "netBuyAmtEok": 31
           },
           {
             "type": "organ",
             "label": "기관",
-            "rank": 12,
-            "netBuyAmt": 2340,
-            "netBuyAmtEok": 23.4
+            "rank": 42,
+            "netBuyAmt": 1676,
+            "netBuyAmtEok": 16.8
           },
           {
             "type": "pension",
             "label": "연기금",
-            "rank": 12,
-            "netBuyAmt": 1560,
-            "netBuyAmtEok": 15.600000000000001
+            "rank": 40,
+            "netBuyAmt": 1676,
+            "netBuyAmtEok": 16.8,
+            "asOfDateLabel": "(8/28 기준)"
           },
           {
             "type": "program",
             "label": "프로그램",
-            "rank": 12,
-            "netBuyAmt": 780,
-            "netBuyAmtEok": 7.800000000000001
+            "rank": 40,
+            "netBuyAmt": 1676,
+            "netBuyAmtEok": 16.8,
+            "asOfDateLabel": "(8/28 기준)"
           }
         ]
       },
       {
         "rank": 13,
-        "symbol": "028260",
-        "name": "삼성물산",
-        "currentPrice": 148000,
-        "changeRate": 0,
+        "symbol": "294570",
+        "name": "쿠콘",
+        "currentPrice": 30900,
+        "changeRate": 23.85,
         "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 13,
-            "netBuyAmt": 3040,
-            "netBuyAmtEok": 30.400000000000002
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 13,
-            "netBuyAmt": 2280,
-            "netBuyAmtEok": 22.8
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 13,
-            "netBuyAmt": 1520,
-            "netBuyAmtEok": 15.200000000000001
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 13,
-            "netBuyAmt": 760,
-            "netBuyAmtEok": 7.6000000000000005
-          }
-        ]
-      },
-      {
-        "rank": 14,
-        "symbol": "105560",
-        "name": "KB금융",
-        "currentPrice": 78500,
-        "changeRate": 0,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 14,
-            "netBuyAmt": 2960,
-            "netBuyAmtEok": 29.6
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 14,
-            "netBuyAmt": 2220,
-            "netBuyAmtEok": 22.2
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 14,
-            "netBuyAmt": 1480,
-            "netBuyAmtEok": 14.8
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 14,
-            "netBuyAmt": 740,
-            "netBuyAmtEok": 7.4
-          }
-        ]
-      },
-      {
-        "rank": 15,
-        "symbol": "055550",
-        "name": "신한지주",
-        "currentPrice": 46200,
-        "changeRate": 0,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 15,
-            "netBuyAmt": 2880,
-            "netBuyAmtEok": 28.8
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 15,
-            "netBuyAmt": 2160,
-            "netBuyAmtEok": 21.599999999999998
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 15,
-            "netBuyAmt": 1440,
-            "netBuyAmtEok": 14.4
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 15,
-            "netBuyAmt": 720,
-            "netBuyAmtEok": 7.2
-          }
-        ]
-      },
-      {
-        "rank": 16,
-        "symbol": "015760",
-        "name": "한국전력",
-        "currentPrice": 19800,
-        "changeRate": 0,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 16,
-            "netBuyAmt": 2800,
-            "netBuyAmtEok": 28
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 16,
-            "netBuyAmt": 2100,
-            "netBuyAmtEok": 21
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 16,
-            "netBuyAmt": 1400,
-            "netBuyAmtEok": 14
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 16,
-            "netBuyAmt": 700,
-            "netBuyAmtEok": 7
-          }
-        ]
-      },
-      {
-        "rank": 17,
-        "symbol": "032830",
-        "name": "삼성생명",
-        "currentPrice": 89000,
-        "changeRate": 0,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 17,
-            "netBuyAmt": 2720,
-            "netBuyAmtEok": 27.200000000000003
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 17,
-            "netBuyAmt": 2040,
-            "netBuyAmtEok": 20.4
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 17,
-            "netBuyAmt": 1360,
-            "netBuyAmtEok": 13.600000000000001
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 17,
-            "netBuyAmt": 680,
-            "netBuyAmtEok": 6.800000000000001
-          }
-        ]
-      },
-      {
-        "rank": 18,
-        "symbol": "010140",
-        "name": "삼성중공업",
-        "currentPrice": 8950,
-        "changeRate": 0,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
         "statusBadge": "⚠️ 단기 과열",
         "statusBadgeStyle": "bg-rose-50 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400 border-rose-200 dark:border-rose-800/60 font-bold",
         "isCreditAvailable": true,
@@ -734,1393 +535,50 @@
           {
             "type": "foreign",
             "label": "외국인",
-            "rank": 18,
-            "netBuyAmt": 2640,
-            "netBuyAmtEok": 26.400000000000002
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 18,
-            "netBuyAmt": 1980,
-            "netBuyAmtEok": 19.8
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 18,
-            "netBuyAmt": 1320,
-            "netBuyAmtEok": 13.200000000000001
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 18,
-            "netBuyAmt": 660,
-            "netBuyAmtEok": 6.6000000000000005
-          }
-        ]
-      },
-      {
-        "rank": 19,
-        "symbol": "009150",
-        "name": "삼성전기",
-        "currentPrice": 154000,
-        "changeRate": 0,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 19,
-            "netBuyAmt": 2560,
-            "netBuyAmtEok": 25.6
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 19,
-            "netBuyAmt": 1920,
-            "netBuyAmtEok": 19.2
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 19,
-            "netBuyAmt": 1280,
-            "netBuyAmtEok": 12.8
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 19,
-            "netBuyAmt": 640,
-            "netBuyAmtEok": 6.4
-          }
-        ]
-      },
-      {
-        "rank": 20,
-        "symbol": "034730",
-        "name": "SK",
-        "currentPrice": 165000,
-        "changeRate": 0,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 20,
-            "netBuyAmt": 2480,
-            "netBuyAmtEok": 24.8
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 20,
-            "netBuyAmt": 1860,
-            "netBuyAmtEok": 18.599999999999998
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 20,
-            "netBuyAmt": 1240,
-            "netBuyAmtEok": 12.4
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 20,
-            "netBuyAmt": 620,
-            "netBuyAmtEok": 6.2
-          }
-        ]
-      },
-      {
-        "rank": 21,
-        "symbol": "086790",
-        "name": "하나금융지주",
-        "currentPrice": 61200,
-        "changeRate": 0,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 21,
-            "netBuyAmt": 2400,
-            "netBuyAmtEok": 24
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 21,
-            "netBuyAmt": 1800,
-            "netBuyAmtEok": 18
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 21,
-            "netBuyAmt": 1200,
-            "netBuyAmtEok": 12
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 21,
-            "netBuyAmt": 600,
-            "netBuyAmtEok": 6
-          }
-        ]
-      },
-      {
-        "rank": 22,
-        "symbol": "018260",
-        "name": "삼성SDS",
-        "currentPrice": 142500,
-        "changeRate": 0,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 22,
-            "netBuyAmt": 2320,
-            "netBuyAmtEok": 23.200000000000003
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 22,
-            "netBuyAmt": 1740,
-            "netBuyAmtEok": 17.4
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 22,
-            "netBuyAmt": 1160,
-            "netBuyAmtEok": 11.600000000000001
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 22,
-            "netBuyAmt": 580,
-            "netBuyAmtEok": 5.800000000000001
-          }
-        ]
-      },
-      {
-        "rank": 23,
-        "symbol": "003550",
-        "name": "LG",
-        "currentPrice": 78000,
-        "changeRate": 0,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 23,
-            "netBuyAmt": 2240,
-            "netBuyAmtEok": 22.400000000000002
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 23,
-            "netBuyAmt": 1680,
-            "netBuyAmtEok": 16.8
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 23,
-            "netBuyAmt": 1120,
-            "netBuyAmtEok": 11.200000000000001
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 23,
-            "netBuyAmt": 560,
-            "netBuyAmtEok": 5.6000000000000005
-          }
-        ]
-      },
-      {
-        "rank": 24,
-        "symbol": "011200",
-        "name": "HMM",
-        "currentPrice": 17400,
-        "changeRate": 0,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 24,
-            "netBuyAmt": 2160,
-            "netBuyAmtEok": 21.6
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 24,
-            "netBuyAmt": 1620,
-            "netBuyAmtEok": 16.2
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 24,
-            "netBuyAmt": 1080,
-            "netBuyAmtEok": 10.8
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 24,
-            "netBuyAmt": 540,
-            "netBuyAmtEok": 5.4
-          }
-        ]
-      },
-      {
-        "rank": 25,
-        "symbol": "329180",
-        "name": "HD현대중공업",
-        "currentPrice": 138000,
-        "changeRate": 0,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 25,
-            "netBuyAmt": 2080,
-            "netBuyAmtEok": 20.8
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 25,
-            "netBuyAmt": 1560,
-            "netBuyAmtEok": 15.6
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 25,
-            "netBuyAmt": 1040,
-            "netBuyAmtEok": 10.4
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 25,
-            "netBuyAmt": 520,
-            "netBuyAmtEok": 5.2
-          }
-        ]
-      },
-      {
-        "rank": 26,
-        "symbol": "247540",
-        "name": "에코프로비엠",
-        "currentPrice": 185000,
-        "changeRate": 0,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 26,
-            "netBuyAmt": 2000,
-            "netBuyAmtEok": 20
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 26,
-            "netBuyAmt": 1500,
-            "netBuyAmtEok": 15
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 26,
-            "netBuyAmt": 1000,
-            "netBuyAmtEok": 10
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 26,
-            "netBuyAmt": 500,
-            "netBuyAmtEok": 5
-          }
-        ]
-      },
-      {
-        "rank": 27,
-        "symbol": "086520",
-        "name": "에코프로",
-        "currentPrice": 92000,
-        "changeRate": 0,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 27,
-            "netBuyAmt": 1920,
-            "netBuyAmtEok": 19.200000000000003
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 27,
-            "netBuyAmt": 1440,
-            "netBuyAmtEok": 14.399999999999999
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 27,
-            "netBuyAmt": 960,
-            "netBuyAmtEok": 9.600000000000001
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 27,
-            "netBuyAmt": 480,
-            "netBuyAmtEok": 4.800000000000001
-          }
-        ]
-      },
-      {
-        "rank": 28,
-        "symbol": "028300",
-        "name": "HLB",
-        "currentPrice": 64500,
-        "changeRate": 0,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 28,
-            "netBuyAmt": 1840,
-            "netBuyAmtEok": 18.400000000000002
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 28,
-            "netBuyAmt": 1380,
-            "netBuyAmtEok": 13.799999999999999
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 28,
-            "netBuyAmt": 920,
-            "netBuyAmtEok": 9.200000000000001
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 28,
-            "netBuyAmt": 460,
-            "netBuyAmtEok": 4.6000000000000005
-          }
-        ]
-      },
-      {
-        "rank": 29,
-        "symbol": "263750",
-        "name": "펄어비스",
-        "currentPrice": 38500,
-        "changeRate": 0,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 29,
-            "netBuyAmt": 1760,
-            "netBuyAmtEok": 17.6
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 29,
-            "netBuyAmt": 1320,
-            "netBuyAmtEok": 13.2
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 29,
-            "netBuyAmt": 880,
-            "netBuyAmtEok": 8.8
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 29,
-            "netBuyAmt": 440,
-            "netBuyAmtEok": 4.4
-          }
-        ]
-      },
-      {
-        "rank": 30,
-        "symbol": "293490",
-        "name": "카카오게임즈",
-        "currentPrice": 21500,
-        "changeRate": 0,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": false,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 30,
-            "netBuyAmt": 1680,
-            "netBuyAmtEok": 16.8
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 30,
-            "netBuyAmt": 1260,
-            "netBuyAmtEok": 12.6
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 30,
-            "netBuyAmt": 840,
-            "netBuyAmtEok": 8.4
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 30,
-            "netBuyAmt": 420,
-            "netBuyAmtEok": 4.2
-          }
-        ]
-      },
-      {
-        "rank": 31,
-        "symbol": "035900",
-        "name": "JYP Ent.",
-        "currentPrice": 58000,
-        "changeRate": 0,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 31,
-            "netBuyAmt": 1600,
-            "netBuyAmtEok": 16
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 31,
-            "netBuyAmt": 1200,
-            "netBuyAmtEok": 12
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 31,
-            "netBuyAmt": 800,
-            "netBuyAmtEok": 8
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 31,
-            "netBuyAmt": 400,
-            "netBuyAmtEok": 4
-          }
-        ]
-      },
-      {
-        "rank": 32,
-        "symbol": "122870",
-        "name": "와이지엔터테인먼트",
-        "currentPrice": 41200,
-        "changeRate": 0,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 32,
-            "netBuyAmt": 1520,
-            "netBuyAmtEok": 15.200000000000001
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 32,
-            "netBuyAmt": 1140,
-            "netBuyAmtEok": 11.4
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 32,
-            "netBuyAmt": 760,
-            "netBuyAmtEok": 7.6000000000000005
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 32,
-            "netBuyAmt": 380,
-            "netBuyAmtEok": 3.8000000000000003
-          }
-        ]
-      },
-      {
-        "rank": 33,
-        "symbol": "357780",
-        "name": "솔브레인",
-        "currentPrice": 285000,
-        "changeRate": 0,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 33,
-            "netBuyAmt": 1440,
-            "netBuyAmtEok": 14.4
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 33,
-            "netBuyAmt": 1080,
-            "netBuyAmtEok": 10.799999999999999
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 33,
-            "netBuyAmt": 720,
-            "netBuyAmtEok": 7.2
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 33,
-            "netBuyAmt": 360,
-            "netBuyAmtEok": 3.6
-          }
-        ]
-      },
-      {
-        "rank": 34,
-        "symbol": "066970",
-        "name": "엘앤에프",
-        "currentPrice": 145000,
-        "changeRate": 0,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": false,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 34,
-            "netBuyAmt": 1360,
-            "netBuyAmtEok": 13.600000000000001
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 34,
-            "netBuyAmt": 1020,
-            "netBuyAmtEok": 10.2
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 34,
-            "netBuyAmt": 680,
-            "netBuyAmtEok": 6.800000000000001
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 34,
-            "netBuyAmt": 340,
-            "netBuyAmtEok": 3.4000000000000004
-          }
-        ]
-      },
-      {
-        "rank": 35,
-        "symbol": "196170",
-        "name": "알테오젠",
-        "currentPrice": 275000,
-        "changeRate": 0,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 35,
-            "netBuyAmt": 1280,
-            "netBuyAmtEok": 12.8
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 35,
-            "netBuyAmt": 960,
-            "netBuyAmtEok": 9.6
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 35,
-            "netBuyAmt": 640,
-            "netBuyAmtEok": 6.4
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 35,
-            "netBuyAmt": 320,
-            "netBuyAmtEok": 3.2
-          }
-        ]
-      },
-      {
-        "rank": 36,
-        "symbol": "041510",
-        "name": "SM 엔터테인먼트",
-        "currentPrice": 72000,
-        "changeRate": 0,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 36,
-            "netBuyAmt": 1200,
-            "netBuyAmtEok": 12
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 36,
-            "netBuyAmt": 900,
-            "netBuyAmtEok": 9
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 36,
-            "netBuyAmt": 600,
-            "netBuyAmtEok": 6
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 36,
-            "netBuyAmt": 300,
-            "netBuyAmtEok": 3
-          }
-        ]
-      },
-      {
-        "rank": 37,
-        "symbol": "253450",
-        "name": "스튜디오드래곤",
-        "currentPrice": 44500,
-        "changeRate": 0,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
             "rank": 37,
-            "netBuyAmt": 1120,
-            "netBuyAmtEok": 11.200000000000001
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 37,
-            "netBuyAmt": 840,
-            "netBuyAmtEok": 8.4
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 37,
-            "netBuyAmt": 560,
-            "netBuyAmtEok": 5.6000000000000005
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 37,
-            "netBuyAmt": 280,
-            "netBuyAmtEok": 2.8000000000000003
-          }
-        ]
-      },
-      {
-        "rank": 38,
-        "symbol": "036830",
-        "name": "오성첨단소재",
-        "currentPrice": 1850,
-        "changeRate": 0,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "⚠️ 단기 과열",
-        "statusBadgeStyle": "bg-rose-50 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400 border-rose-200 dark:border-rose-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 38,
-            "netBuyAmt": 1040,
-            "netBuyAmtEok": 10.4
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 38,
-            "netBuyAmt": 780,
-            "netBuyAmtEok": 7.8
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 38,
-            "netBuyAmt": 520,
-            "netBuyAmtEok": 5.2
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 38,
-            "netBuyAmt": 260,
-            "netBuyAmtEok": 2.6
-          }
-        ]
-      },
-      {
-        "rank": 39,
-        "symbol": "060310",
-        "name": "3S",
-        "currentPrice": 2650,
-        "changeRate": 0,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "⚠️ 단기 과열",
-        "statusBadgeStyle": "bg-rose-50 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400 border-rose-200 dark:border-rose-800/60 font-bold",
-        "isCreditAvailable": false,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 39,
-            "netBuyAmt": 960,
-            "netBuyAmtEok": 9.600000000000001
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 39,
-            "netBuyAmt": 720,
-            "netBuyAmtEok": 7.199999999999999
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 39,
-            "netBuyAmt": 480,
-            "netBuyAmtEok": 4.800000000000001
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 39,
-            "netBuyAmt": 240,
-            "netBuyAmtEok": 2.4000000000000004
-          }
-        ]
-      },
-      {
-        "rank": 40,
-        "symbol": "067160",
-        "name": "아프리카TV",
-        "currentPrice": 115000,
-        "changeRate": 0,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 40,
-            "netBuyAmt": 880,
-            "netBuyAmtEok": 8.8
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 40,
-            "netBuyAmt": 660,
-            "netBuyAmtEok": 6.6
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 40,
-            "netBuyAmt": 440,
-            "netBuyAmtEok": 4.4
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 40,
-            "netBuyAmt": 220,
-            "netBuyAmtEok": 2.2
-          }
-        ]
-      },
-      {
-        "rank": 41,
-        "symbol": "000100",
-        "name": "유한양행",
-        "currentPrice": 76000,
-        "changeRate": 0,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 41,
-            "netBuyAmt": 800,
-            "netBuyAmtEok": 8
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 41,
-            "netBuyAmt": 600,
-            "netBuyAmtEok": 6
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 41,
-            "netBuyAmt": 400,
-            "netBuyAmtEok": 4
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 41,
-            "netBuyAmt": 200,
-            "netBuyAmtEok": 2
-          }
-        ]
-      },
-      {
-        "rank": 42,
-        "symbol": "000810",
-        "name": "삼성화재",
-        "currentPrice": 325000,
-        "changeRate": 0,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 42,
-            "netBuyAmt": 720,
-            "netBuyAmtEok": 7.2
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 42,
-            "netBuyAmt": 540,
-            "netBuyAmtEok": 5.3999999999999995
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 42,
-            "netBuyAmt": 360,
-            "netBuyAmtEok": 3.6
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 42,
-            "netBuyAmt": 180,
-            "netBuyAmtEok": 1.8
-          }
-        ]
-      },
-      {
-        "rank": 43,
-        "symbol": "010950",
-        "name": "S-Oil",
-        "currentPrice": 68000,
-        "changeRate": 0,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 43,
-            "netBuyAmt": 640,
-            "netBuyAmtEok": 6.4
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 43,
-            "netBuyAmt": 480,
-            "netBuyAmtEok": 4.8
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 43,
-            "netBuyAmt": 320,
-            "netBuyAmtEok": 3.2
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 43,
-            "netBuyAmt": 160,
-            "netBuyAmtEok": 1.6
-          }
-        ]
-      },
-      {
-        "rank": 44,
-        "symbol": "036570",
-        "name": "엔씨소프트",
-        "currentPrice": 188000,
-        "changeRate": 0,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 44,
-            "netBuyAmt": 560,
-            "netBuyAmtEok": 5.6000000000000005
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 44,
-            "netBuyAmt": 420,
-            "netBuyAmtEok": 4.2
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 44,
-            "netBuyAmt": 280,
-            "netBuyAmtEok": 2.8000000000000003
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 44,
-            "netBuyAmt": 140,
-            "netBuyAmtEok": 1.4000000000000001
-          }
-        ]
-      },
-      {
-        "rank": 45,
-        "symbol": "011170",
-        "name": "롯데케미칼",
-        "currentPrice": 112000,
-        "changeRate": 0,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": false,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 45,
-            "netBuyAmt": 480,
-            "netBuyAmtEok": 4.800000000000001
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 45,
-            "netBuyAmt": 360,
-            "netBuyAmtEok": 3.5999999999999996
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 45,
-            "netBuyAmt": 240,
-            "netBuyAmtEok": 2.4000000000000004
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 45,
-            "netBuyAmt": 120,
-            "netBuyAmtEok": 1.2000000000000002
-          }
-        ]
-      },
-      {
-        "rank": 46,
-        "symbol": "004020",
-        "name": "현대제철",
-        "currentPrice": 32000,
-        "changeRate": 0,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 46,
-            "netBuyAmt": 400,
-            "netBuyAmtEok": 4
+            "netBuyAmt": 2379,
+            "netBuyAmtEok": 23.8
           },
           {
             "type": "organ",
             "label": "기관",
             "rank": 46,
-            "netBuyAmt": 300,
-            "netBuyAmtEok": 3
+            "netBuyAmt": 1051,
+            "netBuyAmtEok": 10.5
           },
           {
             "type": "pension",
             "label": "연기금",
             "rank": 46,
-            "netBuyAmt": 200,
-            "netBuyAmtEok": 2
+            "netBuyAmt": 1051,
+            "netBuyAmtEok": 10.5,
+            "asOfDateLabel": "(8/28 기준)"
           },
           {
             "type": "program",
             "label": "프로그램",
             "rank": 46,
-            "netBuyAmt": 100,
-            "netBuyAmtEok": 1
-          }
-        ]
-      },
-      {
-        "rank": 47,
-        "symbol": "021240",
-        "name": "코웨이",
-        "currentPrice": 58500,
-        "changeRate": 0,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 47,
-            "netBuyAmt": 320,
-            "netBuyAmtEok": 3.2
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 47,
-            "netBuyAmt": 240,
-            "netBuyAmtEok": 2.4
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 47,
-            "netBuyAmt": 160,
-            "netBuyAmtEok": 1.6
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 47,
-            "netBuyAmt": 80,
-            "netBuyAmtEok": 0.8
-          }
-        ]
-      },
-      {
-        "rank": 48,
-        "symbol": "008770",
-        "name": "호텔신라",
-        "currentPrice": 56200,
-        "changeRate": 0,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 48,
-            "netBuyAmt": 240,
-            "netBuyAmtEok": 2.4000000000000004
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 48,
-            "netBuyAmt": 180,
-            "netBuyAmtEok": 1.7999999999999998
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 48,
-            "netBuyAmt": 120,
-            "netBuyAmtEok": 1.2000000000000002
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 48,
-            "netBuyAmt": 60,
-            "netBuyAmtEok": 0.6000000000000001
-          }
-        ]
-      },
-      {
-        "rank": 49,
-        "symbol": "078930",
-        "name": "GS",
-        "currentPrice": 52000,
-        "changeRate": 0,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 49,
-            "netBuyAmt": 160,
-            "netBuyAmtEok": 1.6
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 49,
-            "netBuyAmt": 120,
-            "netBuyAmtEok": 1.2
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 49,
-            "netBuyAmt": 80,
-            "netBuyAmtEok": 0.8
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 49,
-            "netBuyAmt": 40,
-            "netBuyAmtEok": 0.4
-          }
-        ]
-      },
-      {
-        "rank": 50,
-        "symbol": "000150",
-        "name": "두산2우B",
-        "currentPrice": 19500,
-        "changeRate": 0,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 50,
-            "netBuyAmt": 80,
-            "netBuyAmtEok": 0.8
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 50,
-            "netBuyAmt": 60,
-            "netBuyAmtEok": 0.6
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 50,
-            "netBuyAmt": 40,
-            "netBuyAmtEok": 0.4
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 50,
-            "netBuyAmt": 20,
-            "netBuyAmtEok": 0.2
+            "netBuyAmt": 1051,
+            "netBuyAmtEok": 10.5,
+            "asOfDateLabel": "(8/28 기준)"
           }
         ]
       }
     ]
   },
   "consecutive3d": {
-    "totalItems": 50,
-    "lastBatchTime": "오늘 08:30 배치 기준",
+    "totalItems": 2,
     "items": [
       {
         "rank": 1,
-        "symbol": "005930",
-        "name": "삼성전자",
-        "currentPrice": 77500,
-        "changeRate": 0.5,
+        "symbol": "003490",
+        "name": "대한항공",
+        "currentPrice": 28700,
+        "changeRate": 1.77,
         "overlapCount": 4,
         "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
+        "statusBadge": "⚠️ 단기 과열",
+        "statusBadgeStyle": "bg-rose-50 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400 border-rose-200 dark:border-rose-800/60 font-bold",
         "isCreditAvailable": true,
         "aiPickRank": 1,
         "ranksByType": [
@@ -2128,54 +586,54 @@
             "type": "foreign",
             "label": "외국인",
             "rank": 1,
-            "netBuyAmt": 16000,
-            "netBuyAmtEok": 160,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
+            "netBuyAmt": 110213,
+            "netBuyAmtEok": 1102.1,
+            "consecutiveDays": 4,
+            "consecutiveText": "4일연속",
             "asOfDateLabel": "당일 가집계"
           },
           {
             "type": "organ",
             "label": "기관",
             "rank": 1,
-            "netBuyAmt": 9750,
-            "netBuyAmtEok": 97.5,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
+            "netBuyAmt": 61878,
+            "netBuyAmtEok": 618.8,
+            "consecutiveDays": 7,
+            "consecutiveText": "7일연속",
             "asOfDateLabel": "당일 가집계"
           },
           {
             "type": "pension",
             "label": "연기금",
             "rank": 1,
-            "netBuyAmt": 3350,
-            "netBuyAmtEok": 33.5,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "(8/27 기준)"
+            "netBuyAmt": 23514,
+            "netBuyAmtEok": 235.1,
+            "consecutiveDays": 7,
+            "consecutiveText": "7일연속",
+            "asOfDateLabel": "(8/28 기준)"
           },
           {
             "type": "program",
             "label": "프로그램",
             "rank": 1,
-            "netBuyAmt": 500,
-            "netBuyAmtEok": 5,
+            "netBuyAmt": 25,
+            "netBuyAmtEok": 0.3,
             "consecutiveDays": 3,
             "consecutiveText": "3일연속",
-            "asOfDateLabel": "(8/27 기준)"
+            "asOfDateLabel": "(8/28 기준)"
           }
         ]
       },
       {
         "rank": 2,
-        "symbol": "000660",
-        "name": "SK하이닉스",
-        "currentPrice": 189000,
-        "changeRate": 0.5,
+        "symbol": "294570",
+        "name": "쿠콘",
+        "currentPrice": 30900,
+        "changeRate": 23.85,
         "overlapCount": 4,
         "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
+        "statusBadge": "⚠️ 단기 과열",
+        "statusBadgeStyle": "bg-rose-50 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400 border-rose-200 dark:border-rose-800/60 font-bold",
         "isCreditAvailable": true,
         "aiPickRank": 2,
         "ranksByType": [
@@ -2183,2634 +641,41 @@
             "type": "foreign",
             "label": "외국인",
             "rank": 1,
-            "netBuyAmt": 16000,
-            "netBuyAmtEok": 160,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
+            "netBuyAmt": 1649,
+            "netBuyAmtEok": 16.5,
+            "consecutiveDays": 3,
+            "consecutiveText": "3일연속",
             "asOfDateLabel": "당일 가집계"
           },
           {
             "type": "organ",
             "label": "기관",
             "rank": 1,
-            "netBuyAmt": 9750,
-            "netBuyAmtEok": 97.5,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
+            "netBuyAmt": 2562,
+            "netBuyAmtEok": 25.6,
+            "consecutiveDays": 16,
+            "consecutiveText": "16일연속",
             "asOfDateLabel": "당일 가집계"
           },
           {
             "type": "pension",
             "label": "연기금",
             "rank": 1,
-            "netBuyAmt": 3350,
-            "netBuyAmtEok": 33.5,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "(8/27 기준)"
+            "netBuyAmt": 974,
+            "netBuyAmtEok": 9.7,
+            "consecutiveDays": 17,
+            "consecutiveText": "17일연속",
+            "asOfDateLabel": "(8/28 기준)"
           },
           {
             "type": "program",
             "label": "프로그램",
             "rank": 1,
-            "netBuyAmt": 500,
-            "netBuyAmtEok": 5,
+            "netBuyAmt": 622,
+            "netBuyAmtEok": 6.2,
             "consecutiveDays": 3,
             "consecutiveText": "3일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          }
-        ]
-      },
-      {
-        "rank": 3,
-        "symbol": "373220",
-        "name": "LG에너지솔루션",
-        "currentPrice": 385000,
-        "changeRate": 0.5,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "aiPickRank": 3,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 1,
-            "netBuyAmt": 16000,
-            "netBuyAmtEok": 160,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 1,
-            "netBuyAmt": 9750,
-            "netBuyAmtEok": 97.5,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 1,
-            "netBuyAmt": 3350,
-            "netBuyAmtEok": 33.5,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 1,
-            "netBuyAmt": 500,
-            "netBuyAmtEok": 5,
-            "consecutiveDays": 3,
-            "consecutiveText": "3일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          }
-        ]
-      },
-      {
-        "rank": 4,
-        "symbol": "005490",
-        "name": "POSCO홀딩스",
-        "currentPrice": 368000,
-        "changeRate": 0.5,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 1,
-            "netBuyAmt": 16000,
-            "netBuyAmtEok": 160,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 1,
-            "netBuyAmt": 9750,
-            "netBuyAmtEok": 97.5,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 1,
-            "netBuyAmt": 3350,
-            "netBuyAmtEok": 33.5,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 1,
-            "netBuyAmt": 500,
-            "netBuyAmtEok": 5,
-            "consecutiveDays": 3,
-            "consecutiveText": "3일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          }
-        ]
-      },
-      {
-        "rank": 5,
-        "symbol": "028260",
-        "name": "삼성물산",
-        "currentPrice": 151000,
-        "changeRate": 0.5,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 1,
-            "netBuyAmt": 16000,
-            "netBuyAmtEok": 160,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 1,
-            "netBuyAmt": 9750,
-            "netBuyAmtEok": 97.5,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 1,
-            "netBuyAmt": 3350,
-            "netBuyAmtEok": 33.5,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 1,
-            "netBuyAmt": 500,
-            "netBuyAmtEok": 5,
-            "consecutiveDays": 3,
-            "consecutiveText": "3일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          }
-        ]
-      },
-      {
-        "rank": 6,
-        "symbol": "105560",
-        "name": "KB금융",
-        "currentPrice": 81500,
-        "changeRate": 0.5,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 1,
-            "netBuyAmt": 16000,
-            "netBuyAmtEok": 160,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 1,
-            "netBuyAmt": 9750,
-            "netBuyAmtEok": 97.5,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 1,
-            "netBuyAmt": 3350,
-            "netBuyAmtEok": 33.5,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 1,
-            "netBuyAmt": 500,
-            "netBuyAmtEok": 5,
-            "consecutiveDays": 3,
-            "consecutiveText": "3일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          }
-        ]
-      },
-      {
-        "rank": 7,
-        "symbol": "055550",
-        "name": "신한지주",
-        "currentPrice": 49200,
-        "changeRate": 0.5,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 1,
-            "netBuyAmt": 16000,
-            "netBuyAmtEok": 160,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 1,
-            "netBuyAmt": 9750,
-            "netBuyAmtEok": 97.5,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 1,
-            "netBuyAmt": 3350,
-            "netBuyAmtEok": 33.5,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 1,
-            "netBuyAmt": 500,
-            "netBuyAmtEok": 5,
-            "consecutiveDays": 3,
-            "consecutiveText": "3일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          }
-        ]
-      },
-      {
-        "rank": 8,
-        "symbol": "010140",
-        "name": "삼성중공업",
-        "currentPrice": 11950,
-        "changeRate": 0.5,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "⚠️ 단기 과열",
-        "statusBadgeStyle": "bg-rose-50 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400 border-rose-200 dark:border-rose-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 1,
-            "netBuyAmt": 16000,
-            "netBuyAmtEok": 160,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 1,
-            "netBuyAmt": 9750,
-            "netBuyAmtEok": 97.5,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 1,
-            "netBuyAmt": 3350,
-            "netBuyAmtEok": 33.5,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 1,
-            "netBuyAmt": 500,
-            "netBuyAmtEok": 5,
-            "consecutiveDays": 3,
-            "consecutiveText": "3일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          }
-        ]
-      },
-      {
-        "rank": 9,
-        "symbol": "086790",
-        "name": "하나금융지주",
-        "currentPrice": 64200,
-        "changeRate": 0.5,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 1,
-            "netBuyAmt": 16000,
-            "netBuyAmtEok": 160,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 1,
-            "netBuyAmt": 9750,
-            "netBuyAmtEok": 97.5,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 1,
-            "netBuyAmt": 3350,
-            "netBuyAmtEok": 33.5,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 1,
-            "netBuyAmt": 500,
-            "netBuyAmtEok": 5,
-            "consecutiveDays": 3,
-            "consecutiveText": "3일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          }
-        ]
-      },
-      {
-        "rank": 10,
-        "symbol": "003550",
-        "name": "LG",
-        "currentPrice": 81000,
-        "changeRate": 0.5,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 1,
-            "netBuyAmt": 16000,
-            "netBuyAmtEok": 160,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 1,
-            "netBuyAmt": 9750,
-            "netBuyAmtEok": 97.5,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 1,
-            "netBuyAmt": 3350,
-            "netBuyAmtEok": 33.5,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 1,
-            "netBuyAmt": 500,
-            "netBuyAmtEok": 5,
-            "consecutiveDays": 3,
-            "consecutiveText": "3일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          }
-        ]
-      },
-      {
-        "rank": 11,
-        "symbol": "263750",
-        "name": "펄어비스",
-        "currentPrice": 41500,
-        "changeRate": 0.5,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 1,
-            "netBuyAmt": 16000,
-            "netBuyAmtEok": 160,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 1,
-            "netBuyAmt": 9750,
-            "netBuyAmtEok": 97.5,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 1,
-            "netBuyAmt": 3350,
-            "netBuyAmtEok": 33.5,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 1,
-            "netBuyAmt": 500,
-            "netBuyAmtEok": 5,
-            "consecutiveDays": 3,
-            "consecutiveText": "3일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          }
-        ]
-      },
-      {
-        "rank": 12,
-        "symbol": "066970",
-        "name": "엘앤에프",
-        "currentPrice": 148000,
-        "changeRate": 0.5,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": false,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 1,
-            "netBuyAmt": 16000,
-            "netBuyAmtEok": 160,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 1,
-            "netBuyAmt": 9750,
-            "netBuyAmtEok": 97.5,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 1,
-            "netBuyAmt": 3350,
-            "netBuyAmtEok": 33.5,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 1,
-            "netBuyAmt": 500,
-            "netBuyAmtEok": 5,
-            "consecutiveDays": 3,
-            "consecutiveText": "3일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          }
-        ]
-      },
-      {
-        "rank": 13,
-        "symbol": "011170",
-        "name": "롯데케미칼",
-        "currentPrice": 115000,
-        "changeRate": 0.5,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": false,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 1,
-            "netBuyAmt": 16000,
-            "netBuyAmtEok": 160,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 1,
-            "netBuyAmt": 9750,
-            "netBuyAmtEok": 97.5,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 1,
-            "netBuyAmt": 3350,
-            "netBuyAmtEok": 33.5,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 1,
-            "netBuyAmt": 500,
-            "netBuyAmtEok": 5,
-            "consecutiveDays": 3,
-            "consecutiveText": "3일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          }
-        ]
-      },
-      {
-        "rank": 14,
-        "symbol": "021240",
-        "name": "코웨이",
-        "currentPrice": 61500,
-        "changeRate": 0.5,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 1,
-            "netBuyAmt": 16000,
-            "netBuyAmtEok": 160,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 1,
-            "netBuyAmt": 9750,
-            "netBuyAmtEok": 97.5,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 1,
-            "netBuyAmt": 3350,
-            "netBuyAmtEok": 33.5,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 1,
-            "netBuyAmt": 500,
-            "netBuyAmtEok": 5,
-            "consecutiveDays": 3,
-            "consecutiveText": "3일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          }
-        ]
-      },
-      {
-        "rank": 15,
-        "symbol": "078930",
-        "name": "GS",
-        "currentPrice": 55000,
-        "changeRate": 0.5,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 1,
-            "netBuyAmt": 16000,
-            "netBuyAmtEok": 160,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 1,
-            "netBuyAmt": 9750,
-            "netBuyAmtEok": 97.5,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 1,
-            "netBuyAmt": 3350,
-            "netBuyAmtEok": 33.5,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 1,
-            "netBuyAmt": 500,
-            "netBuyAmtEok": 5,
-            "consecutiveDays": 3,
-            "consecutiveText": "3일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          }
-        ]
-      },
-      {
-        "rank": 16,
-        "symbol": "000150",
-        "name": "두산2우B",
-        "currentPrice": 22500,
-        "changeRate": 0.5,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 1,
-            "netBuyAmt": 16000,
-            "netBuyAmtEok": 160,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 1,
-            "netBuyAmt": 9750,
-            "netBuyAmtEok": 97.5,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 1,
-            "netBuyAmt": 3350,
-            "netBuyAmtEok": 33.5,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 1,
-            "netBuyAmt": 500,
-            "netBuyAmtEok": 5,
-            "consecutiveDays": 3,
-            "consecutiveText": "3일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          }
-        ]
-      },
-      {
-        "rank": 17,
-        "symbol": "207940",
-        "name": "삼성바이오로직스",
-        "currentPrice": 815000,
-        "changeRate": 0.5,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 1,
-            "netBuyAmt": 8400,
-            "netBuyAmtEok": 84,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 1,
-            "netBuyAmt": 6300,
-            "netBuyAmtEok": 63,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 1,
-            "netBuyAmt": 2100,
-            "netBuyAmtEok": 21,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 1,
-            "netBuyAmt": 500,
-            "netBuyAmtEok": 5,
-            "consecutiveDays": 3,
-            "consecutiveText": "3일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          }
-        ]
-      },
-      {
-        "rank": 18,
-        "symbol": "005935",
-        "name": "삼성전자우",
-        "currentPrice": 65500,
-        "changeRate": 0.5,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 1,
-            "netBuyAmt": 8400,
-            "netBuyAmtEok": 84,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 1,
-            "netBuyAmt": 6300,
-            "netBuyAmtEok": 63,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 1,
-            "netBuyAmt": 2100,
-            "netBuyAmtEok": 21,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 1,
-            "netBuyAmt": 500,
-            "netBuyAmtEok": 5,
-            "consecutiveDays": 3,
-            "consecutiveText": "3일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          }
-        ]
-      },
-      {
-        "rank": 19,
-        "symbol": "005380",
-        "name": "현대차",
-        "currentPrice": 248000,
-        "changeRate": 0.5,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 1,
-            "netBuyAmt": 8400,
-            "netBuyAmtEok": 84,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 1,
-            "netBuyAmt": 6300,
-            "netBuyAmtEok": 63,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 1,
-            "netBuyAmt": 2100,
-            "netBuyAmtEok": 21,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 1,
-            "netBuyAmt": 500,
-            "netBuyAmtEok": 5,
-            "consecutiveDays": 3,
-            "consecutiveText": "3일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          }
-        ]
-      },
-      {
-        "rank": 20,
-        "symbol": "000270",
-        "name": "기아",
-        "currentPrice": 121500,
-        "changeRate": 0.5,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 1,
-            "netBuyAmt": 8400,
-            "netBuyAmtEok": 84,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 1,
-            "netBuyAmt": 6300,
-            "netBuyAmtEok": 63,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 1,
-            "netBuyAmt": 2100,
-            "netBuyAmtEok": 21,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 1,
-            "netBuyAmt": 500,
-            "netBuyAmtEok": 5,
-            "consecutiveDays": 3,
-            "consecutiveText": "3일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          }
-        ]
-      },
-      {
-        "rank": 21,
-        "symbol": "068270",
-        "name": "셀트리온",
-        "currentPrice": 182500,
-        "changeRate": 0.5,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 1,
-            "netBuyAmt": 8400,
-            "netBuyAmtEok": 84,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 1,
-            "netBuyAmt": 6300,
-            "netBuyAmtEok": 63,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 1,
-            "netBuyAmt": 2100,
-            "netBuyAmtEok": 21,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 1,
-            "netBuyAmt": 500,
-            "netBuyAmtEok": 5,
-            "consecutiveDays": 3,
-            "consecutiveText": "3일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          }
-        ]
-      },
-      {
-        "rank": 22,
-        "symbol": "035420",
-        "name": "NAVER",
-        "currentPrice": 175000,
-        "changeRate": 0.5,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 1,
-            "netBuyAmt": 8400,
-            "netBuyAmtEok": 84,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 1,
-            "netBuyAmt": 6300,
-            "netBuyAmtEok": 63,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 1,
-            "netBuyAmt": 2100,
-            "netBuyAmtEok": 21,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 1,
-            "netBuyAmt": 500,
-            "netBuyAmtEok": 5,
-            "consecutiveDays": 3,
-            "consecutiveText": "3일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          }
-        ]
-      },
-      {
-        "rank": 23,
-        "symbol": "035720",
-        "name": "카카오",
-        "currentPrice": 45500,
-        "changeRate": 0.5,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 1,
-            "netBuyAmt": 8400,
-            "netBuyAmtEok": 84,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 1,
-            "netBuyAmt": 6300,
-            "netBuyAmtEok": 63,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 1,
-            "netBuyAmt": 2100,
-            "netBuyAmtEok": 21,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 1,
-            "netBuyAmt": 500,
-            "netBuyAmtEok": 5,
-            "consecutiveDays": 3,
-            "consecutiveText": "3일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          }
-        ]
-      },
-      {
-        "rank": 24,
-        "symbol": "012330",
-        "name": "현대모비스",
-        "currentPrice": 231000,
-        "changeRate": 0.5,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 1,
-            "netBuyAmt": 8400,
-            "netBuyAmtEok": 84,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 1,
-            "netBuyAmt": 6300,
-            "netBuyAmtEok": 63,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 1,
-            "netBuyAmt": 2100,
-            "netBuyAmtEok": 21,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 1,
-            "netBuyAmt": 500,
-            "netBuyAmtEok": 5,
-            "consecutiveDays": 3,
-            "consecutiveText": "3일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          }
-        ]
-      },
-      {
-        "rank": 25,
-        "symbol": "015760",
-        "name": "한국전력",
-        "currentPrice": 22800,
-        "changeRate": 0.5,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 1,
-            "netBuyAmt": 8400,
-            "netBuyAmtEok": 84,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 1,
-            "netBuyAmt": 6300,
-            "netBuyAmtEok": 63,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 1,
-            "netBuyAmt": 2100,
-            "netBuyAmtEok": 21,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 1,
-            "netBuyAmt": 500,
-            "netBuyAmtEok": 5,
-            "consecutiveDays": 3,
-            "consecutiveText": "3일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          }
-        ]
-      },
-      {
-        "rank": 26,
-        "symbol": "032830",
-        "name": "삼성생명",
-        "currentPrice": 92000,
-        "changeRate": 0.5,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 1,
-            "netBuyAmt": 8400,
-            "netBuyAmtEok": 84,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 1,
-            "netBuyAmt": 6300,
-            "netBuyAmtEok": 63,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 1,
-            "netBuyAmt": 2100,
-            "netBuyAmtEok": 21,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 1,
-            "netBuyAmt": 500,
-            "netBuyAmtEok": 5,
-            "consecutiveDays": 3,
-            "consecutiveText": "3일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          }
-        ]
-      },
-      {
-        "rank": 27,
-        "symbol": "009150",
-        "name": "삼성전기",
-        "currentPrice": 157000,
-        "changeRate": 0.5,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 1,
-            "netBuyAmt": 8400,
-            "netBuyAmtEok": 84,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 1,
-            "netBuyAmt": 6300,
-            "netBuyAmtEok": 63,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 1,
-            "netBuyAmt": 2100,
-            "netBuyAmtEok": 21,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 1,
-            "netBuyAmt": 500,
-            "netBuyAmtEok": 5,
-            "consecutiveDays": 3,
-            "consecutiveText": "3일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          }
-        ]
-      },
-      {
-        "rank": 28,
-        "symbol": "034730",
-        "name": "SK",
-        "currentPrice": 168000,
-        "changeRate": 0.5,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 1,
-            "netBuyAmt": 8400,
-            "netBuyAmtEok": 84,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 1,
-            "netBuyAmt": 6300,
-            "netBuyAmtEok": 63,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 1,
-            "netBuyAmt": 2100,
-            "netBuyAmtEok": 21,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 1,
-            "netBuyAmt": 500,
-            "netBuyAmtEok": 5,
-            "consecutiveDays": 3,
-            "consecutiveText": "3일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          }
-        ]
-      },
-      {
-        "rank": 29,
-        "symbol": "018260",
-        "name": "삼성SDS",
-        "currentPrice": 145500,
-        "changeRate": 0.5,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 1,
-            "netBuyAmt": 8400,
-            "netBuyAmtEok": 84,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 1,
-            "netBuyAmt": 6300,
-            "netBuyAmtEok": 63,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 1,
-            "netBuyAmt": 2100,
-            "netBuyAmtEok": 21,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 1,
-            "netBuyAmt": 500,
-            "netBuyAmtEok": 5,
-            "consecutiveDays": 3,
-            "consecutiveText": "3일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          }
-        ]
-      },
-      {
-        "rank": 30,
-        "symbol": "011200",
-        "name": "HMM",
-        "currentPrice": 20400,
-        "changeRate": 0.5,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 1,
-            "netBuyAmt": 8400,
-            "netBuyAmtEok": 84,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 1,
-            "netBuyAmt": 6300,
-            "netBuyAmtEok": 63,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 1,
-            "netBuyAmt": 2100,
-            "netBuyAmtEok": 21,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 1,
-            "netBuyAmt": 500,
-            "netBuyAmtEok": 5,
-            "consecutiveDays": 3,
-            "consecutiveText": "3일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          }
-        ]
-      },
-      {
-        "rank": 31,
-        "symbol": "329180",
-        "name": "HD현대중공업",
-        "currentPrice": 141000,
-        "changeRate": 0.5,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 1,
-            "netBuyAmt": 8400,
-            "netBuyAmtEok": 84,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 1,
-            "netBuyAmt": 6300,
-            "netBuyAmtEok": 63,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 1,
-            "netBuyAmt": 2100,
-            "netBuyAmtEok": 21,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 1,
-            "netBuyAmt": 500,
-            "netBuyAmtEok": 5,
-            "consecutiveDays": 3,
-            "consecutiveText": "3일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          }
-        ]
-      },
-      {
-        "rank": 32,
-        "symbol": "247540",
-        "name": "에코프로비엠",
-        "currentPrice": 188000,
-        "changeRate": 0.5,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 1,
-            "netBuyAmt": 8400,
-            "netBuyAmtEok": 84,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 1,
-            "netBuyAmt": 6300,
-            "netBuyAmtEok": 63,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 1,
-            "netBuyAmt": 2100,
-            "netBuyAmtEok": 21,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 1,
-            "netBuyAmt": 500,
-            "netBuyAmtEok": 5,
-            "consecutiveDays": 3,
-            "consecutiveText": "3일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          }
-        ]
-      },
-      {
-        "rank": 33,
-        "symbol": "086520",
-        "name": "에코프로",
-        "currentPrice": 95000,
-        "changeRate": 0.5,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 1,
-            "netBuyAmt": 8400,
-            "netBuyAmtEok": 84,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 1,
-            "netBuyAmt": 6300,
-            "netBuyAmtEok": 63,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 1,
-            "netBuyAmt": 2100,
-            "netBuyAmtEok": 21,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 1,
-            "netBuyAmt": 500,
-            "netBuyAmtEok": 5,
-            "consecutiveDays": 3,
-            "consecutiveText": "3일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          }
-        ]
-      },
-      {
-        "rank": 34,
-        "symbol": "028300",
-        "name": "HLB",
-        "currentPrice": 67500,
-        "changeRate": 0.5,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": false,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 1,
-            "netBuyAmt": 8400,
-            "netBuyAmtEok": 84,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 1,
-            "netBuyAmt": 6300,
-            "netBuyAmtEok": 63,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 1,
-            "netBuyAmt": 2100,
-            "netBuyAmtEok": 21,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 1,
-            "netBuyAmt": 500,
-            "netBuyAmtEok": 5,
-            "consecutiveDays": 3,
-            "consecutiveText": "3일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          }
-        ]
-      },
-      {
-        "rank": 35,
-        "symbol": "293490",
-        "name": "카카오게임즈",
-        "currentPrice": 24500,
-        "changeRate": 0.5,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": false,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 1,
-            "netBuyAmt": 8400,
-            "netBuyAmtEok": 84,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 1,
-            "netBuyAmt": 6300,
-            "netBuyAmtEok": 63,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 1,
-            "netBuyAmt": 2100,
-            "netBuyAmtEok": 21,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 1,
-            "netBuyAmt": 500,
-            "netBuyAmtEok": 5,
-            "consecutiveDays": 3,
-            "consecutiveText": "3일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          }
-        ]
-      },
-      {
-        "rank": 36,
-        "symbol": "035900",
-        "name": "JYP Ent.",
-        "currentPrice": 61000,
-        "changeRate": 0.5,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 1,
-            "netBuyAmt": 8400,
-            "netBuyAmtEok": 84,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 1,
-            "netBuyAmt": 6300,
-            "netBuyAmtEok": 63,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 1,
-            "netBuyAmt": 2100,
-            "netBuyAmtEok": 21,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 1,
-            "netBuyAmt": 500,
-            "netBuyAmtEok": 5,
-            "consecutiveDays": 3,
-            "consecutiveText": "3일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          }
-        ]
-      },
-      {
-        "rank": 37,
-        "symbol": "122870",
-        "name": "와이지엔터테인먼트",
-        "currentPrice": 44200,
-        "changeRate": 0.5,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 1,
-            "netBuyAmt": 8400,
-            "netBuyAmtEok": 84,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 1,
-            "netBuyAmt": 6300,
-            "netBuyAmtEok": 63,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 1,
-            "netBuyAmt": 2100,
-            "netBuyAmtEok": 21,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 1,
-            "netBuyAmt": 500,
-            "netBuyAmtEok": 5,
-            "consecutiveDays": 3,
-            "consecutiveText": "3일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          }
-        ]
-      },
-      {
-        "rank": 38,
-        "symbol": "357780",
-        "name": "솔브레인",
-        "currentPrice": 288000,
-        "changeRate": 0.5,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 1,
-            "netBuyAmt": 8400,
-            "netBuyAmtEok": 84,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 1,
-            "netBuyAmt": 6300,
-            "netBuyAmtEok": 63,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 1,
-            "netBuyAmt": 2100,
-            "netBuyAmtEok": 21,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 1,
-            "netBuyAmt": 500,
-            "netBuyAmtEok": 5,
-            "consecutiveDays": 3,
-            "consecutiveText": "3일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          }
-        ]
-      },
-      {
-        "rank": 39,
-        "symbol": "196170",
-        "name": "알테오젠",
-        "currentPrice": 278000,
-        "changeRate": 0.5,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 1,
-            "netBuyAmt": 8400,
-            "netBuyAmtEok": 84,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 1,
-            "netBuyAmt": 6300,
-            "netBuyAmtEok": 63,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 1,
-            "netBuyAmt": 2100,
-            "netBuyAmtEok": 21,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 1,
-            "netBuyAmt": 500,
-            "netBuyAmtEok": 5,
-            "consecutiveDays": 3,
-            "consecutiveText": "3일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          }
-        ]
-      },
-      {
-        "rank": 40,
-        "symbol": "041510",
-        "name": "SM 엔터테인먼트",
-        "currentPrice": 75000,
-        "changeRate": 0.5,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 1,
-            "netBuyAmt": 8400,
-            "netBuyAmtEok": 84,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 1,
-            "netBuyAmt": 6300,
-            "netBuyAmtEok": 63,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 1,
-            "netBuyAmt": 2100,
-            "netBuyAmtEok": 21,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 1,
-            "netBuyAmt": 500,
-            "netBuyAmtEok": 5,
-            "consecutiveDays": 3,
-            "consecutiveText": "3일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          }
-        ]
-      },
-      {
-        "rank": 41,
-        "symbol": "253450",
-        "name": "스튜디오드래곤",
-        "currentPrice": 47500,
-        "changeRate": 0.5,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 1,
-            "netBuyAmt": 8400,
-            "netBuyAmtEok": 84,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 1,
-            "netBuyAmt": 6300,
-            "netBuyAmtEok": 63,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 1,
-            "netBuyAmt": 2100,
-            "netBuyAmtEok": 21,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 1,
-            "netBuyAmt": 500,
-            "netBuyAmtEok": 5,
-            "consecutiveDays": 3,
-            "consecutiveText": "3일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          }
-        ]
-      },
-      {
-        "rank": 42,
-        "symbol": "036830",
-        "name": "오성첨단소재",
-        "currentPrice": 4850,
-        "changeRate": 0.5,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "⚠️ 단기 과열",
-        "statusBadgeStyle": "bg-rose-50 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400 border-rose-200 dark:border-rose-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 1,
-            "netBuyAmt": 8400,
-            "netBuyAmtEok": 84,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 1,
-            "netBuyAmt": 6300,
-            "netBuyAmtEok": 63,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 1,
-            "netBuyAmt": 2100,
-            "netBuyAmtEok": 21,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 1,
-            "netBuyAmt": 500,
-            "netBuyAmtEok": 5,
-            "consecutiveDays": 3,
-            "consecutiveText": "3일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          }
-        ]
-      },
-      {
-        "rank": 43,
-        "symbol": "060310",
-        "name": "3S",
-        "currentPrice": 5650,
-        "changeRate": 0.5,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "⚠️ 단기 과열",
-        "statusBadgeStyle": "bg-rose-50 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400 border-rose-200 dark:border-rose-800/60 font-bold",
-        "isCreditAvailable": false,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 1,
-            "netBuyAmt": 8400,
-            "netBuyAmtEok": 84,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 1,
-            "netBuyAmt": 6300,
-            "netBuyAmtEok": 63,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 1,
-            "netBuyAmt": 2100,
-            "netBuyAmtEok": 21,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 1,
-            "netBuyAmt": 500,
-            "netBuyAmtEok": 5,
-            "consecutiveDays": 3,
-            "consecutiveText": "3일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          }
-        ]
-      },
-      {
-        "rank": 44,
-        "symbol": "067160",
-        "name": "아프리카TV",
-        "currentPrice": 118000,
-        "changeRate": 0.5,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 1,
-            "netBuyAmt": 8400,
-            "netBuyAmtEok": 84,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 1,
-            "netBuyAmt": 6300,
-            "netBuyAmtEok": 63,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 1,
-            "netBuyAmt": 2100,
-            "netBuyAmtEok": 21,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 1,
-            "netBuyAmt": 500,
-            "netBuyAmtEok": 5,
-            "consecutiveDays": 3,
-            "consecutiveText": "3일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          }
-        ]
-      },
-      {
-        "rank": 45,
-        "symbol": "000100",
-        "name": "유한양행",
-        "currentPrice": 79000,
-        "changeRate": 0.5,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 1,
-            "netBuyAmt": 8400,
-            "netBuyAmtEok": 84,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 1,
-            "netBuyAmt": 6300,
-            "netBuyAmtEok": 63,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 1,
-            "netBuyAmt": 2100,
-            "netBuyAmtEok": 21,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 1,
-            "netBuyAmt": 500,
-            "netBuyAmtEok": 5,
-            "consecutiveDays": 3,
-            "consecutiveText": "3일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          }
-        ]
-      },
-      {
-        "rank": 46,
-        "symbol": "000810",
-        "name": "삼성화재",
-        "currentPrice": 328000,
-        "changeRate": 0.5,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 1,
-            "netBuyAmt": 8400,
-            "netBuyAmtEok": 84,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 1,
-            "netBuyAmt": 6300,
-            "netBuyAmtEok": 63,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 1,
-            "netBuyAmt": 2100,
-            "netBuyAmtEok": 21,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 1,
-            "netBuyAmt": 500,
-            "netBuyAmtEok": 5,
-            "consecutiveDays": 3,
-            "consecutiveText": "3일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          }
-        ]
-      },
-      {
-        "rank": 47,
-        "symbol": "010950",
-        "name": "S-Oil",
-        "currentPrice": 71000,
-        "changeRate": 0.5,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 1,
-            "netBuyAmt": 8400,
-            "netBuyAmtEok": 84,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 1,
-            "netBuyAmt": 6300,
-            "netBuyAmtEok": 63,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 1,
-            "netBuyAmt": 2100,
-            "netBuyAmtEok": 21,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 1,
-            "netBuyAmt": 500,
-            "netBuyAmtEok": 5,
-            "consecutiveDays": 3,
-            "consecutiveText": "3일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          }
-        ]
-      },
-      {
-        "rank": 48,
-        "symbol": "036570",
-        "name": "엔씨소프트",
-        "currentPrice": 191000,
-        "changeRate": 0.5,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 1,
-            "netBuyAmt": 8400,
-            "netBuyAmtEok": 84,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 1,
-            "netBuyAmt": 6300,
-            "netBuyAmtEok": 63,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 1,
-            "netBuyAmt": 2100,
-            "netBuyAmtEok": 21,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 1,
-            "netBuyAmt": 500,
-            "netBuyAmtEok": 5,
-            "consecutiveDays": 3,
-            "consecutiveText": "3일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          }
-        ]
-      },
-      {
-        "rank": 49,
-        "symbol": "004020",
-        "name": "현대제철",
-        "currentPrice": 35000,
-        "changeRate": 0.5,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 1,
-            "netBuyAmt": 8400,
-            "netBuyAmtEok": 84,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 1,
-            "netBuyAmt": 6300,
-            "netBuyAmtEok": 63,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 1,
-            "netBuyAmt": 2100,
-            "netBuyAmtEok": 21,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 1,
-            "netBuyAmt": 500,
-            "netBuyAmtEok": 5,
-            "consecutiveDays": 3,
-            "consecutiveText": "3일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          }
-        ]
-      },
-      {
-        "rank": 50,
-        "symbol": "008770",
-        "name": "호텔신라",
-        "currentPrice": 59200,
-        "changeRate": 0.5,
-        "overlapCount": 4,
-        "investorBadge": "4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)",
-        "statusBadge": "🟢 정배열 초입",
-        "statusBadgeStyle": "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold",
-        "isCreditAvailable": true,
-        "ranksByType": [
-          {
-            "type": "foreign",
-            "label": "외국인",
-            "rank": 1,
-            "netBuyAmt": 8400,
-            "netBuyAmtEok": 84,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "organ",
-            "label": "기관",
-            "rank": 1,
-            "netBuyAmt": 6300,
-            "netBuyAmtEok": 63,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "당일 가집계"
-          },
-          {
-            "type": "pension",
-            "label": "연기금",
-            "rank": 1,
-            "netBuyAmt": 2100,
-            "netBuyAmtEok": 21,
-            "consecutiveDays": 15,
-            "consecutiveText": "15일연속",
-            "asOfDateLabel": "(8/27 기준)"
-          },
-          {
-            "type": "program",
-            "label": "프로그램",
-            "rank": 1,
-            "netBuyAmt": 500,
-            "netBuyAmtEok": 5,
-            "consecutiveDays": 3,
-            "consecutiveText": "3일연속",
-            "asOfDateLabel": "(8/27 기준)"
+            "asOfDateLabel": "(8/28 기준)"
           }
         ]
       }

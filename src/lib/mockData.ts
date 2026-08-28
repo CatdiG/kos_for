@@ -5,6 +5,42 @@
 
 import { MarketType } from './types';
 
+export function getSettledAsOfDateLabel(lastTradeDate?: string): string {
+  if (lastTradeDate && lastTradeDate.length === 8) {
+    const month = parseInt(lastTradeDate.substring(4, 6), 10);
+    const day = parseInt(lastTradeDate.substring(6, 8), 10);
+    return `(${month}/${day} 기준)`;
+  }
+  const now = new Date();
+  const utc = now.getTime() + now.getTimezoneOffset() * 60000;
+  const kstDate = new Date(utc + 9 * 60 * 60000);
+  const hour = kstDate.getHours();
+  const dayOfWeek = kstDate.getDay();
+  let day = kstDate.getDate();
+  let month = kstDate.getMonth() + 1;
+
+  if (hour < 17 || dayOfWeek === 0 || dayOfWeek === 6) {
+    if (dayOfWeek === 6) {
+      day -= 1;
+    } else if (dayOfWeek === 0) {
+      day -= 2;
+    } else if (hour < 17) {
+      if (dayOfWeek === 1) {
+        day -= 3;
+      } else {
+        day -= 1;
+      }
+    }
+    if (day <= 0) {
+      month -= 1;
+      if (month <= 0) month = 12;
+      const prevMonthDays = new Date(kstDate.getFullYear(), month, 0).getDate();
+      day += prevMonthDays;
+    }
+  }
+  return `(${month}/${day} 기준)`;
+}
+
 export interface StockInfo {
   symbol: string;
   name: string;
@@ -206,37 +242,36 @@ export function computeUnifiedStatusBadge(
   const disparate20 = Number(((closePrice / ma20) * 100).toFixed(1));
   const disparate60 = ma60 ? Number(((closePrice / ma60) * 100).toFixed(1)) : 100;
 
-  if (disparate60 <= 90 && disparate20 >= 105) {
+  // 1. 🔵 바닥 반등 (60일선 대비 과락 후 20일선 단기 반등)
+  if (disparate60 <= 90 && disparate20 >= 95.0) {
     return {
       shortBadge: '🔵 바닥 반등',
       badgeStyle: 'bg-blue-50 dark:bg-blue-950/60 text-blue-600 dark:text-blue-400 border-blue-200 dark:border-blue-800/60 font-bold',
     };
   }
+  // 2. ⚠️ 단기 과열 (20일선 이격도 105% 이상 또는 60일선 110% 이상)
   if (disparate20 >= 105 || disparate60 >= 110) {
     return {
       shortBadge: '⚠️ 단기 과열',
       badgeStyle: 'bg-rose-50 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400 border-rose-200 dark:border-rose-800/60 font-bold',
     };
   }
-  if (ma5 && ma60 && ma5 > ma20 && ma20 > ma60 && disparate20 >= 103) {
-    return {
-      shortBadge: '🚀 정배열 확산',
-      badgeStyle: 'bg-purple-50 dark:bg-purple-950/60 text-purple-600 dark:text-purple-400 border-purple-200 dark:border-purple-800/60 font-bold',
-    };
-  }
+  // 3. 🟢 정배열 (5일선 >= 20일선 정배열 상승 추세 - 초입+확산 정석 통합)
   if (ma5 && ma5 >= ma20 && disparate20 >= 99.5) {
     return {
-      shortBadge: '🟢 정배열 초입',
+      shortBadge: '🟢 정배열',
       badgeStyle: 'bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60 font-bold',
     };
   }
-  if (ma5 && ma5 < ma20) {
+  // 4. 🔴 역배열 (5일선 < 20일선 하락 및 조정 국면)
+  if (ma5 && ma5 < ma20 && disparate20 < 97.0) {
     return {
-      shortBadge: '🔵 역배열 / 조정',
-      badgeStyle: 'bg-blue-50 dark:bg-blue-950/60 text-blue-600 dark:text-blue-400 border-blue-200 dark:border-blue-800/60 font-bold',
+      shortBadge: '🔴 역배열',
+      badgeStyle: 'bg-rose-50 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400 border-rose-200 dark:border-rose-800/60 font-bold',
     };
   }
 
+  // 5. ⚪ 이평선 수렴 (횡보 / 에너지 축적 관망 구간)
   return {
     shortBadge: '⚪ 이평선 수렴',
     badgeStyle: 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-300 dark:border-slate-700',

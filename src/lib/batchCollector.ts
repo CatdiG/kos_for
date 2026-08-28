@@ -1,4 +1,4 @@
-import { TOP_50_STOCKS, getStockName, resolveMarketType } from './mockData';
+import { TOP_50_STOCKS, getStockName, resolveMarketType, getSettledAsOfDateLabel, resolveStockPriceAndChange } from './mockData';
 import { fetchKisInvestorTrend, fetchKisProgramTrade, fetchKisForeignInstitutionRanking, assertNoMockLeak, getKisAccessToken, getEvaluatedCreditStatus, kvGetJson, kvSetJson, computeStatusBadgeFromTrend } from './kisApi';
 import { InvestorRankingResponse, RankingItem, RankingType, RankingDirection, RankingPeriod, MarketType } from './types';
 import { saveRawDailyDataToSupabase, RawDailyInvestorRecord } from './supabase';
@@ -116,16 +116,7 @@ async function fetchStockDataWithRetry(symbol: string): Promise<{
         const pensionDate = pensionValid.stck_bsop_date || pensionValid.date || '';
         let pensionAsOfDateLabel = '당일 가집계';
         if (isPensionFallback) {
-          if (pensionDate) {
-            const cleaned = pensionDate.replace(/-/g, '');
-            if (cleaned.length === 8) {
-              pensionAsOfDateLabel = `(${parseInt(cleaned.substring(4, 6), 10)}/${parseInt(cleaned.substring(6, 8), 10)} 기준)`;
-            } else {
-              pensionAsOfDateLabel = '(8/27 기준)';
-            }
-          } else {
-            pensionAsOfDateLabel = '(8/27 기준)';
-          }
+          pensionAsOfDateLabel = getSettledAsOfDateLabel(pensionDate);
         }
 
         return {
@@ -186,7 +177,7 @@ export async function runTop50BatchCollector(force: boolean = false, taskKey: st
     const rawDailyRecords: RawDailyInvestorRecord[] = [];
 
     try {
-      console.log(`📌 [TRACE 2-BEFORE-KIS] KIS API 기관 종합 매매 순위 호출 시작...`);
+      console.log(`📌 [TRACE 2-BEFORE-KIS] KIS API 기관 매매 랭킹 단독 수집 시작...`);
       const organRes = await fetchKisForeignInstitutionRanking('organ', 'buy', '1d', 'ALL', 50).catch((err) => {
         console.error(`📌 [TRACE 2-ERROR-KIS] KIS API 기관 매매 순위 호출 실패:`, err);
         return null;
@@ -194,31 +185,32 @@ export async function runTop50BatchCollector(force: boolean = false, taskKey: st
       console.log(`📌 [TRACE 2-AFTER-KIS] KIS API 기관 매매 순위 호출 완료: count=${organRes?.list?.length || 0}`);
 
       if (organRes && Array.isArray(organRes.list) && organRes.list.length > 0) {
-        organRes.list.forEach((item, idx) => {
-          const pensionAmt = Math.round(item.netBuyAmt * 0.38);
-          const pensionQty = Math.round(item.netBuyQty * 0.38);
-          const programAmt = Math.round(item.netBuyAmt * 0.85);
-          const programQty = Math.round(item.netBuyQty * 0.85);
+        for (const item of organRes.list) {
+          const trendRes = getCached5dTrend(item.symbol);
+          const latestTrend = trendRes?.trend?.slice(-1)[0];
+
+          const pensionAmt = latestTrend?.pensionNetBuyAmt || item.netBuyAmt;
+          const pensionQty = latestTrend?.pensionNetBuyQty || item.netBuyQty;
 
           pensionBuyList.push({
             ...item,
-            rank: idx + 1,
             netBuyAmt: pensionAmt,
             netBuyQty: pensionQty,
             netBuyAmtEok: Number((pensionAmt / 100).toFixed(1)),
+            asOfDateLabel: getSettledAsOfDateLabel(latestTrend?.stck_bsop_date || latestTrend?.date),
           });
 
           programBuyList.push({
             ...item,
-            rank: idx + 1,
-            netBuyAmt: programAmt,
-            netBuyQty: programQty,
-            netBuyAmtEok: Number((programAmt / 100).toFixed(1)),
+            netBuyAmt: item.netBuyAmt,
+            netBuyQty: item.netBuyQty,
+            netBuyAmtEok: Number((item.netBuyAmt / 100).toFixed(1)),
+            asOfDateLabel: getSettledAsOfDateLabel(),
           });
-        });
+        }
       }
 
-      console.log(`📌 [TRACE 3-PRE-PURGE] 수집된 원본 개수: pensionRawCount=${pensionBuyList.length}, programRawCount=${programBuyList.length}`);
+      console.log(`📌 [TRACE 3-PRE-PURGE] KIS 수집 완료: pensionCount=${pensionBuyList.length}, programCount=${programBuyList.length}`);
 
       await buildAndCacheRankings('pension', pensionBuyList, now);
       await buildAndCacheRankings('program', programBuyList, now);

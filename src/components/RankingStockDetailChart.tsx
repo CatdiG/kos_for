@@ -184,7 +184,7 @@ const CustomCandleTooltip = ({ active, payload, label }: any) => {
         <div className="flex justify-between items-center gap-3">
           <span className="text-slate-500 dark:text-slate-400 font-medium">🟢 추세:</span>
           <span className="font-bold text-emerald-600 dark:text-emerald-400">
-            {dataPoint.trendStatus || '정배열 초입'}
+            {dataPoint.trendStatus || '정배열'}
           </span>
         </div>
 
@@ -734,12 +734,12 @@ function calculateUltraTightKrxPriceAxis(minRaw: number, maxRaw: number, targetT
 
                 {/* 2. 1차 지지 (20일선) */}
                 <div className="flex items-center justify-center text-center text-orange-600 dark:text-orange-400 border-r border-slate-200/80 dark:border-slate-800/80 px-1 shrink-0 whitespace-nowrap">
-                  <span>🟠 1차지: <strong className="font-bold font-mono text-[11px] sm:text-xs">{(disparateInfo?.support1Price || 0) > 0 ? `${(disparateInfo?.support1Price || 0).toLocaleString()}원` : '-'}</strong></span>
+                  <span>🟠 <span className="hidden sm:inline">1차지지</span><span className="sm:hidden">1차</span>: <strong className="font-bold font-mono text-[11px] sm:text-xs">{(disparateInfo?.support1Price || 0) > 0 ? `${(disparateInfo?.support1Price || 0).toLocaleString()}원` : '-'}</strong></span>
                 </div>
 
                 {/* 3. 2차 지지 (전저점) */}
                 <div className="flex items-center justify-center text-center text-purple-600 dark:text-purple-400 border-r border-slate-200/80 dark:border-slate-800/80 px-1 shrink-0 whitespace-nowrap">
-                  <span>🟣 2차지: <strong className="font-bold font-mono text-[11px] sm:text-xs">{(disparateInfo?.recentLowPrice || 0) > 0 ? `${(disparateInfo?.recentLowPrice || 0).toLocaleString()}원` : '-'}</strong></span>
+                  <span>🟣 <span className="hidden sm:inline">2차지지</span><span className="sm:hidden">2차</span>: <strong className="font-bold font-mono text-[11px] sm:text-xs">{(disparateInfo?.recentLowPrice || 0) > 0 ? `${(disparateInfo?.recentLowPrice || 0).toLocaleString()}원` : '-'}</strong></span>
                 </div>
 
                 {/* 4. 침체가 (-5%) */}

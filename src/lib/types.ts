@@ -61,6 +61,7 @@ export interface SupplySummary {
   foreign: InvestorMetricSummary;
   organ: InvestorMetricSummary;
   pension: InvestorMetricSummary;
+  program?: InvestorMetricSummary;
 }
 
 export type TrendPeriod = '5d' | '20d' | '60d';
@@ -101,7 +102,7 @@ export interface InvestorTrendResponse {
 export type MarketType = 'ALL' | 'KOSPI' | 'KOSDAQ';
 export type RankingType = 'foreign' | 'organ' | 'pension' | 'program' | 'overlap' | 'surging' | 'comprehensive';
 export type RankingDirection = 'buy' | 'sell';
-export type RankingPeriod = '1d' | '1w' | '1m';
+export type RankingPeriod = '1d' | '1w' | '1m' | 'consecutive2d' | 'consecutive3d';
 export type SurgingMode = 'fluctuation' | 'volume' | 'amount' | 'overlap' | 'comprehensive';
 
 export interface ScoreBreakdown {

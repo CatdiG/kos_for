@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse, after } from 'next/server';
-import { fetchKisForeignInstitutionRanking, fetchOverlapRankingData, fetchConsecutive3dOverlapRankingData, fetchKisInvestorTrend, getKisAccessTokenWithSource, resolveAndCacheMissingCredits, mergeCreditStatusToRanking, assertNoMockLeak } from '@/lib/kisApi';
+import { fetchKisForeignInstitutionRanking, fetchOverlapRankingData, fetchConsecutive2dOverlapRankingData, fetchConsecutive3dOverlapRankingData, fetchKisInvestorTrend, getKisAccessTokenWithSource, resolveAndCacheMissingCredits, mergeCreditStatusToRanking, assertNoMockLeak } from '@/lib/kisApi';
 import { getBatchRankingData, getBatchRankingDataAsync, runTop50BatchCollector } from '@/lib/batchCollector';
 import { MarketType, RankingDirection, RankingPeriod, RankingType } from '@/lib/types';
 
@@ -22,20 +22,24 @@ export async function GET(request: NextRequest) {
   try {
     let responseData: any;
     if (type === 'overlap') {
-      if (mode === 'consecutive3d' || period === ('3d_consecutive' as any)) {
+      if (mode === 'consecutive2d' || period === 'consecutive2d') {
+        responseData = await fetchConsecutive2dOverlapRankingData(direction, 2, limit, market);
+      } else if (mode === 'consecutive3d' || period === ('3d_consecutive' as any) || period === 'consecutive3d') {
         responseData = await fetchConsecutive3dOverlapRankingData(direction, 2, limit, market);
       } else {
-        responseData = await fetchOverlapRankingData(direction, period, 2, limit, market);
+        responseData = await fetchOverlapRankingData(direction, period as any, 2, limit, market);
       }
     } else if (type === 'foreign' || type === 'organ') {
-      responseData = await fetchKisForeignInstitutionRanking(type, direction, period, market, limit);
+      const reqPeriod = (period === 'consecutive2d' || period === 'consecutive3d') ? '1d' : (period as '1d' | '1w' | '1m');
+      responseData = await fetchKisForeignInstitutionRanking(type, direction, reqPeriod, market, limit);
     } else if (type === 'pension' || type === 'program') {
-      responseData = await getBatchRankingDataAsync(type, direction, period, market, limit);
+      const reqPeriod = (period === 'consecutive2d' || period === 'consecutive3d') ? '1d' : (period as '1d' | '1w' | '1m');
+      responseData = await getBatchRankingDataAsync(type, direction, reqPeriod, market, limit);
       if (responseData && Array.isArray(responseData.list)) {
         responseData.list = await mergeCreditStatusToRanking(responseData.list);
       }
     } else {
-      responseData = await fetchKisForeignInstitutionRanking('foreign', direction, period, market, limit);
+      responseData = await fetchKisForeignInstitutionRanking('foreign', direction, '1d', market, limit);
     }
 
     assertNoMockLeak(responseData);
