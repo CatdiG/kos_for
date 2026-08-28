@@ -1037,7 +1037,7 @@ export async function mergeCreditStatusToRanking(items: RankingItem[]): Promise<
     const stillMissing: string[] = [];
 
     // 3a. Supabase DB Check (Instant DB Read)
-    const supabaseMap = await fetchCreditBatchFromSupabase(missingSymbols).catch(() => ({}));
+    const supabaseMap: Record<string, boolean> = await fetchCreditBatchFromSupabase(missingSymbols).catch(() => ({} as Record<string, boolean>));
     missingSymbols.forEach((sym) => {
       if (supabaseMap && supabaseMap[sym] !== undefined) {
         creditStatusCache.set(sym, { isCredit: supabaseMap[sym], timestamp: Date.now() });
@@ -1049,7 +1049,7 @@ export async function mergeCreditStatusToRanking(items: RankingItem[]): Promise<
     // 3b. Redis fallback check if still missing
     if (stillMissing.length > 0) {
       const keys = stillMissing.map((sym) => `kv_credit_${sym}`);
-      const redisMap = await kvMgetJson<boolean>(keys).catch(() => ({}));
+      const redisMap: Record<string, boolean | null> = await kvMgetJson<boolean>(keys).catch(() => ({} as Record<string, boolean | null>));
       stillMissing.forEach((sym) => {
         const val = redisMap[`kv_credit_${sym}`];
         if (val !== null && val !== undefined) {
@@ -1550,7 +1550,7 @@ async function executeAsyncOverlapCalculation(
   minOverlap: number,
   market: MarketType,
   masterCacheKey: string
-) {
+): Promise<InvestorRankingResponse> {
   try {
     const { getBatchRankingData, getCached5dTrend } = await import('./batchCollector');
     const candidateLimit = 50;
@@ -1707,7 +1707,7 @@ async function executeAsyncOverlapCalculation(
     const hours = String(dateObj.getHours()).padStart(2, '0');
     const minutes = String(dateObj.getMinutes()).padStart(2, '0');
     return {
-      type: 'overlap',
+      type: 'overlap' as RankingType,
       direction,
       period,
       list: [],
