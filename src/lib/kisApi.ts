@@ -1747,20 +1747,38 @@ export async function fetchConsecutive3dOverlapRankingData(
     { type: 'program', label: '프로그램' },
   ];
 
+  // Fetch 50-stock trend data with parallel chunking (5 stocks at a time) to stay well under Vercel 10s timeout
+  const CHUNK_SIZE = 5;
+  const stockTrendMap = new Map<string, any>();
+
+  for (let i = 0; i < targetStocks.length; i += CHUNK_SIZE) {
+    const chunk = targetStocks.slice(i, i + CHUNK_SIZE);
+    const chunkResults = await Promise.all(
+      chunk.map(async (stock) => {
+        let trendRes = getCached5dTrend(stock.symbol);
+        if (!trendRes || !trendRes.trend || trendRes.trend.length === 0 || trendRes.isMock) {
+          try {
+            const realRes = await fetchKisInvestorTrend(stock.symbol, '20d');
+            if (realRes && realRes.trend && realRes.trend.length > 0) {
+              trendRes = realRes;
+            }
+          } catch {
+            // fallback
+          }
+        }
+        return { symbol: stock.symbol, trendRes };
+      })
+    );
+
+    chunkResults.forEach((res) => {
+      if (res.trendRes) stockTrendMap.set(res.symbol, res.trendRes);
+    });
+  }
+
   for (let i = 0; i < targetStocks.length; i++) {
     const stock = targetStocks[i];
     try {
-      let trendRes = getCached5dTrend(stock.symbol);
-      if (!trendRes || !trendRes.trend || trendRes.trend.length === 0 || trendRes.isMock) {
-        try {
-          const realRes = await fetchKisInvestorTrend(stock.symbol, '20d');
-          if (realRes && realRes.trend && realRes.trend.length > 0) {
-            trendRes = realRes;
-          }
-        } catch {
-          // fallback to seed if fetch fails
-        }
-      }
+      const trendRes = stockTrendMap.get(stock.symbol);
       if (!trendRes || !trendRes.trend) continue;
       const trend = trendRes?.trend || [];
 
