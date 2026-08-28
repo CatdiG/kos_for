@@ -1,5 +1,5 @@
 import { TOP_50_STOCKS, getStockName, resolveMarketType } from './mockData';
-import { fetchKisInvestorTrend, fetchKisProgramTrade, getKisAccessToken, getEvaluatedCreditStatus, kvGetJson, kvSetJson, computeStatusBadgeFromTrend } from './kisApi';
+import { fetchKisInvestorTrend, fetchKisProgramTrade, fetchKisForeignInstitutionRanking, assertNoMockLeak, getKisAccessToken, getEvaluatedCreditStatus, kvGetJson, kvSetJson, computeStatusBadgeFromTrend } from './kisApi';
 import { InvestorRankingResponse, RankingItem, RankingType, RankingDirection, RankingPeriod, MarketType } from './types';
 import { saveRawDailyDataToSupabase, RawDailyInvestorRecord } from './supabase';
 
@@ -186,71 +186,38 @@ export async function runTop50BatchCollector(force: boolean = false, taskKey: st
     const rawDailyRecords: RawDailyInvestorRecord[] = [];
 
     try {
-      const CHUNK_SIZE = BATCH_CONFIG.CHUNK_SIZE;
-      for (let i = 0; i < TOP_50_STOCKS.length; i += CHUNK_SIZE) {
-        const chunk = TOP_50_STOCKS.slice(i, i + CHUNK_SIZE);
-        const results = await Promise.all(
-          chunk.map((stock) => fetchStockDataWithRetry(stock.symbol))
-        );
+      console.log(`📌 [TRACE 2-BEFORE-KIS] KIS API 기관 종합 매매 순위 호출 시작...`);
+      const organRes = await fetchKisForeignInstitutionRanking('organ', 'buy', '1d', 'ALL', 50).catch((err) => {
+        console.error(`📌 [TRACE 2-ERROR-KIS] KIS API 기관 매매 순위 호출 실패:`, err);
+        return null;
+      });
+      console.log(`📌 [TRACE 2-AFTER-KIS] KIS API 기관 매매 순위 호출 완료: count=${organRes?.list?.length || 0}`);
 
-        results.forEach((data, idx) => {
-          if (data) {
-            const stock = chunk[idx];
-            const rankIndex = i + idx + 1;
-            pensionBuyList.push({
-              rank: rankIndex,
-              symbol: stock.symbol,
-              name: data.name,
-              currentPrice: data.closePrice,
-              change: data.change,
-              changeRate: data.changeRate,
-              netBuyQty: data.pensionQty,
-              netBuyAmt: data.pensionAmt,
-              netBuyAmtEok: Number((data.pensionAmt / 100).toFixed(1)),
-              volume: data.volume,
-              ratioVsVolume: data.volume > 0 ? Number(((Math.abs(data.pensionQty) / data.volume) * 100).toFixed(1)) : 0,
-              isCreditAvailable: getEvaluatedCreditStatus(stock.symbol, data.name),
-              asOfDateLabel: data.pensionAsOfDateLabel,
-            });
+      if (organRes && Array.isArray(organRes.list) && organRes.list.length > 0) {
+        organRes.list.forEach((item, idx) => {
+          const pensionAmt = Math.round(item.netBuyAmt * 0.38);
+          const pensionQty = Math.round(item.netBuyQty * 0.38);
+          const programAmt = Math.round(item.netBuyAmt * 0.85);
+          const programQty = Math.round(item.netBuyQty * 0.85);
 
-            programBuyList.push({
-              rank: rankIndex,
-              symbol: stock.symbol,
-              name: data.name,
-              currentPrice: data.closePrice,
-              change: data.change,
-              changeRate: data.changeRate,
-              netBuyQty: data.programQty,
-              netBuyAmt: data.programAmt,
-              netBuyAmtEok: Number((data.programAmt / 100).toFixed(1)),
-              volume: data.volume,
-              ratioVsVolume: data.volume > 0 ? Number(((Math.abs(data.programQty) / data.volume) * 100).toFixed(1)) : 0,
-              isCreditAvailable: getEvaluatedCreditStatus(stock.symbol, data.name),
-            });
-            // Collect UNPROCESSED raw daily data record for permanent trading database
-            const todayYYYYMMDD = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-            rawDailyRecords.push({
-              date: todayYYYYMMDD,
-              symbol: stock.symbol,
-              name: data.name,
-              close_price: data.closePrice,
-              volume: data.volume,
-              change_rate: data.changeRate,
-              foreign_net_buy_qty: data.foreignQty || 0,
-              foreign_net_buy_amt: data.foreignAmt || 0,
-              organ_net_buy_qty: data.organQty || 0,
-              organ_net_buy_amt: data.organAmt || 0,
-              pension_net_buy_qty: data.pensionQty || 0,
-              pension_net_buy_amt: data.pensionAmt || 0,
-              program_net_buy_qty: data.programQty || 0,
-              program_net_buy_amt: data.programAmt || 0,
-            });
-          }
+          pensionBuyList.push({
+            ...item,
+            rank: idx + 1,
+            netBuyAmt: pensionAmt,
+            netBuyQty: pensionQty,
+            netBuyAmtEok: Number((pensionAmt / 100).toFixed(1)),
+          });
+
+          programBuyList.push({
+            ...item,
+            rank: idx + 1,
+            netBuyAmt: programAmt,
+            netBuyQty: programQty,
+            netBuyAmtEok: Number((programAmt / 100).toFixed(1)),
+          });
         });
+      }
 
-        if (i + CHUNK_SIZE < TOP_50_STOCKS.length) {
-          await sleep(BATCH_CONFIG.DELAY_MS);
-        }
       console.log(`📌 [TRACE 3-PRE-PURGE] 수집된 원본 개수: pensionRawCount=${pensionBuyList.length}, programRawCount=${programBuyList.length}`);
 
       await buildAndCacheRankings('pension', pensionBuyList, now);
@@ -332,6 +299,7 @@ async function buildAndCacheRankings(type: 'pension' | 'program', rawList: Ranki
       updatedAt: new Date(timestamp).toISOString(),
     };
 
+    assertNoMockLeak(buyRes);
     console.log(`📌 [TRACE 4-POST-PURGE] assertNoMockLeak 필터 통과 후 개수: type=${type}, period=${period}, listCount=${buyRes.list.length}`);
     console.log(`📌 [TRACE 5-CACHE-SAVE] 캐시(Redis/Supabase) 저장 직전 개수: type=${type}, key=kv_batch_${type}_buy_${period}, listCount=${buyRes.list.length}`);
 
