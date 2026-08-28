@@ -2114,31 +2114,30 @@ async function executeKisSurgingStocksFetch(
       url = `${baseUrl}/uapi/domestic-stock/v1/quotations/volume-rank?FID_COND_MRKT_DIV_CODE=J&FID_COND_SCR_DIV_CODE=20171&FID_INPUT_ISCD=${iscdParam}&FID_DIV_CLS_CODE=0&FID_BLNG_CLS_CODE=${blngCode}&FID_TRGT_CLS_CODE=111111111&FID_TRGT_EXLS_CLS_CODE=000000000&FID_INPUT_PRICE_1=0&FID_INPUT_PRICE_2=0&FID_VOL_CNT=0&FID_INPUT_CNT_1=${offset}`;
     }
 
-    await enforceRateLimit();
-    const res = await fetch(url, {
-      method: 'GET',
-      headers: {
-        'content-type': 'application/json; charset=utf-8',
-        authorization: `Bearer ${token}`,
-        appkey: appKey,
-        appsecret: appSecret,
-        tr_id: trId,
-        custtype: 'P',
-      },
-      cache: 'no-store',
-      signal: AbortSignal.timeout(4000),
-    });
+    try {
+      await enforceRateLimit();
+      const res = await fetch(url, {
+        method: 'GET',
+        headers: {
+          'content-type': 'application/json; charset=utf-8',
+          authorization: `Bearer ${token}`,
+          appkey: appKey,
+          appsecret: appSecret,
+          tr_id: trId,
+          custtype: 'P',
+        },
+        cache: 'no-store',
+        signal: AbortSignal.timeout(3500),
+      });
 
-    if (res.ok) {
-      const json = await res.json();
-      if (json.rt_cd === '0' && Array.isArray(json.output)) {
-        rawOutputs.push(...json.output);
-      } else if (json.msg_cd === 'EGW00201' || json.msg1?.includes('초과')) {
-        throw new Error(`[KIS Surging Error] 500 ${JSON.stringify({ msg1: json.msg1, msg_cd: json.msg_cd })}`);
+      if (res.ok) {
+        const json = await res.json();
+        if (json.rt_cd === '0' && Array.isArray(json.output)) {
+          rawOutputs.push(...json.output);
+        }
       }
-    } else {
-      const text = await res.text();
-      throw new Error(`[KIS Surging Error] ${res.status} ${text}`);
+    } catch (fetchErr) {
+      console.warn('[executeKisSurgingStocksFetch Fetch Timeout/Error]', fetchErr);
     }
   }
 
