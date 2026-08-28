@@ -29,15 +29,9 @@ export async function GET(request: NextRequest) {
       } else {
         responseData = await fetchOverlapRankingData(direction, period as any, 2, limit, market);
       }
-    } else if (type === 'foreign' || type === 'organ') {
+    } else if (type === 'foreign' || type === 'organ' || type === 'pension' || type === 'program') {
       const reqPeriod = (period === 'consecutive2d' || period === 'consecutive3d') ? '1d' : (period as '1d' | '1w' | '1m');
       responseData = await fetchKisForeignInstitutionRanking(type, direction, reqPeriod, market, limit);
-    } else if (type === 'pension' || type === 'program') {
-      const reqPeriod = (period === 'consecutive2d' || period === 'consecutive3d') ? '1d' : (period as '1d' | '1w' | '1m');
-      responseData = await getBatchRankingDataAsync(type, direction, reqPeriod, market, limit);
-      if (responseData && Array.isArray(responseData.list)) {
-        responseData.list = await mergeCreditStatusToRanking(responseData.list);
-      }
     } else {
       responseData = await fetchKisForeignInstitutionRanking('foreign', direction, '1d', market, limit);
     }

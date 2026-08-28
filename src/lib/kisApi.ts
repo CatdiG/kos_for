@@ -1160,7 +1160,7 @@ export async function resolveAndCacheMissingCredits(symbols: string[]): Promise<
 const rankingCacheStore = new Map<string, InvestorRankingResponse>();
 
 export async function fetchKisForeignInstitutionRanking(
-  type: 'foreign' | 'organ' = 'foreign',
+  type: 'foreign' | 'organ' | 'pension' | 'program' = 'foreign',
   direction: 'buy' | 'sell' = 'buy',
   period: '1d' | '1w' | '1m' = '1d',
   market: MarketType = 'ALL',
@@ -1216,7 +1216,7 @@ export async function fetchKisForeignInstitutionRanking(
 }
 
 async function executeKisForeignInstitutionRankingFetch(
-  type: 'foreign' | 'organ' = 'foreign',
+  type: 'foreign' | 'organ' | 'pension' | 'program' = 'foreign',
   direction: 'buy' | 'sell' = 'buy',
   period: '1d' | '1w' | '1m' = '1d',
   market: MarketType = 'ALL',
@@ -1236,7 +1236,7 @@ async function executeKisForeignInstitutionRankingFetch(
     throw new Error(`[KIS API 인증 오류] ${detail}`);
   }
 
-  const etcClsCode = type === 'foreign' ? '1' : '2';
+  const etcClsCode = type === 'pension' ? '5' : type === 'foreign' ? '1' : '2';
   const rankSortClsCode = direction === 'buy' ? '0' : '1';
   const divClsCode = '1';
 
@@ -1393,7 +1393,7 @@ async function executeKisForeignInstitutionRankingFetch(
 
 async function enrichRankingWithRawInvestorData(
   list: RankingItem[],
-  type: 'foreign' | 'organ',
+  type: 'foreign' | 'organ' | 'pension' | 'program',
   direction: 'buy' | 'sell',
   period: RankingPeriod = '1d'
 ) {
