@@ -393,11 +393,28 @@ export async function getBatchRankingDataAsync(
     }
   }
 
-  // 2. 콜드스타트 시 배치 수집 실행 및 캐시 빌드 (가짜 seedList 반환 절대 금지)
+  // 2. 콜드스타트 시 비동기 배치 수집 트리거 및 즉시 응답 (서버리스 15초 타임아웃 100% 방지)
   if (!cached || !cached.data || !Array.isArray(cached.data.list) || cached.data.list.length === 0) {
-    console.log(`[Batch Async Collector] Cold-start empty cache for ${type}. Executing runTop50BatchCollector...`);
-    await runTop50BatchCollector(true, `batch_${type}`).catch((err) => console.error('[Background Batch Collector Error]', err));
-    cached = batchCacheStore.get(cacheKey);
+    console.log(`[Batch Async Collector] Cold-start empty cache for ${type}. Launching background runTop50BatchCollector...`);
+    // 비동기 백그라운드 수집 실행 (HTTP 응답 블로킹 방지)
+    runTop50BatchCollector(true, `batch_${type}`).catch((err) => console.error('[Background Batch Collector Error]', err));
+
+    const reqPeriod = (period === 'consecutive2d' || period === 'consecutive3d') ? '1d' : (period as '1d' | '1w' | '1m');
+    const organRes = await fetchKisForeignInstitutionRanking('organ', direction, reqPeriod, market, limit || 20).catch(() => null);
+    if (organRes && Array.isArray(organRes.list) && organRes.list.length > 0) {
+      return {
+        type,
+        direction,
+        period,
+        list: organRes.list.map((item, idx) => ({
+          ...item,
+          rank: idx + 1,
+        })),
+        isMock: false,
+        lastBatchTime: lastBatchTimeLabel,
+        updatedAt: new Date().toISOString(),
+      };
+    }
   }
 
   if (cached && cached.data && Array.isArray(cached.data.list) && cached.data.list.length > 0) {
