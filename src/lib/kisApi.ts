@@ -594,7 +594,7 @@ async function executeKisInvestorTrendFetch(
 
   const trend: InvestorTrendDay[] = fullDailyItems.map((item: any) => {
     const dateStr = item.stck_bsop_date || item.bsop_date || '';
-    const invItem = investorMap.get(dateStr) || {};
+    const invItem = (item && (item.frgn_ntby_tr_pbmn !== undefined || item.orgn_ntby_tr_pbmn !== undefined || item.prnt_ntby_tr_pbmn !== undefined)) ? item : (investorMap.get(dateStr) || item || {});
 
     let openPrice = parseInt(item.stck_oprc || '0', 10);
     let highPrice = parseInt(item.stck_hgpr || '0', 10);
@@ -636,15 +636,10 @@ async function executeKisInvestorTrendFetch(
       organQty = parseInt(invItem.orgn_ntby_qty || invItem.orgn_ntby_vol || '0', 10);
       organAmt = parseInt(invItem.orgn_ntby_tr_pbmn || invItem.orgn_ntby_amt || '0', 10);
 
-      const pnsnRawQty = invItem.pnsn_ntby_qty || invItem.pnsn_ntby_vol;
-      const pnsnRawAmt = invItem.pnsn_ntby_tr_pbmn || invItem.pnsn_ntby_amt;
-      if (pnsnRawAmt !== undefined && pnsnRawAmt !== null && pnsnRawAmt !== '' && String(pnsnRawAmt) !== '0') {
-        pensionQty = parseInt(pnsnRawQty || '0', 10);
-        pensionAmt = parseInt(pnsnRawAmt || '0', 10);
-      } else {
-        pensionQty = Math.round(organQty * 0.38);
-        pensionAmt = Math.round(organAmt * 0.38);
-      }
+      const pnsnRawQty = invItem.pnsn_ntby_qty || invItem.pnsn_ntby_vol || invItem.prnt_ntby_qty || invItem.prnt_ntby_vol;
+      const pnsnRawAmt = invItem.pnsn_ntby_tr_pbmn || invItem.pnsn_ntby_amt || invItem.prnt_ntby_tr_pbmn || invItem.prnt_ntby_amt;
+      pensionQty = parseInt(pnsnRawQty || '0', 10);
+      pensionAmt = parseInt(pnsnRawAmt || '0', 10);
     }
 
     cumForeign += foreignAmt;
