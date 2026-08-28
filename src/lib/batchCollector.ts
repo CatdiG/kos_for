@@ -5,10 +5,10 @@ import { saveRawDailyDataToSupabase, RawDailyInvestorRecord } from './supabase';
 
 // Configurable Batch Parameters
 export const BATCH_CONFIG = {
-  DELAY_MS: 50,         // 청크 간 딜레이 시간 (50ms)
-  CHUNK_SIZE: 25,       // 25개 종목 병렬 청크 수집 (3초 내 완료)
-  MAX_RETRIES: 2,       // 실패 시 최대 2회 재시도
-  RETRY_DELAY_MS: 200,  // 재시도 대기 시간 (200ms)
+  DELAY_MS: 10,         // 청크 간 딜레이 시간 (10ms)
+  CHUNK_SIZE: 10,       // 10개 종목 병렬 청크 수집 (1.5초 내 완료)
+  MAX_RETRIES: 1,       // 1회 수집 (서버리스 타임아웃 방지)
+  RETRY_DELAY_MS: 50,   // 재시도 대기 시간 (50ms)
   MIN_INTERVAL_MS: 5 * 60 * 1000, // 최소 실행 간격 (5분)
 };
 
