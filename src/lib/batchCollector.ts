@@ -172,8 +172,9 @@ export async function runTop50BatchCollector(force: boolean = false, taskKey: st
       console.log(`📌 [TRACE 2-START-CHUNK-COLLECT] TOP 30 종목 연기금/프로그램 실데이터 개별 수집 시작...`);
       const targetStocks = TOP_50_STOCKS.slice(0, 30);
 
-      for (let i = 0; i < targetStocks.length; i += 15) {
-        const chunk = targetStocks.slice(i, i + 15);
+      const CHUNK_SIZE = 5;
+      for (let i = 0; i < targetStocks.length; i += CHUNK_SIZE) {
+        const chunk = targetStocks.slice(i, i + CHUNK_SIZE);
         const chunkResults = await Promise.all(
           chunk.map((s) => fetchStockDataWithRetry(s.symbol))
         );
@@ -231,8 +232,8 @@ export async function runTop50BatchCollector(force: boolean = false, taskKey: st
             });
           }
         }
-        if (i + BATCH_CONFIG.CHUNK_SIZE < TOP_50_STOCKS.length) {
-          await sleep(BATCH_CONFIG.DELAY_MS);
+        if (i + CHUNK_SIZE < targetStocks.length) {
+          await sleep(150);
         }
       }
 
