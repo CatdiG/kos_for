@@ -96,21 +96,13 @@ async function fetchStockDataWithRetry(symbol: string): Promise<{
           ? latestTrend
           : ([...trendList].reverse().find((t) => t.pensionNetBuyAmt !== 0) || latestTrend);
 
-        let pensionAmt = latestTrend.pensionNetBuyAmt !== 0
+        const pensionAmt = latestTrend.pensionNetBuyAmt !== 0
           ? latestTrend.pensionNetBuyAmt
           : (pensionValid.pensionNetBuyAmt || 0);
 
-        if (pensionAmt === 0 && latestTrend.organNetBuyAmt) {
-          pensionAmt = Math.round(latestTrend.organNetBuyAmt * 0.38);
-        }
-
-        let pensionQty = latestTrend.pensionNetBuyQty !== 0
+        const pensionQty = latestTrend.pensionNetBuyQty !== 0
           ? latestTrend.pensionNetBuyQty
           : (pensionValid.pensionNetBuyQty || 0);
-
-        if (pensionQty === 0 && latestTrend.organNetBuyQty) {
-          pensionQty = Math.round(latestTrend.organNetBuyQty * 0.38);
-        }
 
         const isPensionFallback = latestTrend.pensionNetBuyAmt === 0;
         const pensionDate = pensionValid.stck_bsop_date || pensionValid.date || '';
@@ -177,40 +169,73 @@ export async function runTop50BatchCollector(force: boolean = false, taskKey: st
     const rawDailyRecords: RawDailyInvestorRecord[] = [];
 
     try {
-      console.log(`📌 [TRACE 2-BEFORE-KIS] KIS API 기관 매매 랭킹 단독 수집 시작...`);
-      const organRes = await fetchKisForeignInstitutionRanking('organ', 'buy', '1d', 'ALL', 50).catch((err) => {
-        console.error(`📌 [TRACE 2-ERROR-KIS] KIS API 기관 매매 순위 호출 실패:`, err);
-        return null;
-      });
-      console.log(`📌 [TRACE 2-AFTER-KIS] KIS API 기관 매매 순위 호출 완료: count=${organRes?.list?.length || 0}`);
+      console.log(`📌 [TRACE 2-START-CHUNK-COLLECT] TOP 50 종목 연기금/프로그램 실데이터 개별 수집 시작...`);
 
-      if (organRes && Array.isArray(organRes.list) && organRes.list.length > 0) {
-        for (const item of organRes.list) {
-          const trendRes = getCached5dTrend(item.symbol);
-          const latestTrend = trendRes?.trend?.slice(-1)[0];
+      for (let i = 0; i < TOP_50_STOCKS.length; i += BATCH_CONFIG.CHUNK_SIZE) {
+        const chunk = TOP_50_STOCKS.slice(i, i + BATCH_CONFIG.CHUNK_SIZE);
+        const chunkResults = await Promise.all(
+          chunk.map((s) => fetchStockDataWithRetry(s.symbol))
+        );
 
-          const pensionAmt = latestTrend?.pensionNetBuyAmt || item.netBuyAmt;
-          const pensionQty = latestTrend?.pensionNetBuyQty || item.netBuyQty;
+        for (let j = 0; j < chunk.length; j++) {
+          const res = chunkResults[j];
+          const s = chunk[j];
+          if (res) {
+            const baseItem: RankingItem = {
+              rank: 0,
+              symbol: s.symbol,
+              name: res.name,
+              currentPrice: res.closePrice,
+              change: res.change,
+              changeRate: res.changeRate,
+              netBuyQty: 0,
+              netBuyAmt: 0,
+              netBuyAmtEok: 0,
+              volume: res.volume,
+              ratioVsVolume: 0,
+              isCreditAvailable: true,
+            };
 
-          pensionBuyList.push({
-            ...item,
-            netBuyAmt: pensionAmt,
-            netBuyQty: pensionQty,
-            netBuyAmtEok: Number((pensionAmt / 100).toFixed(1)),
-            asOfDateLabel: getSettledAsOfDateLabel(latestTrend?.stck_bsop_date || latestTrend?.date),
-          });
+            pensionBuyList.push({
+              ...baseItem,
+              netBuyAmt: res.pensionAmt,
+              netBuyQty: res.pensionQty,
+              netBuyAmtEok: Number((res.pensionAmt / 100).toFixed(1)),
+              asOfDateLabel: res.pensionAsOfDateLabel || '당일 가집계',
+            });
 
-          programBuyList.push({
-            ...item,
-            netBuyAmt: item.netBuyAmt,
-            netBuyQty: item.netBuyQty,
-            netBuyAmtEok: Number((item.netBuyAmt / 100).toFixed(1)),
-            asOfDateLabel: getSettledAsOfDateLabel(),
-          });
+            programBuyList.push({
+              ...baseItem,
+              netBuyAmt: res.programAmt,
+              netBuyQty: res.programQty,
+              netBuyAmtEok: Number((res.programAmt / 100).toFixed(1)),
+              asOfDateLabel: '당일 가집계',
+            });
+
+            rawDailyRecords.push({
+              date: new Date().toISOString().substring(0, 10).replace(/-/g, ''),
+              symbol: s.symbol,
+              name: res.name,
+              close_price: res.closePrice,
+              volume: res.volume,
+              change_rate: res.changeRate,
+              foreign_net_buy_amt: res.foreignAmt || 0,
+              foreign_net_buy_qty: res.foreignQty || 0,
+              organ_net_buy_amt: res.organAmt || 0,
+              organ_net_buy_qty: res.organQty || 0,
+              pension_net_buy_amt: res.pensionAmt,
+              pension_net_buy_qty: res.pensionQty,
+              program_net_buy_amt: res.programAmt,
+              program_net_buy_qty: res.programQty,
+            });
+          }
+        }
+        if (i + BATCH_CONFIG.CHUNK_SIZE < TOP_50_STOCKS.length) {
+          await sleep(BATCH_CONFIG.DELAY_MS);
         }
       }
 
-      console.log(`📌 [TRACE 3-PRE-PURGE] KIS 수집 완료: pensionCount=${pensionBuyList.length}, programCount=${programBuyList.length}`);
+      console.log(`📌 [TRACE 3-PRE-PURGE] KIS 실수급 수집 완료: pensionCount=${pensionBuyList.length}, programCount=${programBuyList.length}`);
 
       await buildAndCacheRankings('pension', pensionBuyList, now);
       await buildAndCacheRankings('program', programBuyList, now);
