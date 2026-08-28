@@ -369,11 +369,13 @@ export async function fetchKisInvestorTrend(
   }
 
   try {
-    const response = await kisQueue.enqueue(
-      () => fetchWithRetry(() => executeKisInvestorTrendFetch(symbol, period, fastOnly)),
-      priority,
-      `trend-${symbol}-${period}`
-    );
+    const response = fastOnly
+      ? await executeKisInvestorTrendFetch(symbol, period, true)
+      : await kisQueue.enqueue(
+          () => fetchWithRetry(() => executeKisInvestorTrendFetch(symbol, period, fastOnly)),
+          priority,
+          `trend-${symbol}-${period}`
+        );
 
     if (response) {
       trendDetailCache.set(cacheKey, { data: response, timestamp: Date.now() });
@@ -408,7 +410,9 @@ async function executeKisInvestorTrendFetch(
     throw new Error(`[KIS API 인증 오류] ${detail}`);
   }
 
-  await enforceRateLimit();
+  if (!fastOnly) {
+    await enforceRateLimit();
+  }
   const today = new Date();
   const endDate = today.toISOString().slice(0, 10).replace(/-/g, '');
   const startDateObj = new Date(today);
