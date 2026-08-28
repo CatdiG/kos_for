@@ -1236,7 +1236,7 @@ async function executeKisForeignInstitutionRankingFetch(
     throw new Error(`[KIS API 인증 오류] ${detail}`);
   }
 
-  const etcClsCode = type === 'pension' ? '5' : type === 'foreign' ? '1' : '2';
+  const etcClsCode = type === 'foreign' ? '1' : '2';
   const rankSortClsCode = direction === 'buy' ? '0' : '1';
   const divClsCode = '1';
 
