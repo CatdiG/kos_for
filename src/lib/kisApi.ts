@@ -1520,22 +1520,7 @@ export async function fetchOverlapRankingData(
   }
 
   if (!masterData) {
-    const dateObj = new Date();
-    const hours = String(dateObj.getHours()).padStart(2, '0');
-    const minutes = String(dateObj.getMinutes()).padStart(2, '0');
-
-    masterData = {
-      type: 'overlap',
-      direction,
-      period,
-      list: [],
-      isMock: false,
-      lastBatchTime: `${hours}:${minutes} 기준`,
-      updatedAt: dateObj.toISOString(),
-    };
-
-    // Trigger async background calculation (non-blocking)
-    executeAsyncOverlapCalculation(direction, period, minOverlap, market, masterCacheKey).catch(() => null);
+    masterData = await executeAsyncOverlapCalculation(direction, period, minOverlap, market, masterCacheKey);
   }
 
   let list = masterData.list || [];
@@ -1569,15 +1554,16 @@ async function executeAsyncOverlapCalculation(
   masterCacheKey: string
 ) {
   try {
-    const { getBatchRankingDataAsync, getCached5dTrend } = await import('./batchCollector');
+    const { getBatchRankingData, getCached5dTrend } = await import('./batchCollector');
     const candidateLimit = 50;
 
-    const [foreignRes, organRes, pensionRes, programRes] = await Promise.all([
+    const [foreignRes, organRes] = await Promise.all([
       fetchKisForeignInstitutionRanking('foreign', direction, period, market, candidateLimit),
       fetchKisForeignInstitutionRanking('organ', direction, period, market, candidateLimit),
-      getBatchRankingDataAsync('pension', direction, period, market, candidateLimit),
-      getBatchRankingDataAsync('program', direction, period, market, candidateLimit),
     ]);
+
+    const pensionRes = getBatchRankingData('pension', direction, period, market);
+    const programRes = getBatchRankingData('program', direction, period, market);
 
     const map = new Map<
       string,
@@ -1714,8 +1700,21 @@ async function executeAsyncOverlapCalculation(
 
     overlapMemoryCache.set(masterCacheKey, { data: masterData, timestamp: Date.now() });
     await kvSetJson(`kv_${masterCacheKey}`, masterData, 86400).catch(() => null);
+    return masterData;
   } catch (err) {
     console.error('[Async Overlap Error]', err);
+    const dateObj = new Date();
+    const hours = String(dateObj.getHours()).padStart(2, '0');
+    const minutes = String(dateObj.getMinutes()).padStart(2, '0');
+    return {
+      type: 'overlap',
+      direction,
+      period,
+      list: [],
+      isMock: false,
+      lastBatchTime: `${hours}:${minutes} 기준`,
+      updatedAt: dateObj.toISOString(),
+    };
   }
 }
 
