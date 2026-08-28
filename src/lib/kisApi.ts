@@ -767,7 +767,9 @@ async function executeKisInvestorTrendFetch(
     },
   };
 
-  const programTrade = await fetchKisProgramTrade(symbol, token, baseUrl, appKey, appSecret, stockInfo.currentPrice);
+  const programTrade = fastOnly
+    ? { status: 'NEUTRAL' as const, totalNetBuyQty: 0, totalNetBuyAmt: 0, nonArbitrageAmt: 0, arbitrageAmt: 0, ratioVsVolume: 0, asOfDateLabel: '당일 가집계', intradayTrend: [] }
+    : await fetchKisProgramTrade(symbol, token, baseUrl, appKey, appSecret, stockInfo.currentPrice);
 
   return {
     stockInfo,
