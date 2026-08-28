@@ -413,7 +413,7 @@ export async function getBatchRankingDataAsync(
     cached = batchCacheStore.get(cacheKey);
   }
 
-  if (cached && cached.data) {
+  if (cached && cached.data && Array.isArray(cached.data.list) && cached.data.list.length > 0) {
     let list = cached.data.list || [];
     if (market === 'KOSPI') {
       list = list.filter((item) => resolveMarketType(item.symbol) === 'KOSPI');
