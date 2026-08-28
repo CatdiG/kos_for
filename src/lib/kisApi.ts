@@ -1688,26 +1688,17 @@ async function executeAsyncOverlapCalculation(
       return (b.overlapCount || 0) - (a.overlapCount || 0);
     });
 
-    const finalOverlapItems = await Promise.all(
-      overlapItems.map(async (item, index) => {
-        let trendRes = getCached5dTrend(item.symbol);
-        if (!trendRes || !trendRes.trend || trendRes.trend.length < 20) {
-          try {
-            trendRes = await fetchKisInvestorTrend(item.symbol, '20d');
-          } catch {
-            // Keep existing trendRes if fetch failed
-          }
-        }
-        const trendData = trendRes?.trend || [];
-        const statusInfo = computeStatusBadgeFromTrend(trendData);
-        return {
-          ...item,
-          rank: index + 1,
-          statusBadge: statusInfo?.shortBadge || '⚪ 이평선 수렴',
-          statusBadgeStyle: statusInfo?.badgeStyle || 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-300 dark:border-slate-700',
-        };
-      })
-    );
+    const finalOverlapItems = overlapItems.map((item, index) => {
+      const trendRes = getCached5dTrend(item.symbol);
+      const trendData = trendRes?.trend || [];
+      const statusInfo = computeStatusBadgeFromTrend(trendData);
+      return {
+        ...item,
+        rank: index + 1,
+        statusBadge: statusInfo?.shortBadge || '⚪ 이평선 수렴',
+        statusBadgeStyle: statusInfo?.badgeStyle || 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-300 dark:border-slate-700',
+      };
+    });
 
     const mergedList = await mergeCreditStatusToRanking(finalOverlapItems);
 
