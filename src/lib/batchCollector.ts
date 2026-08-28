@@ -172,7 +172,7 @@ export async function runTop50BatchCollector(force: boolean = false, taskKey: st
       console.log(`📌 [TRACE 2-START-CHUNK-COLLECT] TOP 50 종목 연기금/프로그램 실데이터 개별 수집 시작...`);
       const targetStocks = TOP_50_STOCKS;
 
-      const CHUNK_SIZE = 6;
+      const CHUNK_SIZE = 10;
       for (let i = 0; i < targetStocks.length; i += CHUNK_SIZE) {
         const chunk = targetStocks.slice(i, i + CHUNK_SIZE);
         const chunkResults = await Promise.all(

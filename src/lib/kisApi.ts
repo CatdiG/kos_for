@@ -425,7 +425,9 @@ async function executeKisInvestorTrendFetch(
   const dailyChartUrl = `${baseUrl}/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice?FID_COND_MRKT_DIV_CODE=J&FID_INPUT_ISCD=${symbol}&FID_INPUT_DATE_1=${startDate}&FID_INPUT_DATE_2=${endDate}&FID_PERIOD_DIV_CODE=D&FID_ORG_ADJ_PRC=0`;
 
   const json = await fetchWithRetry(async () => {
-    await enforceRateLimit();
+    if (!fastOnly) {
+      await enforceRateLimit();
+    }
     const res = await fetch(url, {
       method: 'GET',
       headers: {
