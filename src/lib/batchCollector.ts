@@ -5,10 +5,10 @@ import { saveRawDailyDataToSupabase, RawDailyInvestorRecord } from './supabase';
 
 // Configurable Batch Parameters
 export const BATCH_CONFIG = {
-  DELAY_MS: 100,        // 청크 간 딜레이 시간 (100ms)
-  CHUNK_SIZE: 5,        // 5개 종목 병렬 청크 수집
+  DELAY_MS: 50,         // 청크 간 딜레이 시간 (50ms)
+  CHUNK_SIZE: 25,       // 25개 종목 병렬 청크 수집 (3초 내 완료)
   MAX_RETRIES: 2,       // 실패 시 최대 2회 재시도
-  RETRY_DELAY_MS: 500,  // 재시도 대기 시간 (500ms)
+  RETRY_DELAY_MS: 200,  // 재시도 대기 시간 (200ms)
   MIN_INTERVAL_MS: 5 * 60 * 1000, // 최소 실행 간격 (5분)
 };
 
@@ -82,7 +82,9 @@ async function fetchStockDataWithRetry(symbol: string): Promise<{
 
   for (let attempt = 1; attempt <= BATCH_CONFIG.MAX_RETRIES; attempt++) {
     try {
+      console.log(`📌 [TRACE 2-BEFORE-KIS] KIS API 수급 추세 호출 직전: symbol=${symbol}`);
       const trendRes = await fetchKisInvestorTrend(symbol, '20d');
+      console.log(`📌 [TRACE 2-AFTER-KIS] KIS API 수급 추세 호출 성공: symbol=${symbol}, trendCount=${trendRes?.trend?.length || 0}`);
       if (trendRes && Array.isArray(trendRes.trend)) {
         trend5dBatchStore.set(symbol, trendRes);
       }
@@ -144,6 +146,7 @@ async function fetchStockDataWithRetry(symbol: string): Promise<{
         };
       }
     } catch (err) {
+      console.error(`📌 [TRACE 2-ERROR-KIS] KIS API 수급 추세 호출 실패: symbol=${symbol}, attempt=${attempt}`, err);
       if (attempt < BATCH_CONFIG.MAX_RETRIES) {
         await sleep(BATCH_CONFIG.RETRY_DELAY_MS);
       }
@@ -176,7 +179,7 @@ export async function runTop50BatchCollector(force: boolean = false, taskKey: st
   lastBatchTimeLabel = `${hours}:${minutes} 기준`;
 
   lock.promise = (async () => {
-    console.log(`[Batch Started: ${taskKey}] 상위 50종목 연기금 및 프로그램 수급 5개씩 병렬 수집 시작...`);
+    console.log(`📌 [TRACE 1-START] runTop50BatchCollector 시작: taskKey=${taskKey}, force=${force}`);
 
     const pensionBuyList: RankingItem[] = [];
     const programBuyList: RankingItem[] = [];
@@ -248,7 +251,7 @@ export async function runTop50BatchCollector(force: boolean = false, taskKey: st
         if (i + CHUNK_SIZE < TOP_50_STOCKS.length) {
           await sleep(BATCH_CONFIG.DELAY_MS);
         }
-      }
+      console.log(`📌 [TRACE 3-PRE-PURGE] 수집된 원본 개수: pensionRawCount=${pensionBuyList.length}, programRawCount=${programBuyList.length}`);
 
       await buildAndCacheRankings('pension', pensionBuyList, now);
       await buildAndCacheRankings('program', programBuyList, now);
@@ -328,6 +331,9 @@ async function buildAndCacheRankings(type: 'pension' | 'program', rawList: Ranki
       lastBatchTime: lastBatchTimeLabel,
       updatedAt: new Date(timestamp).toISOString(),
     };
+
+    console.log(`📌 [TRACE 4-POST-PURGE] assertNoMockLeak 필터 통과 후 개수: type=${type}, period=${period}, listCount=${buyRes.list.length}`);
+    console.log(`📌 [TRACE 5-CACHE-SAVE] 캐시(Redis/Supabase) 저장 직전 개수: type=${type}, key=kv_batch_${type}_buy_${period}, listCount=${buyRes.list.length}`);
 
     batchCacheStore.set(`${type}_buy_${period}`, { data: buyRes, timestamp });
     await kvSetJson(`kv_batch_${type}_buy_${period}`, buyRes, 86400).catch(() => null);
