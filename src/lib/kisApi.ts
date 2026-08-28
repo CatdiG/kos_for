@@ -1034,9 +1034,9 @@ export async function mergeCreditStatusToRanking(items: RankingItem[]): Promise<
     const stillMissing: string[] = [];
 
     // 3a. Supabase DB Check (Instant DB Read)
-    const supabaseMap = await fetchCreditBatchFromSupabase(missingSymbols);
+    const supabaseMap = await fetchCreditBatchFromSupabase(missingSymbols).catch(() => ({}));
     missingSymbols.forEach((sym) => {
-      if (supabaseMap[sym] !== undefined) {
+      if (supabaseMap && supabaseMap[sym] !== undefined) {
         creditStatusCache.set(sym, { isCredit: supabaseMap[sym], timestamp: Date.now() });
       } else {
         stillMissing.push(sym);
@@ -1046,7 +1046,7 @@ export async function mergeCreditStatusToRanking(items: RankingItem[]): Promise<
     // 3b. Redis fallback check if still missing
     if (stillMissing.length > 0) {
       const keys = stillMissing.map((sym) => `kv_credit_${sym}`);
-      const redisMap = await kvMgetJson<boolean>(keys);
+      const redisMap = await kvMgetJson<boolean>(keys).catch(() => ({}));
       stillMissing.forEach((sym) => {
         const val = redisMap[`kv_credit_${sym}`];
         if (val !== null && val !== undefined) {
