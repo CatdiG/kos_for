@@ -169,8 +169,8 @@ export async function runTop50BatchCollector(force: boolean = false, taskKey: st
     const rawDailyRecords: RawDailyInvestorRecord[] = [];
 
     try {
-      console.log(`📌 [TRACE 2-START-CHUNK-COLLECT] TOP 30 종목 연기금/프로그램 실데이터 개별 수집 시작...`);
-      const targetStocks = TOP_50_STOCKS.slice(0, 30);
+      console.log(`📌 [TRACE 2-START-CHUNK-COLLECT] TOP 15 종목 연기금/프로그램 실데이터 개별 수집 시작...`);
+      const targetStocks = TOP_50_STOCKS.slice(0, 15);
 
       const CHUNK_SIZE = 5;
       for (let i = 0; i < targetStocks.length; i += CHUNK_SIZE) {
