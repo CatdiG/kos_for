@@ -48,7 +48,7 @@ export function assertNoMockLeak(res: InvestorRankingResponse | null | undefined
     return;
   }
 
-  const originalCount = res.list.length;
+  const prePurgeCount = res.list.length;
   res.list = res.list.filter((item) => {
     if (!item) return false;
     if (item.ranksByType && item.ranksByType.length > 0) {
@@ -62,10 +62,13 @@ export function assertNoMockLeak(res: InvestorRankingResponse | null | undefined
     return true;
   });
 
-  if (res.list.length < originalCount) {
-    console.error(`🚨 MOCK DATA LEAKED TO PRODUCTION RESPONSE: Purged ${originalCount - res.list.length} fake seed item(s)!`);
+  const postPurgeCount = res.list.length;
+  console.log(`[assertNoMockLeak Audit] Type: ${res.type} | Pre-Purge Count: ${prePurgeCount} | Post-Purge Count: ${postPurgeCount}`);
+
+  if (postPurgeCount < prePurgeCount) {
+    console.error(`🚨 MOCK DATA LEAKED TO PRODUCTION RESPONSE: Purged ${prePurgeCount - postPurgeCount} fake seed item(s)!`);
     if (process.env.NODE_ENV !== 'production') {
-      throw new Error(`[MOCK LEAK PROTECTOR] ${originalCount - res.list.length} fake seed ranking item(s) detected in response!`);
+      throw new Error(`[MOCK LEAK PROTECTOR] ${prePurgeCount - postPurgeCount} fake seed ranking item(s) detected in response!`);
     }
   }
 }

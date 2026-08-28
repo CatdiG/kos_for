@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse, after } from 'next/server';
 import { fetchKisForeignInstitutionRanking, fetchOverlapRankingData, fetchConsecutive3dOverlapRankingData, fetchKisInvestorTrend, getKisAccessTokenWithSource, resolveAndCacheMissingCredits, mergeCreditStatusToRanking, assertNoMockLeak } from '@/lib/kisApi';
-import { getBatchRankingData, getBatchRankingDataAsync } from '@/lib/batchCollector';
+import { getBatchRankingData, getBatchRankingDataAsync, runTop50BatchCollector } from '@/lib/batchCollector';
 import { MarketType, RankingDirection, RankingPeriod, RankingType } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
@@ -48,20 +48,21 @@ export async function GET(request: NextRequest) {
     const elapsedMs = Date.now() - routeStart;
     console.log(`[PERF ROUTE END /api/stock/ranking] Total: ${elapsedMs}ms (Cache-Source: ${tokenInfo.source}, Instance: ${instanceId})`);
 
-    // Next.js 15+ after() API: Send 0ms response first, then resolve & save missing credits in background on Vercel Serverless
-    if (responseData && Array.isArray(responseData.list)) {
-      const missingSymbols = responseData.list
-        .filter((item: any) => item.isCreditAvailable === undefined)
-        .map((item: any) => item.symbol);
-      if (missingSymbols.length > 0) {
-        if (typeof after === 'function') {
-          after(async () => {
-            await resolveAndCacheMissingCredits(missingSymbols);
-          });
-        } else {
-          resolveAndCacheMissingCredits(missingSymbols).catch(() => null);
+    // Next.js 15+ after() API: Keeps Vercel Serverless Function container awake to finish background batch collection
+    if (typeof after === 'function') {
+      after(async () => {
+        if (responseData && Array.isArray(responseData.list)) {
+          const missingSymbols = responseData.list
+            .filter((item: any) => item.isCreditAvailable === undefined)
+            .map((item: any) => item.symbol);
+          if (missingSymbols.length > 0) {
+            await resolveAndCacheMissingCredits(missingSymbols).catch(() => null);
+          }
         }
-      }
+        if (type === 'pension' || type === 'program' || type === 'overlap') {
+          await runTop50BatchCollector(true, `after_batch_${type}`).catch(() => null);
+        }
+      });
     }
 
     return NextResponse.json(

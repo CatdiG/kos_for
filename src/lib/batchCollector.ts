@@ -400,27 +400,11 @@ export async function getBatchRankingDataAsync(
     }
   }
 
-  // 2. 콜드스타트 시 비동기 배경 수집 트리거 (가짜 seedList 반환 절대 금지)
-  if (!cached || !cached.data || !cached.data.list) {
-    const dateObj = new Date();
-    const hours = String(dateObj.getHours()).padStart(2, '0');
-    const minutes = String(dateObj.getMinutes()).padStart(2, '0');
-
-    const emptyRes: InvestorRankingResponse = {
-      type,
-      direction,
-      period,
-      list: [],
-      isMock: false,
-      lastBatchTime: `${hours}:${minutes} 기준`,
-      updatedAt: dateObj.toISOString(),
-    };
-
-    batchCacheStore.set(cacheKey, { data: emptyRes, timestamp: Date.now() });
+  // 2. 콜드스타트 시 배치 수집 실행 및 캐시 빌드 (가짜 seedList 반환 절대 금지)
+  if (!cached || !cached.data || !Array.isArray(cached.data.list) || cached.data.list.length === 0) {
+    console.log(`[Batch Async Collector] Cold-start empty cache for ${type}. Executing runTop50BatchCollector...`);
+    await runTop50BatchCollector(true, `batch_${type}`).catch((err) => console.error('[Background Batch Collector Error]', err));
     cached = batchCacheStore.get(cacheKey);
-
-    // 비동기 배경 배치 수집 트리거 (HTTP 요청을 대기시키지 않음)
-    runTop50BatchCollector(true, `batch_${type}`).catch((err) => console.error('[Background Batch Collector Error]', err));
   }
 
   if (cached && cached.data) {
