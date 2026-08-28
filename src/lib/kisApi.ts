@@ -2022,7 +2022,7 @@ export async function fetchKisSurgingStocks(
 
   try {
     const res = await kisQueue.enqueue(
-      () => fetchWithRetry(() => executeKisSurgingStocksFetch(mode, market), 2, 400),
+      () => fetchWithRetry(() => executeKisSurgingStocksFetch(mode, market), 1, 300),
       'NORMAL',
       cacheKey
     );
