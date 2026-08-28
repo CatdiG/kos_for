@@ -83,7 +83,7 @@ async function fetchStockDataWithRetry(symbol: string): Promise<{
   for (let attempt = 1; attempt <= BATCH_CONFIG.MAX_RETRIES; attempt++) {
     try {
       console.log(`📌 [TRACE 2-BEFORE-KIS] KIS API 수급 추세 호출 직전: symbol=${symbol}`);
-      const trendRes = await fetchKisInvestorTrend(symbol, '20d');
+      const trendRes = await fetchKisInvestorTrend(symbol, '20d', 'HIGH', true);
       console.log(`📌 [TRACE 2-AFTER-KIS] KIS API 수급 추세 호출 성공: symbol=${symbol}, trendCount=${trendRes?.trend?.length || 0}`);
       if (trendRes && Array.isArray(trendRes.trend)) {
         trend5dBatchStore.set(symbol, trendRes);

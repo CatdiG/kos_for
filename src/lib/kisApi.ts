@@ -340,24 +340,23 @@ export async function enforceRateLimit(): Promise<void> {
 export async function fetchKisInvestorTrend(
   symbol: string,
   period: TrendPeriod = '20d',
-  priority: Priority = 'HIGH'
+  priority: Priority = 'HIGH',
+  fastOnly: boolean = false
 ): Promise<InvestorTrendResponse> {
-  const cacheKey = `${symbol}-${period}-v60d-full`;
+  const cacheKey = `${symbol}-${period}-v60d-full${fastOnly ? '-fast' : ''}`;
   const now = Date.now();
 
   // 1. In-Memory Cache Check
   if (trendDetailCache.has(cacheKey)) {
     const cached = trendDetailCache.get(cacheKey)!;
-    if (cached.data?.trend?.length < 120) {
-      trendDetailCache.delete(cacheKey);
-    } else if (now - cached.timestamp < TREND_CACHE_TTL_MS) {
+    if (now - cached.timestamp < TREND_CACHE_TTL_MS) {
       return cached.data;
     }
   }
 
   // 2. Vercel KV Redis Shared Cache Check (5 min TTL)
   const redisTrend = await kvGetJson<InvestorTrendResponse>(`kv_trend_${cacheKey}`);
-  if (redisTrend && redisTrend.trend?.length >= 120) {
+  if (redisTrend) {
     trendDetailCache.set(cacheKey, { data: redisTrend, timestamp: now });
     return redisTrend;
   }
@@ -371,7 +370,7 @@ export async function fetchKisInvestorTrend(
 
   try {
     const response = await kisQueue.enqueue(
-      () => fetchWithRetry(() => executeKisInvestorTrendFetch(symbol, period)),
+      () => fetchWithRetry(() => executeKisInvestorTrendFetch(symbol, period, fastOnly)),
       priority,
       `trend-${symbol}-${period}`
     );
@@ -392,7 +391,8 @@ export async function fetchKisInvestorTrend(
 
 async function executeKisInvestorTrendFetch(
   symbol: string,
-  period: TrendPeriod = '20d'
+  period: TrendPeriod = '20d',
+  fastOnly: boolean = false
 ): Promise<InvestorTrendResponse> {
   const appKey = process.env.KIS_APPKEY!;
   const appSecret = process.env.KIS_APPSECRET!;
@@ -461,42 +461,44 @@ async function executeKisInvestorTrendFetch(
   }
 
   let dpJson: any = null;
-  try {
-    dpJson = await fetchWithRetry(async () => {
-      await enforceRateLimit();
-      const res = await fetch(dailyChartUrl, {
-        method: 'GET',
-        headers: {
-          'content-type': 'application/json; charset=utf-8',
-          authorization: `Bearer ${token}`,
-          appkey: appKey,
-          appsecret: appSecret,
-          tr_id: 'FHKST03010100',
-          custtype: 'P',
-        },
-        cache: 'no-store',
-      });
+  if (!fastOnly) {
+    try {
+      dpJson = await fetchWithRetry(async () => {
+        await enforceRateLimit();
+        const res = await fetch(dailyChartUrl, {
+          method: 'GET',
+          headers: {
+            'content-type': 'application/json; charset=utf-8',
+            authorization: `Bearer ${token}`,
+            appkey: appKey,
+            appsecret: appSecret,
+            tr_id: 'FHKST03010100',
+            custtype: 'P',
+          },
+          cache: 'no-store',
+        });
 
-      const text = await res.text();
-      let parsed: any;
-      try {
-        parsed = JSON.parse(text);
-      } catch {
-        throw new Error(`[KIS API Format Error] ${text}`);
-      }
+        const text = await res.text();
+        let parsed: any;
+        try {
+          parsed = JSON.parse(text);
+        } catch {
+          throw new Error(`[KIS API Format Error] ${text}`);
+        }
 
-      if (parsed.msg_cd === 'EGW00201' || parsed.msg_cd === 'EGW00202' || parsed.msg_cd === 'EGW00133' || parsed.msg1?.includes('초당') || parsed.msg1?.includes('초과')) {
-        throw new Error(`[KIS Rate Limit] ${parsed.msg1 || 'EGW00201'}`);
-      }
+        if (parsed.msg_cd === 'EGW00201' || parsed.msg_cd === 'EGW00202' || parsed.msg_cd === 'EGW00133' || parsed.msg1?.includes('초당') || parsed.msg1?.includes('초과')) {
+          throw new Error(`[KIS Rate Limit] ${parsed.msg1 || 'EGW00201'}`);
+        }
 
-      if (!res.ok || parsed.rt_cd !== '0' || !Array.isArray(parsed.output2)) {
-        throw new Error(`[KIS API Chart Error] ${parsed.msg1 || '차트 데이터 오류'}`);
-      }
+        if (!res.ok || parsed.rt_cd !== '0' || !Array.isArray(parsed.output2)) {
+          throw new Error(`[KIS API Chart Error] ${parsed.msg1 || '차트 데이터 오류'}`);
+        }
 
-      return parsed;
-    }, 4, 800);
-  } catch (e) {
-    dpJson = null;
+        return parsed;
+      }, 4, 800);
+    } catch (e) {
+      dpJson = null;
+    }
   }
 
   let fullDailyItems: any[] = [];
