@@ -1751,11 +1751,14 @@ export async function fetchConsecutive3dOverlapRankingData(
     const stock = targetStocks[i];
     try {
       let trendRes = getCached5dTrend(stock.symbol);
-      if (!trendRes || !trendRes.trend || trendRes.trend.length === 0) {
+      if (!trendRes || !trendRes.trend || trendRes.trend.length === 0 || trendRes.isMock) {
         try {
-          trendRes = await fetchKisInvestorTrend(stock.symbol, '20d');
+          const realRes = await fetchKisInvestorTrend(stock.symbol, '20d');
+          if (realRes && realRes.trend && realRes.trend.length > 0) {
+            trendRes = realRes;
+          }
         } catch {
-          trendRes = null;
+          // fallback to seed if fetch fails
         }
       }
       if (!trendRes || !trendRes.trend) continue;
