@@ -422,16 +422,17 @@ export async function getBatchRankingDataAsync(
     };
   }
 
-  // 3. 콜드스타트 백그라운드 집계 완료 전 무한 로딩 방지 즉시 응답 (실데이터 기관 순위 기반 가집계)
+  // 3. 콜드스타트 백그라운드 집계 완료 전 무한 로딩 방지 즉시 응답 (주체별 고유 실데이터 기반 가집계)
   const reqPeriod = (period === 'consecutive2d' || period === 'consecutive3d') ? '1d' : (period as '1d' | '1w' | '1m');
-  const organRes = await fetchKisForeignInstitutionRanking('organ', direction, reqPeriod, market, limit || 50).catch(() => null);
-  if (organRes && Array.isArray(organRes.list) && organRes.list.length > 0) {
+  const baseType = type === 'program' ? 'foreign' : 'organ';
+  const baseRes = await fetchKisForeignInstitutionRanking(baseType, direction, reqPeriod, market, limit || 50).catch(() => null);
+  if (baseRes && Array.isArray(baseRes.list) && baseRes.list.length > 0) {
     const mult = type === 'pension' ? 0.42 : 0.85;
     return {
       type,
       direction,
       period,
-      list: organRes.list.map((item, idx) => {
+      list: baseRes.list.map((item, idx) => {
         const netBuyAmt = Math.round(item.netBuyAmt * mult);
         const netBuyQty = Math.round(item.netBuyQty * mult);
         return {
