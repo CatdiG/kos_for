@@ -1956,6 +1956,20 @@ export async function fetchConsecutive3dOverlapRankingData(
 
   const mergedList = await mergeCreditStatusToRanking(results);
 
+  // Raw calculation audit log for historical verification & auditability
+  const auditLog = {
+    evaluatedStockCount: mergedList.length,
+    evaluatedAt: new Date().toISOString(),
+    stockRawBreakdown: mergedList.map((item) => ({
+      symbol: item.symbol,
+      name: item.name,
+      overlapCount: item.overlapCount,
+      ranksByType: item.ranksByType,
+    })),
+  };
+
+  console.log(`[3D Overlap Audit Log] 3일 연속 수급교집합 연산 완료 (${mergedList.length}개 종목 검증)`);
+
   return {
     type: 'overlap',
     direction,
@@ -1964,6 +1978,7 @@ export async function fetchConsecutive3dOverlapRankingData(
     isMock: false,
     lastBatchTime: '오늘 08:30 배치 기준',
     updatedAt: new Date().toISOString(),
+    auditLog,
   };
 }
 

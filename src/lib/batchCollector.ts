@@ -1,6 +1,7 @@
 import { TOP_50_STOCKS, getStockName, resolveMarketType } from './mockData';
 import { fetchKisInvestorTrend, fetchKisProgramTrade, getKisAccessToken, getEvaluatedCreditStatus, kvGetJson, kvSetJson, computeStatusBadgeFromTrend } from './kisApi';
 import { InvestorRankingResponse, RankingItem, RankingType, RankingDirection, RankingPeriod, MarketType } from './types';
+import { saveRawDailyDataToSupabase, RawDailyInvestorRecord } from './supabase';
 
 // Configurable Batch Parameters
 export const BATCH_CONFIG = {
@@ -111,6 +112,10 @@ async function fetchStockDataWithRetry(symbol: string): Promise<{
   changeRate: number;
   volume: number;
   name: string;
+  foreignAmt?: number;
+  foreignQty?: number;
+  organAmt?: number;
+  organQty?: number;
   pensionAsOfDateLabel?: string;
 } | null> {
   const stockMeta = TOP_50_STOCKS.find((s) => s.symbol === symbol) || { name: getStockName(symbol), basePrice: 50000 };
@@ -167,6 +172,10 @@ async function fetchStockDataWithRetry(symbol: string): Promise<{
           change: latestTrend.priceChange || 0,
           changeRate: latestTrend.changeRate || 0,
           volume: latestTrend.volume || 1000000,
+          foreignAmt: latestTrend.foreignNetBuyAmt || 0,
+          foreignQty: latestTrend.foreignNetBuyQty || 0,
+          organAmt: latestTrend.organNetBuyAmt || 0,
+          organQty: latestTrend.organNetBuyQty || 0,
           pensionAmt,
           pensionQty,
           programAmt: trendRes.programTrade?.totalNetBuyAmt || 0,
@@ -211,6 +220,7 @@ export async function runTop50BatchCollector(force: boolean = false, taskKey: st
 
     const pensionBuyList: RankingItem[] = [];
     const programBuyList: RankingItem[] = [];
+    const rawDailyRecords: RawDailyInvestorRecord[] = [];
 
     try {
       const CHUNK_SIZE = BATCH_CONFIG.CHUNK_SIZE;
@@ -254,6 +264,24 @@ export async function runTop50BatchCollector(force: boolean = false, taskKey: st
               ratioVsVolume: data.volume > 0 ? Number(((Math.abs(data.programQty) / data.volume) * 100).toFixed(1)) : 0,
               isCreditAvailable: getEvaluatedCreditStatus(stock.symbol, data.name),
             });
+            // Collect UNPROCESSED raw daily data record for permanent trading database
+            const todayYYYYMMDD = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+            rawDailyRecords.push({
+              date: todayYYYYMMDD,
+              symbol: stock.symbol,
+              name: data.name,
+              close_price: data.closePrice,
+              volume: data.volume,
+              change_rate: data.changeRate,
+              foreign_net_buy_qty: data.foreignQty || 0,
+              foreign_net_buy_amt: data.foreignAmt || 0,
+              organ_net_buy_qty: data.organQty || 0,
+              organ_net_buy_amt: data.organAmt || 0,
+              pension_net_buy_qty: data.pensionQty || 0,
+              pension_net_buy_amt: data.pensionAmt || 0,
+              program_net_buy_qty: data.programQty || 0,
+              program_net_buy_amt: data.programAmt || 0,
+            });
           }
         });
 
@@ -265,7 +293,14 @@ export async function runTop50BatchCollector(force: boolean = false, taskKey: st
       await buildAndCacheRankings('pension', pensionBuyList, now);
       await buildAndCacheRankings('program', programBuyList, now);
 
-      console.log('[Batch Completed] 50종목 수집 및 순위 집계 완료 (기준시각:', lastBatchTimeLabel, ')');
+      // Save UNPROCESSED raw daily data to Supabase & scratch/raw_daily_data/
+      if (rawDailyRecords.length > 0) {
+        await saveRawDailyDataToSupabase(rawDailyRecords).catch((e) =>
+          console.error('[Raw Storage Notice]', e)
+        );
+      }
+
+      console.log('[Batch Completed] 50종목 원본 데이터 적재 및 순위 집계 완료 (기준시각:', lastBatchTimeLabel, ')');
       return true;
     } catch (err) {
       console.error('[Batch Exception]', err);

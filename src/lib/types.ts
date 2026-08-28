@@ -203,6 +203,7 @@ export interface InvestorRankingResponse {
   mockReason?: string;
   lastBatchTime?: string;     // 연기금/프로그램 탭용 배치 시각 (예: "11:30 기준")
   updatedAt: string;
+  auditLog?: any;
 }
 
 export interface KisTokenResponse {

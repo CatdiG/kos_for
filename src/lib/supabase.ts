@@ -197,3 +197,84 @@ export async function saveCreditBatchToSupabase(entries: Array<{ symbol: string;
   }
 }
 
+export interface RawDailyInvestorRecord {
+  date: string; // YYYYMMDD (e.g. '20260827')
+  symbol: string; // '005930'
+  name: string; // '삼성전자'
+  close_price: number;
+  volume: number;
+  change_rate?: number;
+  foreign_net_buy_qty: number;
+  foreign_net_buy_amt: number;
+  organ_net_buy_qty: number;
+  organ_net_buy_amt: number;
+  pension_net_buy_qty: number;
+  pension_net_buy_amt: number;
+  program_net_buy_qty?: number;
+  program_net_buy_amt?: number;
+  raw_payload?: any;
+  created_at?: string;
+}
+
+/**
+ * Supabase DB raw_daily_data 테이블 및 로컬 디스크 파일(scratch/raw_daily_data/)에 원본 데이터 동시 적재
+ */
+export async function saveRawDailyDataToSupabase(records: RawDailyInvestorRecord[]): Promise<boolean> {
+  if (!records || records.length === 0) return false;
+
+  // 1. Local File Store Persistence (offline audit guarantee)
+  try {
+    const fs = require('fs');
+    const path = require('path');
+    const targetDate = records[0]?.date || new Date().toISOString().slice(0, 10).replace(/-/g, '');
+    const dir = path.join(process.cwd(), 'scratch', 'raw_daily_data');
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+
+    const filePath = path.join(dir, `${targetDate}.json`);
+    fs.writeFileSync(filePath, JSON.stringify(records, null, 2), 'utf8');
+    console.log(`[Raw Data File Saved] 원본 데이터 로컬 적재 완료: ${filePath} (${records.length}개 종목)`);
+  } catch (e: any) {
+    console.error('[Raw Data Local Save Error]', e?.message || e);
+  }
+
+  // 2. Supabase DB Upsert
+  const client = getSupabaseAdmin() || getSupabasePublic();
+  if (!client) return false;
+
+  try {
+    const upsertRows = records.map(r => ({
+      date: r.date,
+      symbol: r.symbol,
+      name: r.name,
+      close_price: r.close_price,
+      volume: r.volume,
+      change_rate: r.change_rate || 0,
+      foreign_net_buy_qty: r.foreign_net_buy_qty || 0,
+      foreign_net_buy_amt: r.foreign_net_buy_amt || 0,
+      organ_net_buy_qty: r.organ_net_buy_qty || 0,
+      organ_net_buy_amt: r.organ_net_buy_amt || 0,
+      pension_net_buy_qty: r.pension_net_buy_qty || 0,
+      pension_net_buy_amt: r.pension_net_buy_amt || 0,
+      program_net_buy_qty: r.program_net_buy_qty || 0,
+      program_net_buy_amt: r.program_net_buy_amt || 0,
+      updated_at: new Date().toISOString(),
+    }));
+
+    const { error } = await client
+      .from('raw_daily_data')
+      .upsert(upsertRows, { onConflict: 'date,symbol' });
+
+    if (error) {
+      console.warn('[Supabase raw_daily_data Save Notice]', error.message);
+      return false;
+    }
+
+    console.log(`[Supabase Raw Saved] raw_daily_data 적재 완료 (${upsertRows.length}건)`);
+    return true;
+  } catch (e: any) {
+    console.error('[Supabase raw_daily_data Save Exception]', e?.message || e);
+    return false;
+  }
+}
+
+
