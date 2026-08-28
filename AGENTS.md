@@ -69,4 +69,17 @@ No matter how small the code modification is, you MUST re-verify ALL 9 items bel
 - If a regression bug is detected, FIX THE BUG FIRST before updating the golden snapshot.
 - Update the golden snapshot (`node scratch/create_golden_snapshot.js`) ONLY when changes are confirmed to be intended, valid feature updates/improvements. NEVER overwrite arbitrarily.
 
+## 14. Overlap Golden Snapshot Rule (수급교집합 전용 회귀 감지)
+- overlap(수급교집합) depends on foreign/organ/pension/program
+  rankings, credit status, and trend badges — it is the most
+  fragile integration point in this codebase.
+- ANY edit to `kisApi.ts`, `batchCollector.ts`, or any credit/badge
+  computation MUST run `scratch/verify_overlap_regression.js`
+  against the golden snapshot BEFORE reporting completion, in
+  addition to (not instead of) Rule 3's 9-item checklist.
+- A diff against the golden snapshot must be explicitly explained
+  as either an intended data change or a regression — never
+  silently overwritten.
+
+
 
