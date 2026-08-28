@@ -169,8 +169,8 @@ export async function runTop50BatchCollector(force: boolean = false, taskKey: st
     const rawDailyRecords: RawDailyInvestorRecord[] = [];
 
     try {
-      console.log(`📌 [TRACE 2-START-CHUNK-COLLECT] TOP 15 종목 연기금/프로그램 실데이터 개별 수집 시작...`);
-      const targetStocks = TOP_50_STOCKS.slice(0, 15);
+      console.log(`📌 [TRACE 2-START-CHUNK-COLLECT] TOP 50 종목 연기금/프로그램 실데이터 개별 수집 시작...`);
+      const targetStocks = TOP_50_STOCKS;
 
       const CHUNK_SIZE = 5;
       for (let i = 0; i < targetStocks.length; i += CHUNK_SIZE) {
@@ -393,28 +393,11 @@ export async function getBatchRankingDataAsync(
     }
   }
 
-  // 2. 콜드스타트 시 비동기 배치 수집 트리거 및 즉시 응답 (서버리스 15초 타임아웃 100% 방지)
+  // 2. 콜드스타트 시 50개 전 종목 정석 배치 수집 실행 및 캐시 빌드 (기관 데이터 복사 폴백 전면 금지)
   if (!cached || !cached.data || !Array.isArray(cached.data.list) || cached.data.list.length === 0) {
-    console.log(`[Batch Async Collector] Cold-start empty cache for ${type}. Launching background runTop50BatchCollector...`);
-    // 비동기 백그라운드 수집 실행 (HTTP 응답 블로킹 방지)
-    runTop50BatchCollector(true, `batch_${type}`).catch((err) => console.error('[Background Batch Collector Error]', err));
-
-    const reqPeriod = (period === 'consecutive2d' || period === 'consecutive3d') ? '1d' : (period as '1d' | '1w' | '1m');
-    const organRes = await fetchKisForeignInstitutionRanking('organ', direction, reqPeriod, market, limit || 20).catch(() => null);
-    if (organRes && Array.isArray(organRes.list) && organRes.list.length > 0) {
-      return {
-        type,
-        direction,
-        period,
-        list: organRes.list.map((item, idx) => ({
-          ...item,
-          rank: idx + 1,
-        })),
-        isMock: false,
-        lastBatchTime: lastBatchTimeLabel,
-        updatedAt: new Date().toISOString(),
-      };
-    }
+    console.log(`[Batch Async Collector] Cold-start empty cache for ${type}. Executing runTop50BatchCollector for 50 stocks...`);
+    await runTop50BatchCollector(true, `batch_${type}`).catch((err) => console.error('[Background Batch Collector Error]', err));
+    cached = batchCacheStore.get(cacheKey);
   }
 
   if (cached && cached.data && Array.isArray(cached.data.list) && cached.data.list.length > 0) {
