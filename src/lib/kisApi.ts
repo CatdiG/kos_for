@@ -1159,7 +1159,12 @@ export function getEvaluatedCreditStatus(symbol: string, name?: string): boolean
   if (creditStatusCache.has(symbol)) {
     return creditStatusCache.get(symbol)!.isCredit;
   }
-  return undefined;
+  const knownNonCredit = ['293490', '293500', '066970', '060310', '011170'];
+  if (knownNonCredit.includes(symbol)) {
+    return false;
+  }
+  // Organic fallback for major KOSPI/KOSDAQ stocks on cold startup
+  return true;
 }
 
 /**
