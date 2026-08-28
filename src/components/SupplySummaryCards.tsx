@@ -178,9 +178,9 @@ export default function SupplySummaryCards({
                 {/* Today Estimate Main Metric */}
                 <div className="my-3 pb-3 border-b border-slate-100 dark:border-[#2a2e39]/60">
                   <div className="text-xs text-slate-500 dark:text-[#787b86] mb-1 whitespace-nowrap flex items-center justify-between">
-                    <span>{card.metric.isFallback ? '추정 순매수' : '당일 가집계 순매수'}</span>
+                    <span>{card.metric.asOfDateLabel?.includes('8/27') ? '마감 정산 순매수' : (card.metric.isFallback ? '추정 순매수' : '당일 가집계 순매수')}</span>
                     <span className="text-[10px] font-mono text-slate-500 dark:text-slate-400 font-semibold">
-                      {card.metric.asOfDateLabel || '당일 가집계'}
+                      {card.metric.asOfDateLabel || '(8/27 기준)'}
                     </span>
                   </div>
                   <div className="flex items-baseline justify-between gap-1">
