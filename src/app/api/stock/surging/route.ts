@@ -20,13 +20,6 @@ export async function GET(request: NextRequest) {
       data.list = await mergeCreditStatusToRanking(data.list);
     }
     let initialTrend: any = null;
-    if (data && Array.isArray(data.list) && data.list.length > 0 && data.list[0].symbol) {
-      const topSymbol = data.list[0].symbol;
-      initialTrend = await Promise.race([
-        fetchKisInvestorTrend(topSymbol, '60d'),
-        new Promise((resolve) => setTimeout(() => resolve(null), 1200)),
-      ]).catch(() => null);
-    }
 
     if (data && Array.isArray(data.list)) {
       const missingSymbols = data.list

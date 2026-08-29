@@ -336,7 +336,8 @@ export async function fetchKisInvestorTrend(
   // 1. In-Memory Cache Check
   if (trendDetailCache.has(cacheKey)) {
     const cached = trendDetailCache.get(cacheKey)!;
-    if (cached.data?.trend?.length < 120) {
+    const minRequiredCount = (period === '60d' || period === '1y') ? 120 : (period === '20d' ? 20 : 5);
+    if (cached.data?.trend?.length < minRequiredCount) {
       trendDetailCache.delete(cacheKey);
     } else if (now - cached.timestamp < TREND_CACHE_TTL_MS) {
       return cached.data;
@@ -482,11 +483,12 @@ async function executeKisInvestorTrendFetch(
   if (dpJson && dpJson.rt_cd === '0' && Array.isArray(dpJson.output2) && dpJson.output2.length > 0) {
     const page1Ascending = dpJson.output2.slice().reverse(); // Ascending date
     fullDailyItems = page1Ascending;
-    // Robust Pagination: Fetch preceding trading days until we have at least 120+ trading days for complete 60D MAs
+    // Robust Pagination: Only fetch preceding trading days for 60d/1y periods (page 1 already has 30 days for 5d/20d)
     const getObjDate = (item: any) => item?.stck_bsop_date || item?.bsop_date || item?.date || '';
     let currentEnd = getObjDate(page1Ascending[0]);
+    const targetMinDays = (period === '5d' || period === '20d') ? 20 : 120;
 
-    for (let p = 2; p <= 4 && fullDailyItems.length < 120; p++) {
+    for (let p = 2; p <= 4 && fullDailyItems.length < targetMinDays; p++) {
       if (!currentEnd || currentEnd.length !== 8) break;
       const py = parseInt(currentEnd.slice(0, 4), 10);
       const pm = parseInt(currentEnd.slice(4, 6), 10) - 1;
@@ -609,14 +611,14 @@ async function executeKisInvestorTrendFetch(
       organQty = parseInt(invItem.orgn_ntby_qty || invItem.orgn_ntby_vol || '0', 10);
       organAmt = parseInt(invItem.orgn_ntby_tr_pbmn || invItem.orgn_ntby_amt || '0', 10);
 
-      const pnsnRawQty = invItem.pnsn_ntby_qty || invItem.pnsn_ntby_vol;
-      const pnsnRawAmt = invItem.pnsn_ntby_tr_pbmn || invItem.pnsn_ntby_amt;
+      const pnsnRawQty = invItem.pnsn_ntby_qty || invItem.samt_ntby_qty || invItem.pnsn_ntby_vol;
+      const pnsnRawAmt = invItem.pnsn_ntby_tr_pbmn || invItem.samt_ntby_tr_pbmn || invItem.pnsn_ntby_amt;
       if (pnsnRawAmt !== undefined && pnsnRawAmt !== null && pnsnRawAmt !== '' && String(pnsnRawAmt) !== '0') {
         pensionQty = parseInt(pnsnRawQty || '0', 10);
         pensionAmt = parseInt(pnsnRawAmt || '0', 10);
       } else {
-        pensionQty = Math.round(organQty * 0.38);
-        pensionAmt = Math.round(organAmt * 0.38);
+        pensionQty = organQty;
+        pensionAmt = organAmt;
       }
     }
 
@@ -744,7 +746,9 @@ async function executeKisInvestorTrendFetch(
     },
   };
 
-  const programTrade = await fetchKisProgramTrade(symbol, token, baseUrl, appKey, appSecret, stockInfo.currentPrice);
+  const programTrade = (period === '60d' || period === '1y' || period === '1m')
+    ? await fetchKisProgramTrade(symbol, token, baseUrl, appKey, appSecret, stockInfo.currentPrice).catch(() => null)
+    : null;
 
   return {
     stockInfo,
@@ -1678,114 +1682,49 @@ async function executeAsyncOverlapCalculation(
       return (b.overlapCount || 0) - (a.overlapCount || 0);
     });
 
-    const finalOverlapItems = await Promise.all(
-      overlapItems.map(async (item, index) => {
-        let trendRes = getCached5dTrend(item.symbol);
-        if (!trendRes || !trendRes.trend || trendRes.trend.length === 0) {
-          trendRes = await fetchKisInvestorTrend(item.symbol, '20d').catch(() => null);
-        }
-        const trendData = trendRes?.trend || [];
-        const statusInfo = computeStatusBadgeFromTrend(trendData);
-        const latestTrend = trendData[trendData.length - 1];
+    const finalOverlapItems = overlapItems.map((item, index) => {
+      let trendRes = getCached5dTrend(item.symbol);
+      const trendData = trendRes?.trend || [];
+      const statusInfo = trendData.length > 0
+        ? computeStatusBadgeFromTrend(trendData)
+        : computeUnifiedStatusBadge(item.changeRate, item.volume);
 
-        const ranksByType = [...(item.ranksByType || [])];
+      const ranksByType = [...(item.ranksByType || [])];
+      const ENTITY_ORDER: Record<string, number> = { foreign: 1, organ: 2, pension: 3, program: 4 };
+      ranksByType.sort((a, b) => (ENTITY_ORDER[a.type] || 99) - (ENTITY_ORDER[b.type] || 99));
 
-        // 1. 외국인 50위 밖 실매수 보정
-        const foreignAmt = latestTrend?.foreignNetBuyAmt || 0;
-        const hasForeignInRanks = ranksByType.some((r) => r.type === 'foreign');
-        if ((isBuy ? foreignAmt > 0 : foreignAmt < 0) && !hasForeignInRanks) {
-          ranksByType.push({
-            type: 'foreign',
-            label: '외국인',
-            rank: 0,
-            isRanked: false,
-            netBuyAmt: foreignAmt,
-            netBuyAmtEok: Number((foreignAmt / 100).toFixed(1)),
-            asOfDateLabel: getSettledAsOfDateLabel(latestTrend?.stck_bsop_date || latestTrend?.date),
-          });
-        }
+      const overlapCount = ranksByType.length;
+      const totalNetBuyAmt = ranksByType.reduce((sum, r) => sum + r.netBuyAmt, 0);
+      const totalNetBuyAmtEok = Number((totalNetBuyAmt / 100).toFixed(1));
+      const price = item.currentPrice > 0 ? item.currentPrice : 50000;
+      const totalNetBuyQty = Math.round((totalNetBuyAmt * 1000000) / price);
 
-        // 2. 기관 50위 밖 실매수 보정
-        const organAmt = latestTrend?.organNetBuyAmt || 0;
-        const hasOrganInRanks = ranksByType.some((r) => r.type === 'organ');
-        if ((isBuy ? organAmt > 0 : organAmt < 0) && !hasOrganInRanks) {
-          ranksByType.push({
-            type: 'organ',
-            label: '기관',
-            rank: 0,
-            isRanked: false,
-            netBuyAmt: organAmt,
-            netBuyAmtEok: Number((organAmt / 100).toFixed(1)),
-            asOfDateLabel: getSettledAsOfDateLabel(latestTrend?.stck_bsop_date || latestTrend?.date),
-          });
-        }
+      const ALL_ENTITIES: Array<{ type: 'foreign' | 'organ' | 'pension' | 'program'; label: string }> = [
+        { type: 'foreign', label: '외국인' },
+        { type: 'organ', label: '기관' },
+        { type: 'pension', label: '연기금' },
+        { type: 'program', label: '프로그램' },
+      ];
+      const missingEntities = ALL_ENTITIES.filter((e) => !ranksByType.some((r) => r.type === e.type));
 
-        // 3. 연기금 실데이터 보정 (랭킹 외 실매수)
-        const pensionAmt = latestTrend?.pensionNetBuyAmt || 0;
-        const hasPensionInRanks = ranksByType.some((r) => r.type === 'pension');
-        if ((isBuy ? pensionAmt > 0 : pensionAmt < 0) && !hasPensionInRanks) {
-          ranksByType.push({
-            type: 'pension',
-            label: '연기금',
-            rank: 0,
-            isRanked: false,
-            netBuyAmt: pensionAmt,
-            netBuyAmtEok: Number((pensionAmt / 100).toFixed(1)),
-            asOfDateLabel: getSettledAsOfDateLabel(latestTrend?.stck_bsop_date || latestTrend?.date),
-          });
-        }
-
-        // 4. 프로그램 실데이터 보정 (랭킹 외 실매수)
-        const programAmt = trendRes?.programTrade?.totalNetBuyAmt || 0;
-        const hasProgramInRanks = ranksByType.some((r) => r.type === 'program');
-        if ((isBuy ? programAmt > 0 : programAmt < 0) && !hasProgramInRanks) {
-          ranksByType.push({
-            type: 'program',
-            label: '프로그램',
-            rank: 0,
-            isRanked: false,
-            netBuyAmt: programAmt,
-            netBuyAmtEok: Number((programAmt / 100).toFixed(1)),
-            asOfDateLabel: trendRes?.programTrade?.asOfDateLabel || getSettledAsOfDateLabel(),
-          });
-        }
-
-        const ENTITY_ORDER: Record<string, number> = { foreign: 1, organ: 2, pension: 3, program: 4 };
-        ranksByType.sort((a, b) => (ENTITY_ORDER[a.type] || 99) - (ENTITY_ORDER[b.type] || 99));
-
-        const overlapCount = ranksByType.length;
-        const totalNetBuyAmt = ranksByType.reduce((sum, r) => sum + r.netBuyAmt, 0);
-        const totalNetBuyAmtEok = Number((totalNetBuyAmt / 100).toFixed(1));
-        const price = item.currentPrice > 0 ? item.currentPrice : 50000;
-        const totalNetBuyQty = Math.round((totalNetBuyAmt * 1000000) / price);
-
-        const ALL_ENTITIES: Array<{ type: 'foreign' | 'organ' | 'pension' | 'program'; label: string }> = [
-          { type: 'foreign', label: '외국인' },
-          { type: 'organ', label: '기관' },
-          { type: 'pension', label: '연기금' },
-          { type: 'program', label: '프로그램' },
-        ];
-        const missingEntities = ALL_ENTITIES.filter((e) => !ranksByType.some((r) => r.type === e.type));
-
-        return {
-          ...item,
-          rank: index + 1,
-          overlapCount,
-          ranksByType,
-          missingEntities,
-          netBuyAmt: totalNetBuyAmt,
-          netBuyAmtEok: totalNetBuyAmtEok,
-          netBuyQty: totalNetBuyQty,
-          foreignNetBuyAmt: ranksByType.find((r) => r.type === 'foreign')?.netBuyAmt,
-          organNetBuyAmt: ranksByType.find((r) => r.type === 'organ')?.netBuyAmt,
-          pensionNetBuyAmt: ranksByType.find((r) => r.type === 'pension')?.netBuyAmt,
-          programNetBuyAmt: ranksByType.find((r) => r.type === 'program')?.netBuyAmt,
-          asOfDateLabel: getSettledAsOfDateLabel(),
-          statusBadge: statusInfo.shortBadge,
-          statusBadgeStyle: statusInfo.badgeStyle,
-        };
-      })
-    );
+      return {
+        ...item,
+        rank: index + 1,
+        overlapCount,
+        ranksByType,
+        missingEntities,
+        netBuyAmt: totalNetBuyAmt,
+        netBuyAmtEok: totalNetBuyAmtEok,
+        netBuyQty: totalNetBuyQty,
+        foreignNetBuyAmt: ranksByType.find((r) => r.type === 'foreign')?.netBuyAmt,
+        organNetBuyAmt: ranksByType.find((r) => r.type === 'organ')?.netBuyAmt,
+        pensionNetBuyAmt: ranksByType.find((r) => r.type === 'pension')?.netBuyAmt,
+        programNetBuyAmt: ranksByType.find((r) => r.type === 'program')?.netBuyAmt,
+        asOfDateLabel: getSettledAsOfDateLabel(),
+        statusBadge: statusInfo.shortBadge,
+        statusBadgeStyle: statusInfo.badgeStyle,
+      };
+    });
 
     // 4대 주체 전수 합산 후 최종 정렬: 1. overlapCount 내림차순, 2. totalNetBuyAmt 내림차순
     finalOverlapItems.sort((a, b) => {
@@ -1902,7 +1841,7 @@ export async function fetchConsecutiveNDaysOverlapRankingData(
   }
 
   const isBuy = direction === 'buy';
-  const { getCached5dTrend } = await import('./batchCollector');
+  const { getCached5dTrend, setCached5dTrend } = await import('./batchCollector');
 
   // Get candidate stocks from real-time market overlap ranking (no fixed stock list restriction!)
   const dailyOverlapRes = await fetchOverlapRankingData(direction, '1d', 2, 50, market).catch(() => null);
@@ -1915,15 +1854,25 @@ export async function fetchConsecutiveNDaysOverlapRankingData(
     { type: 'program', label: '프로그램' },
   ];
 
-  const stockTrendPromises = candidateStocks.map(async (stock) => {
-    let trendRes = getCached5dTrend(stock.symbol);
-    if (!trendRes || !trendRes.trend || trendRes.trend.length < targetDays) {
-      trendRes = await fetchKisInvestorTrend(stock.symbol, '5d').catch(() => null);
-    }
-    return { stock, trendRes };
-  });
-
-  const stockTrends = await Promise.all(stockTrendPromises);
+  const stockTrends: Array<{ stock: any; trendRes: any }> = [];
+  const targetCandidates = candidateStocks.slice(0, 15);
+  const chunkSize = 5;
+  for (let i = 0; i < targetCandidates.length; i += chunkSize) {
+    const chunk = targetCandidates.slice(i, i + chunkSize);
+    const chunkResults = await Promise.all(
+      chunk.map(async (stock) => {
+        let trendRes = getCached5dTrend(stock.symbol);
+        if (!trendRes || !trendRes.trend || trendRes.trend.length < targetDays) {
+          trendRes = await fetchKisInvestorTrend(stock.symbol, '5d').catch(() => null);
+          if (trendRes && Array.isArray(trendRes.trend) && trendRes.trend.length > 0) {
+            setCached5dTrend(stock.symbol, trendRes);
+          }
+        }
+        return { stock, trendRes };
+      })
+    );
+    stockTrends.push(...chunkResults);
+  }
 
   const results: RankingItem[] = [];
 

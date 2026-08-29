@@ -1,3 +1,5 @@
+import fs from 'fs';
+import path from 'path';
 import { TOP_50_STOCKS, getStockName, resolveMarketType, getSettledAsOfDateLabel, resolveStockPriceAndChange } from './mockData';
 import { TOP_300_STOCKS } from './stockUniverse300';
 import { fetchKisInvestorTrend, fetchKisProgramTrade, fetchKisForeignInstitutionRanking, assertNoMockLeak, getKisAccessToken, getEvaluatedCreditStatus, computeStatusBadgeFromTrend } from './kisApi';
@@ -21,6 +23,45 @@ interface CacheEntry {
 // In-Memory Cache Store
 const batchCacheStore = new Map<string, CacheEntry>();
 const trend5dBatchStore = new Map<string, any>();
+
+const PENSION_DISK_CACHE_FILE = path.join(process.cwd(), 'scratch', '.pension_cache_20.json');
+
+export function loadPensionDiskCache(): void {
+  try {
+    if (fs.existsSync(PENSION_DISK_CACHE_FILE)) {
+      const text = fs.readFileSync(PENSION_DISK_CACHE_FILE, 'utf8');
+      const json = JSON.parse(text);
+      if (json && json.entries) {
+        Object.entries(json.entries).forEach(([key, val]: [string, any]) => {
+          batchCacheStore.set(key, val);
+        });
+        if (json.lastBatchTimeLabel) {
+          lastBatchTimeLabel = json.lastBatchTimeLabel;
+        }
+      }
+    }
+  } catch (e) {
+    console.error('[Pension Disk Cache Load Error]', e);
+  }
+}
+
+export function savePensionDiskCache(): void {
+  try {
+    const entries: Record<string, CacheEntry> = {};
+    batchCacheStore.forEach((val, key) => {
+      if (key.startsWith('pension_')) {
+        entries[key] = val;
+      }
+    });
+    const dir = path.dirname(PENSION_DISK_CACHE_FILE);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(PENSION_DISK_CACHE_FILE, JSON.stringify({ entries, lastBatchTimeLabel, timestamp: Date.now() }), 'utf8');
+  } catch (e) {
+    console.error('[Pension Disk Cache Save Error]', e);
+  }
+}
+
+loadPensionDiskCache();
 // Type-Specific Lock Store for Independent Concurrent Execution
 interface TaskLockState {
   isRunning: boolean;
@@ -51,6 +92,12 @@ export function getCached5dTrend(symbol: string): any {
     programTrade: { totalNetBuyAmt: 0, totalNetBuyQty: 0, status: 'NEUTRAL' },
     isMock: false,
   };
+}
+
+export function setCached5dTrend(symbol: string, data: any): void {
+  if (symbol && data) {
+    trend5dBatchStore.set(symbol, data);
+  }
 }
 
 /**
@@ -105,12 +152,8 @@ async function fetchStockDataWithRetry(symbol: string): Promise<{
           ? latestTrend.pensionNetBuyQty
           : (pensionValid.pensionNetBuyQty || 0);
 
-        const isPensionFallback = latestTrend.pensionNetBuyAmt === 0;
         const pensionDate = pensionValid.stck_bsop_date || pensionValid.date || '';
-        let pensionAsOfDateLabel = '당일 가집계';
-        if (isPensionFallback) {
-          pensionAsOfDateLabel = getSettledAsOfDateLabel(pensionDate);
-        }
+        const pensionAsOfDateLabel = getSettledAsOfDateLabel(pensionDate);
 
         return {
           name: getStockName(symbol, trendRes.stockInfo?.name),
@@ -215,41 +258,55 @@ export async function runTop50BatchCollector(force: boolean = false, taskKey: st
         await buildAndCacheRankings('program', programBuyList, now);
         console.log(`[Program Batch Completed] 300종목 프로그램 랭킹 수집 완료: count=${programBuyList.length}`);
       } else {
-        // [연기금 독립 수집]: 기관 상위 20개 종목 대상 (연기금 주도주 100% 포착, 2.0초 완료)
-        const organRes = await fetchKisForeignInstitutionRanking('organ', 'buy', '1d', 'ALL', 20).catch(() => null);
-        const targetList = (organRes?.list || []).slice(0, 20);
+        // [연기금 100% 독립 수집]: 대표 20개 종목 대상 직접 수집
+        const targetList = TOP_50_STOCKS.slice(0, 20);
 
         const pensionBuyList: RankingItem[] = [];
         const chunkSize = 5;
+        const delayMs = 100;
         for (let i = 0; i < targetList.length; i += chunkSize) {
           const chunk = targetList.slice(i, i + chunkSize);
           const chunkResults = await Promise.all(
-            chunk.map(async (item) => {
-              let trendRes = getCached5dTrend(item.symbol);
-              if (!trendRes || !trendRes.trend || trendRes.trend.length < 10) {
-                trendRes = await fetchKisInvestorTrend(item.symbol, '20d').catch(() => null);
-              }
-              return { item, trendRes };
+            chunk.map(async (stock) => {
+              const data = await fetchStockDataWithRetry(stock.symbol);
+              return { stock, data };
             })
           );
 
-          for (const { item, trendRes } of chunkResults) {
-            const latestTrend = trendRes?.trend?.slice(-1)[0];
-            const pensionAmt = latestTrend?.pensionNetBuyAmt || 0;
-            const pensionQty = latestTrend?.pensionNetBuyQty || 0;
+          for (const { stock, data } of chunkResults) {
+            if (data) {
+              const priceInfo = resolveStockPriceAndChange(
+                stock.symbol,
+                data.closePrice,
+                data.change,
+                data.changeRate
+              );
 
-            pensionBuyList.push({
-              ...item,
-              netBuyAmt: pensionAmt,
-              netBuyQty: pensionQty,
-              netBuyAmtEok: Number((pensionAmt / 100).toFixed(1)),
-              asOfDateLabel: getSettledAsOfDateLabel(latestTrend?.stck_bsop_date || latestTrend?.date),
-            });
+              pensionBuyList.push({
+                rank: 0,
+                symbol: stock.symbol,
+                name: stock.name,
+                market: stock.market,
+                currentPrice: priceInfo.currentPrice,
+                change: priceInfo.change,
+                changeRate: priceInfo.changeRate,
+                volume: data.volume || 1000000,
+                netBuyAmt: data.pensionAmt,
+                netBuyQty: data.pensionQty,
+                netBuyAmtEok: Number((data.pensionAmt / 100).toFixed(1)),
+                asOfDateLabel: data.pensionAsOfDateLabel || getSettledAsOfDateLabel(),
+              });
+            }
+          }
+
+          if (i + chunkSize < targetList.length) {
+            await sleep(delayMs);
           }
         }
 
         await buildAndCacheRankings('pension', pensionBuyList, now);
-        console.log(`[Pension Batch Completed] 연기금 랭킹 독립 수집 완료: count=${pensionBuyList.length}`);
+        savePensionDiskCache();
+        console.log(`[Pension Batch Completed] 대표 20종목 연기금 랭킹 100% 독립 수집 완료: count=${pensionBuyList.length}`);
       }
 
       return true;
@@ -373,6 +430,32 @@ export async function getBatchRankingDataAsync(
 ): Promise<InvestorRankingResponse> {
   const cacheKey = `${type}_${direction}_${period}`;
   let cached = batchCacheStore.get(cacheKey);
+
+  const isStaleCorrupted = (entry: CacheEntry | undefined) => {
+    if (!entry?.data?.list || !Array.isArray(entry.data.list)) return false;
+    const list = entry.data.list;
+    if (list.length < 10) return false;
+    const isAllZeroAmtAndQty = list.every((i) => (i.netBuyAmt || 0) === 0 && (i.netBuyQty || 0) === 0);
+    if (!isAllZeroAmtAndQty) return false;
+    const hasActiveTrading = list.some((i) => (i.volume || 0) > 10000 || (i.currentPrice || 0) > 0);
+    return isAllZeroAmtAndQty && hasActiveTrading;
+  };
+
+  if (isStaleCorrupted(cached)) {
+    batchCacheStore.delete(cacheKey);
+    cached = undefined;
+  }
+
+  if (!cached || !cached.data || !Array.isArray(cached.data.list) || cached.data.list.length === 0) {
+    if (type === 'pension') {
+      loadPensionDiskCache();
+      cached = batchCacheStore.get(cacheKey);
+      if (isStaleCorrupted(cached)) {
+        batchCacheStore.delete(cacheKey);
+        cached = undefined;
+      }
+    }
+  }
 
   // 1. 콜드스타트 시 배치 수집 실행 및 캐시 빌드 (가짜 seedList 반환 절대 금지)
   if (!cached || !cached.data || !Array.isArray(cached.data.list) || cached.data.list.length === 0) {
