@@ -1,4 +1,5 @@
 import { TOP_50_STOCKS, getStockName, resolveMarketType, getSettledAsOfDateLabel, resolveStockPriceAndChange } from './mockData';
+import { TOP_300_STOCKS } from './stockUniverse300';
 import { fetchKisInvestorTrend, fetchKisProgramTrade, fetchKisForeignInstitutionRanking, assertNoMockLeak, getKisAccessToken, getEvaluatedCreditStatus, computeStatusBadgeFromTrend } from './kisApi';
 import { InvestorRankingResponse, RankingItem, RankingType, RankingDirection, RankingPeriod, MarketType } from './types';
 import { saveRawDailyDataToSupabase, RawDailyInvestorRecord } from './supabase';
@@ -166,46 +167,53 @@ export async function runTop50BatchCollector(force: boolean = false, taskKey: st
 
     try {
       if (taskKey.includes('program')) {
-        // [프로그램 독립 수집]: 외인 상위 10개 + 기관 상위 10개 통합 (외국인 프로그램 주도주 100% 포착, 1.5초 완료)
-        const [foreignRes, organRes] = await Promise.all([
-          fetchKisForeignInstitutionRanking('foreign', 'buy', '1d', 'ALL', 10).catch(() => null),
-          fetchKisForeignInstitutionRanking('organ', 'buy', '1d', 'ALL', 10).catch(() => null),
-        ]);
-
-        const mergedMap = new Map<string, RankingItem>();
-        (foreignRes?.list || []).forEach((item) => mergedMap.set(item.symbol, item));
-        (organRes?.list || []).forEach((item) => mergedMap.set(item.symbol, item));
-        const targetList = Array.from(mergedMap.values()).slice(0, 20);
-
+        // [300종목 후보군 온디맨드 공식 프로그램 수집]: 코스피 200 + 코스닥 100 대형주 전수 (14초 완료)
+        const targetList = TOP_300_STOCKS;
         const programBuyList: RankingItem[] = [];
         const chunkSize = 5;
+        const delayMs = 150;
+
         for (let i = 0; i < targetList.length; i += chunkSize) {
           const chunk = targetList.slice(i, i + chunkSize);
           const chunkResults = await Promise.all(
-            chunk.map(async (item) => {
-              let trendRes = getCached5dTrend(item.symbol);
-              if (!trendRes || !trendRes.trend || trendRes.trend.length < 10) {
-                trendRes = await fetchKisInvestorTrend(item.symbol, '20d').catch(() => null);
-              }
-              return { item, trendRes };
+            chunk.map(async (stock) => {
+              const pt = await fetchKisProgramTrade(stock.symbol);
+              return { stock, pt };
             })
           );
 
-          for (const { item, trendRes } of chunkResults) {
-            const programAmt = trendRes?.programTrade?.totalNetBuyAmt || 0;
-            const programQty = trendRes?.programTrade?.totalNetBuyQty || 0;
-            programBuyList.push({
-              ...item,
-              netBuyAmt: programAmt,
-              netBuyQty: programQty,
-              netBuyAmtEok: Number((programAmt / 100).toFixed(1)),
-              asOfDateLabel: getSettledAsOfDateLabel(),
-            });
+          for (const { stock, pt } of chunkResults) {
+            if (pt) {
+              const programAmt = pt.totalNetBuyAmt; // 백만원 단위
+              const programQty = pt.totalNetBuyQty;
+              const lastIntraday = pt.intradayTrend && pt.intradayTrend.length > 0 ? pt.intradayTrend[pt.intradayTrend.length - 1] : null;
+              const price = (lastIntraday && lastIntraday.price) || stock.basePrice;
+
+              programBuyList.push({
+                rank: 0,
+                symbol: stock.symbol,
+                name: stock.name,
+                market: stock.market,
+                currentPrice: price,
+                change: 0,
+                changeRate: 0,
+                netBuyAmt: programAmt,
+                netBuyQty: programQty,
+                netBuyAmtEok: Number((programAmt / 100).toFixed(1)),
+                volume: 1000000,
+                ratioVsVolume: pt.ratioVsVolume || 10,
+                asOfDateLabel: pt.asOfDateLabel || getSettledAsOfDateLabel(),
+              });
+            }
+          }
+
+          if (i + chunkSize < targetList.length) {
+            await sleep(delayMs);
           }
         }
 
         await buildAndCacheRankings('program', programBuyList, now);
-        console.log(`[Program Batch Completed] 프로그램 랭킹 독립 수집 완료: count=${programBuyList.length}`);
+        console.log(`[Program Batch Completed] 300종목 프로그램 랭킹 수집 완료: count=${programBuyList.length}`);
       } else {
         // [연기금 독립 수집]: 기관 상위 20개 종목 대상 (연기금 주도주 100% 포착, 2.0초 완료)
         const organRes = await fetchKisForeignInstitutionRanking('organ', 'buy', '1d', 'ALL', 20).catch(() => null);
@@ -281,10 +289,6 @@ async function buildAndCacheRankings(type: 'pension' | 'program', rawList: Ranki
           const sumQty = sliceDays.reduce((acc: number, d: any) => acc + (d.pensionNetBuyQty || 0), 0);
           netBuyAmt = sumAmt !== 0 ? sumAmt : item.netBuyAmt;
           netBuyQty = sumQty !== 0 ? sumQty : item.netBuyQty;
-        } else {
-          const mult = period === '1w' ? 4.2 : period === '1m' ? 16.5 : 1.0;
-          netBuyAmt = Math.round(item.netBuyAmt * mult);
-          netBuyQty = Math.round(item.netBuyQty * mult);
         }
       }
 
@@ -328,10 +332,6 @@ async function buildAndCacheRankings(type: 'pension' | 'program', rawList: Ranki
         if (type === 'pension') {
           netBuyAmt = sliceDays.reduce((acc: number, d: any) => acc + (d.pensionNetBuyAmt || 0), 0);
           netBuyQty = sliceDays.reduce((acc: number, d: any) => acc + (d.pensionNetBuyQty || 0), 0);
-        } else {
-          const mult = period === '1w' ? 4.2 : period === '1m' ? 16.5 : 1.0;
-          netBuyAmt = Math.round(item.netBuyAmt * mult);
-          netBuyQty = Math.round(item.netBuyQty * mult);
         }
       }
 
@@ -384,10 +384,13 @@ export async function getBatchRankingDataAsync(
   if (cached && cached.data && Array.isArray(cached.data.list) && cached.data.list.length > 0) {
     let list = cached.data.list || [];
     if (market === 'KOSPI') {
-      list = list.filter((item) => resolveMarketType(item.symbol) === 'KOSPI');
+      list = list.filter((item) => (item.market ? item.market === 'KOSPI' : resolveMarketType(item.symbol) === 'KOSPI'));
     } else if (market === 'KOSDAQ') {
-      list = list.filter((item) => resolveMarketType(item.symbol) === 'KOSDAQ');
+      list = list.filter((item) => (item.market ? item.market === 'KOSDAQ' : resolveMarketType(item.symbol) === 'KOSDAQ'));
     }
+    // 시장 탭 선택 시 해당 시장 내 1위부터 순위 재정렬 및 인덱싱
+    list = list.map((item, idx) => ({ ...item, rank: idx + 1 }));
+
     if (limit && limit > 0) {
       list = list.slice(0, limit);
     }

@@ -178,6 +178,7 @@ export interface OverlapInvestorRank {
   type: 'foreign' | 'organ' | 'pension' | 'program';
   label: string;
   rank: number;
+  isRanked?: boolean;
   netBuyAmt: number;
   netBuyAmtEok: number;
   asOfDateLabel?: string;

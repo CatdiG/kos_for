@@ -398,10 +398,12 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
         }
       }
       if (activeTab === 'overlap') {
-        if (Math.abs(b.netBuyAmt - a.netBuyAmt) > 0.01) {
-          return isBuy ? b.netBuyAmt - a.netBuyAmt : a.netBuyAmt - b.netBuyAmt;
+        const countA = a.overlapCount || 0;
+        const countB = b.overlapCount || 0;
+        if (countB !== countA) {
+          return countB - countA;
         }
-        return (b.overlapCount || 0) - (a.overlapCount || 0);
+        return isBuy ? b.netBuyAmt - a.netBuyAmt : a.netBuyAmt - b.netBuyAmt;
       }
       return isBuy ? b.netBuyAmt - a.netBuyAmt : a.netBuyAmt - b.netBuyAmt;
     }
@@ -464,7 +466,7 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
       setCreditOnly(false); // Reset credit filter OFF when switching tabs
       if (newTab !== 'overlap') {
         setOverlapMode('daily');
-        setOverlapLimit(20);
+        setOverlapLimit(50);
       }
     }
   };
@@ -1315,7 +1317,12 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
                               >
                                 {item.statusBadge || '⚪ 이평선 수렴'}
                               </span>
-                              {item.ranksByType?.map((r) => (
+                              {[...(item.ranksByType || [])]
+                                .sort((a, b) => {
+                                  const order: Record<string, number> = { foreign: 1, organ: 2, pension: 3, program: 4 };
+                                  return (order[a.type] || 99) - (order[b.type] || 99);
+                                })
+                                .map((r) => (
                                   <span
                                     key={r.type}
                                     className={`inline-flex items-center gap-1 text-[9px] px-1.5 py-0.5 rounded font-semibold border whitespace-nowrap shrink-0 ${getInvestorRankBadge(
@@ -1326,8 +1333,8 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
                                     <strong className="font-mono text-[10px]">
                                        {overlapMode !== 'daily'
                                          ? (r.consecutiveText || `${r.consecutiveDays || 2}일연속`)
-                                        : (r.type === 'pension' || r.type === 'program'
-                                            ? (r.netBuyAmt >= 0 ? '순매수' : '순매도')
+                                        : (r.isRanked === false || !r.rank || r.rank <= 0
+                                            ? '순위밖'
                                             : `${r.rank}위`)}
                                     </strong>
                                   </span>

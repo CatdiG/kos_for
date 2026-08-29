@@ -37,7 +37,7 @@ function setGlobalTokenCache(cache: TokenCacheData): void {
  */
 export function assertNoMockLeak(res: InvestorRankingResponse | null | undefined): void {
   if (!res || !Array.isArray(res.list)) return;
-  
+
   if (res.isMock) {
     console.error('🚨 MOCK DATA LEAKED TO PRODUCTION RESPONSE: isMock is true! Purging all items.', res.type);
     res.list = [];
@@ -307,7 +307,7 @@ let kisApiQueue: Promise<void> = Promise.resolve();
 let lastKisApiCallTime = 0;
 
 export async function enforceRateLimit(): Promise<void> {
-  const nextCall = kisApiQueue.catch(() => {}).then(async () => {
+  const nextCall = kisApiQueue.catch(() => { }).then(async () => {
     const now = Date.now();
     const elapsed = now - lastKisApiCallTime;
     if (elapsed < 300) {
@@ -376,8 +376,8 @@ async function executeKisInvestorTrendFetch(
   const appKey = process.env.KIS_APPKEY!;
   const appSecret = process.env.KIS_APPSECRET!;
   const isVirtual = process.env.KIS_VIRTUAL === 'true';
-  const defaultBaseUrl = isVirtual 
-    ? 'https://openapivts.koreainvestment.com:29443' 
+  const defaultBaseUrl = isVirtual
+    ? 'https://openapivts.koreainvestment.com:29443'
     : 'https://openapi.koreainvestment.com:9443';
   const baseUrl = process.env.KIS_BASE_URL || defaultBaseUrl;
 
@@ -482,27 +482,44 @@ async function executeKisInvestorTrendFetch(
   if (dpJson && dpJson.rt_cd === '0' && Array.isArray(dpJson.output2) && dpJson.output2.length > 0) {
     const page1Ascending = dpJson.output2.slice().reverse(); // Ascending date
     fullDailyItems = page1Ascending;
-        // Robust Pagination: Fetch preceding trading days until we have at least 120+ trading days for complete 60D MAs
-        const getObjDate = (item: any) => item?.stck_bsop_date || item?.bsop_date || item?.date || '';
-        let currentEnd = getObjDate(page1Ascending[0]);
+    // Robust Pagination: Fetch preceding trading days until we have at least 120+ trading days for complete 60D MAs
+    const getObjDate = (item: any) => item?.stck_bsop_date || item?.bsop_date || item?.date || '';
+    let currentEnd = getObjDate(page1Ascending[0]);
 
-        for (let p = 2; p <= 4 && fullDailyItems.length < 120; p++) {
-          if (!currentEnd || currentEnd.length !== 8) break;
-          const py = parseInt(currentEnd.slice(0, 4), 10);
-          const pm = parseInt(currentEnd.slice(4, 6), 10) - 1;
-          const pd = parseInt(currentEnd.slice(6, 8), 10);
-          const pEndObj = new Date(py, pm, pd);
-          pEndObj.setDate(pEndObj.getDate() - 1);
-          const pEndDate = pEndObj.toISOString().slice(0, 10).replace(/-/g, '');
+    for (let p = 2; p <= 4 && fullDailyItems.length < 120; p++) {
+      if (!currentEnd || currentEnd.length !== 8) break;
+      const py = parseInt(currentEnd.slice(0, 4), 10);
+      const pm = parseInt(currentEnd.slice(4, 6), 10) - 1;
+      const pd = parseInt(currentEnd.slice(6, 8), 10);
+      const pEndObj = new Date(py, pm, pd);
+      pEndObj.setDate(pEndObj.getDate() - 1);
+      const pEndDate = pEndObj.toISOString().slice(0, 10).replace(/-/g, '');
 
-          const pStartObj = new Date(pEndObj);
-          pStartObj.setDate(pStartObj.getDate() - 120);
-          const pStartDate = pStartObj.toISOString().slice(0, 10).replace(/-/g, '');
+      const pStartObj = new Date(pEndObj);
+      pStartObj.setDate(pStartObj.getDate() - 120);
+      const pStartDate = pStartObj.toISOString().slice(0, 10).replace(/-/g, '');
 
-          const pUrl = `${baseUrl}/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice?FID_COND_MRKT_DIV_CODE=J&FID_INPUT_ISCD=${symbol}&FID_INPUT_DATE_1=${pStartDate}&FID_INPUT_DATE_2=${pEndDate}&FID_PERIOD_DIV_CODE=D&FID_ORG_ADJ_PRC=0`;
+      const pUrl = `${baseUrl}/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice?FID_COND_MRKT_DIV_CODE=J&FID_INPUT_ISCD=${symbol}&FID_INPUT_DATE_1=${pStartDate}&FID_INPUT_DATE_2=${pEndDate}&FID_PERIOD_DIV_CODE=D&FID_ORG_ADJ_PRC=0`;
 
-          await new Promise((r) => setTimeout(r, 250));
-          let pRes = await fetch(pUrl, {
+      await new Promise((r) => setTimeout(r, 250));
+      let pRes = await fetch(pUrl, {
+        method: 'GET',
+        headers: {
+          'content-type': 'application/json; charset=utf-8',
+          authorization: `Bearer ${token}`,
+          appkey: appKey,
+          appsecret: appSecret,
+          tr_id: 'FHKST03010100',
+          custtype: 'P',
+        },
+        cache: 'no-store',
+      }).catch(() => null);
+
+      if (pRes && pRes.ok) {
+        let pJson = await pRes.json().catch(() => null);
+        if (pJson && pJson.rt_cd !== '0' && (pJson.msg1?.includes('초당') || pJson.msg_cd === 'EGW00201')) {
+          await new Promise((r) => setTimeout(r, 500));
+          const retryRes = await fetch(pUrl, {
             method: 'GET',
             headers: {
               'content-type': 'application/json; charset=utf-8',
@@ -514,37 +531,20 @@ async function executeKisInvestorTrendFetch(
             },
             cache: 'no-store',
           }).catch(() => null);
-
-          if (pRes && pRes.ok) {
-            let pJson = await pRes.json().catch(() => null);
-            if (pJson && pJson.rt_cd !== '0' && (pJson.msg1?.includes('초당') || pJson.msg_cd === 'EGW00201')) {
-              await new Promise((r) => setTimeout(r, 500));
-              const retryRes = await fetch(pUrl, {
-                method: 'GET',
-                headers: {
-                  'content-type': 'application/json; charset=utf-8',
-                  authorization: `Bearer ${token}`,
-                  appkey: appKey,
-                  appsecret: appSecret,
-                  tr_id: 'FHKST03010100',
-                  custtype: 'P',
-                },
-                cache: 'no-store',
-              }).catch(() => null);
-              if (retryRes && retryRes.ok) pJson = await retryRes.json().catch(() => null);
-            }
-
-            if (pJson && pJson.rt_cd === '0' && Array.isArray(pJson.output2) && pJson.output2.length > 0) {
-              const pAscending = pJson.output2.slice().reverse();
-              fullDailyItems = [...pAscending, ...fullDailyItems];
-              currentEnd = getObjDate(pAscending[0]);
-            } else {
-              break;
-            }
-          } else {
-            break;
-          }
+          if (retryRes && retryRes.ok) pJson = await retryRes.json().catch(() => null);
         }
+
+        if (pJson && pJson.rt_cd === '0' && Array.isArray(pJson.output2) && pJson.output2.length > 0) {
+          const pAscending = pJson.output2.slice().reverse();
+          fullDailyItems = [...pAscending, ...fullDailyItems];
+          currentEnd = getObjDate(pAscending[0]);
+        } else {
+          break;
+        }
+      } else {
+        break;
+      }
+    }
   }
 
   if (fullDailyItems.length === 0) {
@@ -780,14 +780,14 @@ export async function fetchKisProgramTrade(
       };
     }
     const isVirtual = process.env.KIS_VIRTUAL === 'true';
-    const defaultBaseUrl = isVirtual 
-      ? 'https://openapivts.koreainvestment.com:29443' 
+    const defaultBaseUrl = isVirtual
+      ? 'https://openapivts.koreainvestment.com:29443'
       : 'https://openapi.koreainvestment.com:9443';
     const urlBase = baseUrl || process.env.KIS_BASE_URL || defaultBaseUrl;
     const key = appKey || process.env.KIS_APPKEY || '';
     const sec = appSecret || process.env.KIS_APPSECRET || '';
 
-    const url = `${urlBase}/uapi/domestic-stock/v1/quotations/program-trade-by-stock?FID_COND_MRKT_DIV_CODE=J&FID_INPUT_ISCD=${symbol}&FID_INPUT_HOUR_1=`;
+    const url = `${urlBase}/uapi/domestic-stock/v1/quotations/program-trade-by-stock?FID_COND_MRKT_DIV_CODE=J&FID_INPUT_ISCD=${symbol}`;
     const res = await fetch(url, {
       method: 'GET',
       headers: {
@@ -795,7 +795,7 @@ export async function fetchKisProgramTrade(
         authorization: `Bearer ${tk}`,
         appkey: key,
         appsecret: sec,
-        tr_id: 'FHPST01060000',
+        tr_id: 'FHPPG04650101',
         custtype: 'P',
       },
       cache: 'no-store',
@@ -803,42 +803,41 @@ export async function fetchKisProgramTrade(
 
     if (res.ok) {
       const json = await res.json();
-      if (json.rt_cd === '0' && Array.isArray(json.output2) && json.output2.length > 0) {
-        const rawList = json.output2.slice(0, 15).reverse();
-        let cumNetQty = 0;
-        let cumNetAmt = 0;
+      if (json.rt_cd === '0' && Array.isArray(json.output) && json.output.length > 0) {
+        const latest = json.output[0];
+        const rawQty = parseInt(latest.whol_smtn_ntby_qty || '0', 10);
+        const rawAmtWon = Number(latest.whol_smtn_ntby_tr_pbmn || '0');
+        // 백만원 단위 정수 환산 (100만원 단위)
+        const rawAmtMillion = Math.round(rawAmtWon / 1000000);
 
-        const intradayTrend: ProgramTradeIntradayPoint[] = rawList.map((item: any) => {
-          const hourRaw = item.stck_cntg_hour || '';
-          const formattedTime = hourRaw.length >= 4 ? `${hourRaw.slice(0, 2)}:${hourRaw.slice(2, 4)}` : hourRaw;
-          const price = parseInt(item.stck_prpr || '0', 10);
-          const qty = parseInt(item.cnqn || '0', 10);
+        // 장중 시계열 데이터 구성 (최대 30개 타임스탬프)
+        const intradayTrend: ProgramTradeIntradayPoint[] = json.output
+          .slice(0, 30)
+          .reverse()
+          .map((item: any) => {
+            const hourRaw = item.bsop_hour || '';
+            const formattedTime = hourRaw.length >= 4 ? `${hourRaw.slice(0, 2)}:${hourRaw.slice(2, 4)}` : hourRaw;
+            const price = parseInt(item.stck_prpr || '0', 10) || currentPrice;
+            const qty = parseInt(item.whol_smtn_ntby_qty || '0', 10);
+            const amtMillion = Math.round(Number(item.whol_smtn_ntby_tr_pbmn || '0') / 1000000);
+            const arb = Math.round(amtMillion * 0.15);
+            const nonArb = amtMillion - arb;
 
-          cumNetQty += qty;
-          const tickPrice = price || currentPrice;
-          const rawAmt = Math.round((qty * tickPrice) / 1000000);
-          cumNetAmt += rawAmt;
+            return {
+              time: formattedTime,
+              price,
+              arbitrageAmt: arb,
+              nonArbitrageAmt: nonArb,
+              totalNetBuyAmt: amtMillion,
+              totalNetBuyQty: qty,
+            };
+          });
 
-          const arb = Math.round(cumNetAmt * 0.15);
-          const nonArb = cumNetAmt - arb;
-
-          return {
-            time: formattedTime,
-            price,
-            arbitrageAmt: arb,
-            nonArbitrageAmt: nonArb,
-            totalNetBuyAmt: cumNetAmt,
-            totalNetBuyQty: cumNetQty,
-          };
-        });
-
-        const last = intradayTrend[intradayTrend.length - 1];
-        const totalAmt = last.totalNetBuyAmt;
         let status: ProgramTradeSummary['status'] = 'NEUTRAL';
-        if (totalAmt > 500) status = 'STRONG_BUY';
-        else if (totalAmt > 100) status = 'BUY';
-        else if (totalAmt < -500) status = 'STRONG_SELL';
-        else if (totalAmt < -100) status = 'SELL';
+        if (rawAmtMillion > 500) status = 'STRONG_BUY';
+        else if (rawAmtMillion > 100) status = 'BUY';
+        else if (rawAmtMillion < -500) status = 'STRONG_SELL';
+        else if (rawAmtMillion < -100) status = 'SELL';
 
         const now = new Date();
         const utc = now.getTime() + now.getTimezoneOffset() * 60000;
@@ -849,15 +848,22 @@ export async function fetchKisProgramTrade(
         const dayOfWeek = kstDate.getDay();
         const isMarketOpen = dayOfWeek >= 1 && dayOfWeek <= 5 && timeNum >= 900 && timeNum < 1530;
 
+        const latestTime = latest.bsop_hour && latest.bsop_hour.length >= 4
+          ? `${latest.bsop_hour.slice(0, 2)}:${latest.bsop_hour.slice(2, 4)}`
+          : '';
+
         const programAsOfDateLabel = isMarketOpen
-          ? ((last && last.time) ? `당일 실시간 (${last.time})` : '당일 실시간')
+          ? (latestTime ? `당일 실시간 (${latestTime})` : '당일 실시간')
           : getSettledAsOfDateLabel();
 
+        const arb = Math.round(rawAmtMillion * 0.15);
+        const nonArb = rawAmtMillion - arb;
+
         return {
-          arbitrageAmt: last.arbitrageAmt,
-          nonArbitrageAmt: last.nonArbitrageAmt,
-          totalNetBuyAmt: totalAmt,
-          totalNetBuyQty: last.totalNetBuyQty,
+          arbitrageAmt: arb,
+          nonArbitrageAmt: nonArb,
+          totalNetBuyAmt: rawAmtMillion,
+          totalNetBuyQty: rawQty,
           ratioVsVolume: 14.8,
           status,
           asOfDateLabel: programAsOfDateLabel,
@@ -928,8 +934,8 @@ export async function fetchKisCreditAvailable(symbol: string): Promise<boolean |
 
 async function executeKisCreditAvailableFetch(symbol: string): Promise<boolean | undefined> {
   const isVirtual = process.env.KIS_VIRTUAL === 'true';
-  const defaultBaseUrl = isVirtual 
-    ? 'https://openapivts.koreainvestment.com:29443' 
+  const defaultBaseUrl = isVirtual
+    ? 'https://openapivts.koreainvestment.com:29443'
     : 'https://openapi.koreainvestment.com:9443';
   const baseUrl = process.env.KIS_BASE_URL || defaultBaseUrl;
   const appKey = process.env.KIS_APPKEY!;
@@ -1086,7 +1092,7 @@ export async function resolveAndCacheMissingCredits(symbols: string[]): Promise<
         creditStatusCache.set(sym, { isCredit, timestamp: Date.now() });
         entries.push({ symbol: sym, is_credit: isCredit });
       }
-    } catch (e) {}
+    } catch (e) { }
   }
 
   if (entries.length > 0) {
@@ -1164,8 +1170,8 @@ async function executeKisForeignInstitutionRankingFetch(
   const appKey = process.env.KIS_APPKEY!;
   const appSecret = process.env.KIS_APPSECRET!;
   const isVirtual = process.env.KIS_VIRTUAL === 'true';
-  const defaultBaseUrl = isVirtual 
-    ? 'https://openapivts.koreainvestment.com:29443' 
+  const defaultBaseUrl = isVirtual
+    ? 'https://openapivts.koreainvestment.com:29443'
     : 'https://openapi.koreainvestment.com:9443';
   const baseUrl = process.env.KIS_BASE_URL || defaultBaseUrl;
 
@@ -1248,7 +1254,7 @@ async function executeKisForeignInstitutionRankingFetch(
       const symbol = item.mksc_shrn_iscd || item.stck_shrn_iscd || '';
       const rawName = item.hts_kor_isnm || item.kor_isnm || item.isnm || item.hts_kor_isnm_1;
       const name = getStockName(symbol, rawName);
-      
+
       const sign = item.prdy_vrss_sign || '3';
       let priceChange = parseInt(item.prdy_vrss || item.prss || '0', 10);
       if (sign === '4' || sign === '5') priceChange = -Math.abs(priceChange);
@@ -1293,6 +1299,12 @@ async function executeKisForeignInstitutionRankingFetch(
         ratioVsVolume,
         isCreditAvailable: getEvaluatedCreditStatus(symbol, name),
       };
+    });
+
+    const isBuy = direction === 'buy';
+    list.sort((a, b) => (isBuy ? b.netBuyAmt - a.netBuyAmt : a.netBuyAmt - b.netBuyAmt));
+    list.forEach((item, idx) => {
+      item.rank = idx + 1;
     });
 
     // 100% 배치 스토어 및 Supabase DB 병합 (0ms~10ms)
@@ -1344,8 +1356,8 @@ async function enrichRankingWithRawInvestorData(
     if (!token) return;
 
     const isVirtual = process.env.KIS_VIRTUAL === 'true';
-    const defaultBaseUrl = isVirtual 
-      ? 'https://openapivts.koreainvestment.com:29443' 
+    const defaultBaseUrl = isVirtual
+      ? 'https://openapivts.koreainvestment.com:29443'
       : 'https://openapi.koreainvestment.com:9443';
     const baseUrl = process.env.KIS_BASE_URL || defaultBaseUrl;
 
@@ -1540,17 +1552,17 @@ async function executeAsyncOverlapCalculation(
   }
 
   try {
-    const { getBatchRankingData, getCached5dTrend } = await import('./batchCollector');
+    const { getBatchRankingData, getBatchRankingDataAsync, getCached5dTrend } = await import('./batchCollector');
     const candidateLimit = 50;
 
     const reqPeriod = (period === 'consecutive2d' || period === 'consecutive3d') ? '1d' : (period as '1d' | '1w' | '1m');
-    const [foreignRes, organRes] = await Promise.all([
+    const [foreignRes, organRes, programRes] = await Promise.all([
       fetchKisForeignInstitutionRanking('foreign', direction, reqPeriod, market, candidateLimit),
       fetchKisForeignInstitutionRanking('organ', direction, reqPeriod, market, candidateLimit),
+      getBatchRankingDataAsync('program', direction, reqPeriod, market, candidateLimit),
     ]);
 
     const pensionRes = getBatchRankingData('pension', direction, reqPeriod, market);
-    const programRes = getBatchRankingData('program', direction, reqPeriod, market);
 
     const map = new Map<
       string,
@@ -1576,7 +1588,7 @@ async function executeAsyncOverlapCalculation(
         .filter((item) => (isBuy ? item.netBuyAmt > 0 : item.netBuyAmt < 0))
         .slice(0, 50);
 
-      topList.forEach((item) => {
+      topList.forEach((item, idx) => {
         if (!map.has(item.symbol)) {
           const priceInfo = resolveStockPriceAndChange(item.symbol, item.currentPrice, item.change, item.changeRate);
           map.set(item.symbol, {
@@ -1593,7 +1605,8 @@ async function executeAsyncOverlapCalculation(
         entry.ranksByType.push({
           type,
           label,
-          rank: item.rank,
+          rank: item.rank || (idx + 1),
+          isRanked: true,
           netBuyAmt: item.netBuyAmt,
           netBuyAmtEok: item.netBuyAmtEok,
           asOfDateLabel: item.asOfDateLabel,
@@ -1613,8 +1626,8 @@ async function executeAsyncOverlapCalculation(
       const hasOrgan = value.ranksByType.some((r) => r.type === 'organ');
       const overlapCount = value.ranksByType.length;
 
-      // 수급 교집합: 외국인과 기관이 동시에 매수한 진짜 교집합 종목만 포함 (단일 기관 종목 배제)
-      if (hasForeign && hasOrgan && overlapCount >= minOverlap) {
+      // 수급 교집합: 4대 주체(외인·기관·연기금·프로그램) 중 minOverlap(2개) 이상 중복 순매수한 모든 종목 포함
+      if (overlapCount >= minOverlap) {
         const investorLabels = value.ranksByType.map((r) => r.label);
         const totalNetBuyAmt = value.ranksByType.reduce((sum, r) => sum + r.netBuyAmt, 0);
         const totalNetBuyAmtEok = Number((totalNetBuyAmt / 100).toFixed(1));
@@ -1673,14 +1686,118 @@ async function executeAsyncOverlapCalculation(
         }
         const trendData = trendRes?.trend || [];
         const statusInfo = computeStatusBadgeFromTrend(trendData);
+        const latestTrend = trendData[trendData.length - 1];
+
+        const ranksByType = [...(item.ranksByType || [])];
+
+        // 1. 외국인 50위 밖 실매수 보정
+        const foreignAmt = latestTrend?.foreignNetBuyAmt || 0;
+        const hasForeignInRanks = ranksByType.some((r) => r.type === 'foreign');
+        if ((isBuy ? foreignAmt > 0 : foreignAmt < 0) && !hasForeignInRanks) {
+          ranksByType.push({
+            type: 'foreign',
+            label: '외국인',
+            rank: 0,
+            isRanked: false,
+            netBuyAmt: foreignAmt,
+            netBuyAmtEok: Number((foreignAmt / 100).toFixed(1)),
+            asOfDateLabel: getSettledAsOfDateLabel(latestTrend?.stck_bsop_date || latestTrend?.date),
+          });
+        }
+
+        // 2. 기관 50위 밖 실매수 보정
+        const organAmt = latestTrend?.organNetBuyAmt || 0;
+        const hasOrganInRanks = ranksByType.some((r) => r.type === 'organ');
+        if ((isBuy ? organAmt > 0 : organAmt < 0) && !hasOrganInRanks) {
+          ranksByType.push({
+            type: 'organ',
+            label: '기관',
+            rank: 0,
+            isRanked: false,
+            netBuyAmt: organAmt,
+            netBuyAmtEok: Number((organAmt / 100).toFixed(1)),
+            asOfDateLabel: getSettledAsOfDateLabel(latestTrend?.stck_bsop_date || latestTrend?.date),
+          });
+        }
+
+        // 3. 연기금 실데이터 보정 (랭킹 외 실매수)
+        const pensionAmt = latestTrend?.pensionNetBuyAmt || 0;
+        const hasPensionInRanks = ranksByType.some((r) => r.type === 'pension');
+        if ((isBuy ? pensionAmt > 0 : pensionAmt < 0) && !hasPensionInRanks) {
+          ranksByType.push({
+            type: 'pension',
+            label: '연기금',
+            rank: 0,
+            isRanked: false,
+            netBuyAmt: pensionAmt,
+            netBuyAmtEok: Number((pensionAmt / 100).toFixed(1)),
+            asOfDateLabel: getSettledAsOfDateLabel(latestTrend?.stck_bsop_date || latestTrend?.date),
+          });
+        }
+
+        // 4. 프로그램 실데이터 보정 (랭킹 외 실매수)
+        const programAmt = trendRes?.programTrade?.totalNetBuyAmt || 0;
+        const hasProgramInRanks = ranksByType.some((r) => r.type === 'program');
+        if ((isBuy ? programAmt > 0 : programAmt < 0) && !hasProgramInRanks) {
+          ranksByType.push({
+            type: 'program',
+            label: '프로그램',
+            rank: 0,
+            isRanked: false,
+            netBuyAmt: programAmt,
+            netBuyAmtEok: Number((programAmt / 100).toFixed(1)),
+            asOfDateLabel: trendRes?.programTrade?.asOfDateLabel || getSettledAsOfDateLabel(),
+          });
+        }
+
+        const ENTITY_ORDER: Record<string, number> = { foreign: 1, organ: 2, pension: 3, program: 4 };
+        ranksByType.sort((a, b) => (ENTITY_ORDER[a.type] || 99) - (ENTITY_ORDER[b.type] || 99));
+
+        const overlapCount = ranksByType.length;
+        const totalNetBuyAmt = ranksByType.reduce((sum, r) => sum + r.netBuyAmt, 0);
+        const totalNetBuyAmtEok = Number((totalNetBuyAmt / 100).toFixed(1));
+        const price = item.currentPrice > 0 ? item.currentPrice : 50000;
+        const totalNetBuyQty = Math.round((totalNetBuyAmt * 1000000) / price);
+
+        const ALL_ENTITIES: Array<{ type: 'foreign' | 'organ' | 'pension' | 'program'; label: string }> = [
+          { type: 'foreign', label: '외국인' },
+          { type: 'organ', label: '기관' },
+          { type: 'pension', label: '연기금' },
+          { type: 'program', label: '프로그램' },
+        ];
+        const missingEntities = ALL_ENTITIES.filter((e) => !ranksByType.some((r) => r.type === e.type));
+
         return {
           ...item,
           rank: index + 1,
+          overlapCount,
+          ranksByType,
+          missingEntities,
+          netBuyAmt: totalNetBuyAmt,
+          netBuyAmtEok: totalNetBuyAmtEok,
+          netBuyQty: totalNetBuyQty,
+          foreignNetBuyAmt: ranksByType.find((r) => r.type === 'foreign')?.netBuyAmt,
+          organNetBuyAmt: ranksByType.find((r) => r.type === 'organ')?.netBuyAmt,
+          pensionNetBuyAmt: ranksByType.find((r) => r.type === 'pension')?.netBuyAmt,
+          programNetBuyAmt: ranksByType.find((r) => r.type === 'program')?.netBuyAmt,
+          asOfDateLabel: getSettledAsOfDateLabel(),
           statusBadge: statusInfo.shortBadge,
           statusBadgeStyle: statusInfo.badgeStyle,
         };
       })
     );
+
+    // 4대 주체 전수 합산 후 최종 정렬: 1. overlapCount 내림차순, 2. totalNetBuyAmt 내림차순
+    finalOverlapItems.sort((a, b) => {
+      const countA = a.overlapCount || 0;
+      const countB = b.overlapCount || 0;
+      if (countB !== countA) return countB - countA;
+      return isBuy ? b.netBuyAmt - a.netBuyAmt : a.netBuyAmt - b.netBuyAmt;
+    });
+
+    finalOverlapItems.forEach((item, idx) => {
+      item.rank = idx + 1;
+    });
 
     const aiPickCandidates = [...finalOverlapItems]
       .map((item) => {
@@ -1939,7 +2056,10 @@ export async function fetchConsecutiveNDaysOverlapRankingData(
     const hasOrgan = ranksByType.some((r) => r.type === 'organ');
     const overlapCount = ranksByType.length;
 
-    if (hasForeign && hasOrgan && overlapCount >= minOverlap) {
+    if (overlapCount >= minOverlap) {
+      const ENTITY_ORDER: Record<string, number> = { foreign: 1, organ: 2, pension: 3, program: 4 };
+      ranksByType.sort((a, b) => (ENTITY_ORDER[a.type] || 99) - (ENTITY_ORDER[b.type] || 99));
+
       const latest = trend[trend.length - 1];
       const investorLabels = ranksByType.map((r) => r.label);
       const totalNetBuyAmt = ranksByType.reduce((sum, r) => sum + r.netBuyAmt, 0);
@@ -1947,19 +2067,27 @@ export async function fetchConsecutiveNDaysOverlapRankingData(
       const investorBadge = `${overlapCount}개 주체 중복 (${investorLabels.join(' · ')})`;
       const missingEntities = ALL_ENTITIES.filter((e) => !ranksByType.some((r) => r.type === e.type));
 
+      const price = latest.closePrice || stock.currentPrice || 50000;
+      const totalNetBuyQty = Math.round((totalNetBuyAmt * 1000000) / price);
+
       const statusInfo = computeStatusBadgeFromTrend(trend);
       results.push({
         rank: 0,
         symbol: stock.symbol,
         name: getStockName(stock.symbol, trendRes.stockInfo?.name || stock.name),
-        currentPrice: latest.closePrice || stock.currentPrice || 0,
+        currentPrice: price,
         change: latest.priceChange || 0,
         changeRate: latest.changeRate || 0,
-        netBuyQty: 0,
+        netBuyQty: totalNetBuyQty,
         netBuyAmt: totalNetBuyAmt,
         netBuyAmtEok: totalNetBuyAmtEok,
         volume: latest.volume || 1000000,
-        ratioVsVolume: 0,
+        ratioVsVolume: (latest.volume || 0) > 0 ? Number(((Math.abs(totalNetBuyQty) / latest.volume!) * 100).toFixed(1)) : 0,
+        foreignNetBuyAmt: ranksByType.find((r) => r.type === 'foreign')?.netBuyAmt,
+        organNetBuyAmt: ranksByType.find((r) => r.type === 'organ')?.netBuyAmt,
+        pensionNetBuyAmt: ranksByType.find((r) => r.type === 'pension')?.netBuyAmt,
+        programNetBuyAmt: ranksByType.find((r) => r.type === 'program')?.netBuyAmt,
+        asOfDateLabel: getSettledAsOfDateLabel(),
         overlapCount,
         investorBadge,
         statusBadge: statusInfo?.shortBadge,
@@ -2060,7 +2188,7 @@ export async function fetchKisSurgingStocks(
   }
 
   const cacheKey = `surging-${mode}-${market}`;
-  
+
   // 1. In-Memory Cache Check (0ms latency)
   if (surgingCacheStore.has(cacheKey)) {
     const cached = surgingCacheStore.get(cacheKey)!;
@@ -2090,7 +2218,7 @@ export async function fetchKisSurgingStocks(
         updatedAt: new Date().toISOString(),
       };
     }
-    
+
     // Cold startup fallback - return empty list instead of fake seed items
     const dateObj = new Date();
     const hours = String(dateObj.getHours()).padStart(2, '0');
@@ -2116,8 +2244,8 @@ async function executeKisSurgingStocksFetch(
   market: MarketType
 ): Promise<InvestorRankingResponse> {
   const isVirtual = process.env.KIS_VIRTUAL === 'true';
-  const defaultBaseUrl = isVirtual 
-    ? 'https://openapivts.koreainvestment.com:29443' 
+  const defaultBaseUrl = isVirtual
+    ? 'https://openapivts.koreainvestment.com:29443'
     : 'https://openapi.koreainvestment.com:9443';
   const baseUrl = process.env.KIS_BASE_URL || defaultBaseUrl;
   const appKey = process.env.KIS_APPKEY!;
@@ -2257,7 +2385,7 @@ async function executeKisSurgingStocksFetch(
         }
       }
     })
-  ).catch(() => {});
+  ).catch(() => { });
 
   // 3. Final merge with updated cache values
   const mergedList = await mergeCreditStatusToRanking(items);

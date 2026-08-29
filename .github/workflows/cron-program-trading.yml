@@ -1,0 +1,48 @@
+name: Scheduled 5-Min Program Trading Batch (300 Stocks)
+
+on:
+  schedule:
+    # 평일(월~금) 한국시간 09:00 ~ 15:30 (UTC 00:00 ~ 06:30) 매 5분마다 실행
+    - cron: '*/5 0-6 * * 1-5'
+  workflow_dispatch: # GitHub Actions 탭에서 수동 즉시 실행 지원
+
+jobs:
+  collect-program-trading:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Trigger Program Trading Batch on Production
+        run: |
+          SITE_URL="${{ secrets.SITE_URL }}"
+          CRON_SECRET="${{ secrets.CRON_SECRET }}"
+
+          if [ -z "$SITE_URL" ]; then
+            echo "::error::SITE_URL secret is not configured in GitHub Secrets!"
+            exit 1
+          fi
+
+          echo "🚀 Triggering 300-stock Program Trading Batch on $SITE_URL..."
+
+          AUTH_HEADER=""
+          if [ -n "$CRON_SECRET" ]; then
+            AUTH_HEADER="Authorization: Bearer $CRON_SECRET"
+          fi
+
+          RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$SITE_URL/api/cron/collect-program" \
+            -H "$AUTH_HEADER" \
+            -H "Content-Type: application/json" \
+            --max-time 60)
+
+          HTTP_BODY=$(echo "$RESPONSE" | sed '$d')
+          HTTP_STATUS=$(echo "$RESPONSE" | tail -n1)
+
+          echo "HTTP Status: $HTTP_STATUS"
+          echo "Response Body: $HTTP_BODY"
+
+          if [ "$HTTP_STATUS" -ne 200 ]; then
+            echo "::error::Batch collection failed with status $HTTP_STATUS"
+            exit 1
+          fi
+
+          echo "✅ 300-Stock Program Trading Batch Completed Successfully!"
