@@ -24,7 +24,7 @@ interface CacheEntry {
 const batchCacheStore = new Map<string, CacheEntry>();
 const trend5dBatchStore = new Map<string, any>();
 
-const PENSION_DISK_CACHE_FILE = path.join(process.cwd(), 'scratch', '.pension_cache_20.json');
+const PENSION_DISK_CACHE_FILE = path.join(process.cwd(), 'scratch', '.pension_cache_300.json');
 
 export function loadPensionDiskCache(): void {
   try {
@@ -38,6 +38,11 @@ export function loadPensionDiskCache(): void {
         if (json.lastBatchTimeLabel) {
           lastBatchTimeLabel = json.lastBatchTimeLabel;
         }
+      }
+      if (json && json.trends) {
+        Object.entries(json.trends).forEach(([sym, val]: [string, any]) => {
+          trend5dBatchStore.set(sym, val);
+        });
       }
     }
   } catch (e) {
@@ -53,12 +58,20 @@ export function savePensionDiskCache(): void {
         entries[key] = val;
       }
     });
+    const trends: Record<string, any> = {};
+    trend5dBatchStore.forEach((val, sym) => {
+      trends[sym] = val;
+    });
     const dir = path.dirname(PENSION_DISK_CACHE_FILE);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(PENSION_DISK_CACHE_FILE, JSON.stringify({ entries, lastBatchTimeLabel, timestamp: Date.now() }), 'utf8');
+    fs.writeFileSync(PENSION_DISK_CACHE_FILE, JSON.stringify({ entries, trends, lastBatchTimeLabel, timestamp: Date.now() }), 'utf8');
   } catch (e) {
     console.error('[Pension Disk Cache Save Error]', e);
   }
+}
+
+export function getBatchTrend5d(symbol: string): any {
+  return trend5dBatchStore.get(symbol) || null;
 }
 
 loadPensionDiskCache();
@@ -81,6 +94,9 @@ export function getTypeLock(taskKey: string): TaskLockState {
 let lastBatchTimeLabel = '08:30 배치 기준';
 
 export function getCached5dTrend(symbol: string): any {
+  if (trend5dBatchStore.size === 0) {
+    loadPensionDiskCache();
+  }
   if (trend5dBatchStore.has(symbol)) {
     return trend5dBatchStore.get(symbol);
   }
@@ -258,12 +274,12 @@ export async function runTop50BatchCollector(force: boolean = false, taskKey: st
         await buildAndCacheRankings('program', programBuyList, now);
         console.log(`[Program Batch Completed] 300종목 프로그램 랭킹 수집 완료: count=${programBuyList.length}`);
       } else {
-        // [연기금 100% 독립 수집]: 대표 20개 종목 대상 직접 수집
-        const targetList = TOP_50_STOCKS.slice(0, 20);
+        // [연기금 100% 독립 수집]: 코스피 200 + 코스닥 100 (TOP_300_STOCKS 295개 종목) 전수 수집
+        const targetList = TOP_300_STOCKS;
 
         const pensionBuyList: RankingItem[] = [];
         const chunkSize = 5;
-        const delayMs = 100;
+        const delayMs = 60;
         for (let i = 0; i < targetList.length; i += chunkSize) {
           const chunk = targetList.slice(i, i + chunkSize);
           const chunkResults = await Promise.all(
@@ -306,7 +322,7 @@ export async function runTop50BatchCollector(force: boolean = false, taskKey: st
 
         await buildAndCacheRankings('pension', pensionBuyList, now);
         savePensionDiskCache();
-        console.log(`[Pension Batch Completed] 대표 20종목 연기금 랭킹 100% 독립 수집 완료: count=${pensionBuyList.length}`);
+        console.log(`[Pension Batch Completed] TOP_300_STOCKS (${pensionBuyList.length}종목) 연기금 랭킹 수집 완료`);
       }
 
       return true;

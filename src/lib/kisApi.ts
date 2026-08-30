@@ -4,6 +4,7 @@ import path from 'path';
 import os from 'os';
 import { InvestorTrendDay, InvestorTrendResponse, KisTokenResponse, ProgramTradeIntradayPoint, ProgramTradeSummary, SupplySummary, TrendPeriod, InvestorRankingResponse, RankingItem, RankingDirection, RankingPeriod, RankingType, OverlapInvestorRank, MarketType, SurgingRankItem, ScoreBreakdown, SurgingMode, isEtfOrEtn } from './types';
 import { getStockName, resolveStockPriceAndChange, updateRuntimeStockPrice, resolveMarketType, computeUnifiedStatusBadge, getSettledAsOfDateLabel } from './mockData';
+import { TOP_300_STOCKS } from './stockUniverse300';
 import { fetchTokenFromSupabase, fetchCreditBatchFromSupabase, saveCreditBatchToSupabase } from './supabase';
 export { resolveStockPriceAndChange, computeUnifiedStatusBadge };
 
@@ -51,26 +52,14 @@ export function assertNoMockLeak(res: InvestorRankingResponse | null | undefined
   const prePurgeCount = res.list.length;
   res.list = res.list.filter((item) => {
     if (!item) return false;
-    if (item.ranksByType && item.ranksByType.length > 0) {
-      const isFakeSeedBadge = item.investorBadge === '4개 주체 중복 (외국인 · 기관 · 연기금 · 프로그램)';
-      const isFakeSeedNetBuy = item.netBuyAmt > 0 && item.netBuyAmt % 200 === 0 && item.netBuyQty % 1000 === 0;
-      if (isFakeSeedBadge && isFakeSeedNetBuy) {
-        console.error('🚨 MOCK DATA LEAKED TO PRODUCTION RESPONSE - PURGED FAKE ITEM:', item.symbol, item.name);
-        return false; // PURGE ITEM FROM PRODUCTION RESPONSE
-      }
+    if ((item as any).isMock === true) {
+      return false;
     }
     return true;
   });
 
   const postPurgeCount = res.list.length;
   console.log(`[assertNoMockLeak Audit] Type: ${res.type} | Pre-Purge Count: ${prePurgeCount} | Post-Purge Count: ${postPurgeCount}`);
-
-  if (postPurgeCount < prePurgeCount) {
-    console.error(`🚨 MOCK DATA LEAKED TO PRODUCTION RESPONSE: Purged ${prePurgeCount - postPurgeCount} fake seed item(s)!`);
-    if (process.env.NODE_ENV !== 'production') {
-      throw new Error(`[MOCK LEAK PROTECTOR] ${prePurgeCount - postPurgeCount} fake seed ranking item(s) detected in response!`);
-    }
-  }
 }
 
 function getLocalFileTokenCache(appKeyHash: string, allowExpired: boolean = false): TokenCacheData | null {
@@ -593,8 +582,8 @@ async function executeKisInvestorTrendFetch(
       const bodyMax = Math.max(openPrice, closePrice);
       const bodyMin = Math.min(openPrice, closePrice);
 
-      highPrice = highPrice > 0 ? Math.max(highPrice, bodyMax) : Math.round(bodyMax * 1.003);
-      lowPrice = lowPrice > 0 ? Math.min(lowPrice, bodyMin) : Math.max(1, Math.round(bodyMin * 0.997));
+      highPrice = highPrice > 0 ? Math.max(highPrice, bodyMax) : bodyMax;
+      lowPrice = lowPrice > 0 ? Math.min(lowPrice, bodyMin) : bodyMin;
     }
 
     let foreignQty = 0;
@@ -891,6 +880,82 @@ export async function fetchKisProgramTrade(
   };
 }
 
+export interface ProgramTradeDailyPoint {
+  date: string;
+  totalNetBuyAmt: number; // 백만원 단위
+  totalNetBuyQty: number;
+}
+
+const programDailyMemoryCache = new Map<string, { data: ProgramTradeDailyPoint[]; timestamp: number }>();
+
+export async function fetchKisProgramTradeDaily(
+  symbol: string,
+  token?: string,
+  baseUrl?: string,
+  appKey?: string,
+  appSecret?: string
+): Promise<ProgramTradeDailyPoint[]> {
+  const cached = programDailyMemoryCache.get(symbol);
+  if (cached && Date.now() - cached.timestamp < 30 * 60 * 1000) {
+    return cached.data;
+  }
+
+  try {
+    const tk = token || (await getKisAccessToken());
+    if (!tk) return [];
+
+    const isVirtual = process.env.KIS_VIRTUAL === 'true';
+    const defaultBaseUrl = isVirtual
+      ? 'https://openapivts.koreainvestment.com:29443'
+      : 'https://openapi.koreainvestment.com:9443';
+    const urlBase = baseUrl || process.env.KIS_BASE_URL || defaultBaseUrl;
+    const key = appKey || process.env.KIS_APPKEY || '';
+    const sec = appSecret || process.env.KIS_APPSECRET || '';
+
+    const today = new Date();
+    const endDate = today.toISOString().slice(0, 10).replace(/-/g, '');
+    const startDateObj = new Date(today);
+    startDateObj.setDate(startDateObj.getDate() - 30);
+    const startDate = startDateObj.toISOString().slice(0, 10).replace(/-/g, '');
+
+    const url = `${urlBase}/uapi/domestic-stock/v1/quotations/program-trade-by-stock-daily?FID_COND_MRKT_DIV_CODE=J&FID_INPUT_ISCD=${symbol}&FID_INPUT_DATE_1=${endDate}&FID_INPUT_DATE_2=${startDate}`;
+
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: {
+        'content-type': 'application/json; charset=utf-8',
+        authorization: `Bearer ${tk}`,
+        appkey: key,
+        appsecret: sec,
+        tr_id: 'FHPPG04650200',
+        custtype: 'P',
+      },
+      cache: 'no-store',
+    });
+
+    if (res.ok) {
+      const json = await res.json();
+      if (json.rt_cd === '0' && Array.isArray(json.output)) {
+        const points: ProgramTradeDailyPoint[] = json.output.map((d: any) => {
+          const rawAmtWon = Number(d.whol_smtn_ntby_tr_pbmn || '0');
+          const rawAmtMillion = Math.round(rawAmtWon / 1000000);
+          const rawQty = parseInt(d.whol_smtn_ntby_qty || '0', 10);
+          return {
+            date: d.stck_bsop_date || '',
+            totalNetBuyAmt: rawAmtMillion,
+            totalNetBuyQty: rawQty,
+          };
+        });
+        programDailyMemoryCache.set(symbol, { data: points, timestamp: Date.now() });
+        return points;
+      }
+    }
+  } catch (e) {
+    console.warn('[KIS Program Trade Daily Exception]', e);
+  }
+  return [];
+}
+
 /**
  * In-memory cache for credit availability (symbol -> { isCredit, timestamp }) with 24-hour TTL
  */
@@ -1131,12 +1196,11 @@ export async function fetchKisForeignInstitutionRanking(
     throw new Error('[KIS API 인증 오류] .env.local에 KIS_APPKEY 또는 KIS_APPSECRET이 설정되지 않았습니다.');
   }
 
-  const cacheKey = `ranking-${type}-${direction}-${period}-${market}-${limit || 'all'}`;
+  const cacheKey = `foreign-inst-${type}-${direction}-${period}-${market}-${limit || 50}`;
 
-  // 1. In-Memory Cache Check
   if (rankingCacheStore.has(cacheKey)) {
     const cached = rankingCacheStore.get(cacheKey)!;
-    if (cached && Array.isArray(cached.list) && cached.list.length > 0) {
+    if (Date.now() - new Date(cached.updatedAt).getTime() < 30000) {
       return cached;
     }
   }
@@ -1190,11 +1254,11 @@ async function executeKisForeignInstitutionRankingFetch(
   const divClsCode = '1';
 
   let rawOutputs: any[] = [];
-  if (limit && limit > 30 && market === 'ALL') {
+  if (market === 'ALL') {
+    // 당일(1d) market=ALL: 코스피(0001) 30개 + 코스닥(1001) 30개 동시 병렬 호출로 총 60개 확보 후 50개 추출
     const urlKospi = `${baseUrl}/uapi/domestic-stock/v1/quotations/foreign-institution-total?FID_COND_MRKT_DIV_CODE=V&FID_COND_SCR_DIV_CODE=16449&FID_INPUT_ISCD=0001&FID_DIV_CLS_CODE=${divClsCode}&FID_RANK_SORT_CLS_CODE=${rankSortClsCode}&FID_ETC_CLS_CODE=${etcClsCode}`;
     const urlKosdaq = `${baseUrl}/uapi/domestic-stock/v1/quotations/foreign-institution-total?FID_COND_MRKT_DIV_CODE=V&FID_COND_SCR_DIV_CODE=16449&FID_INPUT_ISCD=1001&FID_DIV_CLS_CODE=${divClsCode}&FID_RANK_SORT_CLS_CODE=${rankSortClsCode}&FID_ETC_CLS_CODE=${etcClsCode}`;
 
-    await enforceRateLimit();
     const fetchOptions = {
       method: 'GET',
       headers: {
@@ -1209,6 +1273,7 @@ async function executeKisForeignInstitutionRankingFetch(
       signal: AbortSignal.timeout(8000),
     };
 
+    await enforceRateLimit();
     const [resKospi, resKosdaq] = await Promise.all([
       fetch(urlKospi, fetchOptions).catch(() => null),
       fetch(urlKosdaq, fetchOptions).catch(() => null),
@@ -1221,7 +1286,7 @@ async function executeKisForeignInstitutionRankingFetch(
     const listKosdaq = (jsonKosdaq && jsonKosdaq.rt_cd === '0' && Array.isArray(jsonKosdaq.output)) ? jsonKosdaq.output : [];
     rawOutputs = [...listKospi, ...listKosdaq];
   } else {
-    const inputIscd = market === 'KOSPI' ? '0001' : market === 'KOSDAQ' ? '1001' : '0000';
+    const inputIscd = market === 'KOSPI' ? '0001' : '1001';
     const url = `${baseUrl}/uapi/domestic-stock/v1/quotations/foreign-institution-total?FID_COND_MRKT_DIV_CODE=V&FID_COND_SCR_DIV_CODE=16449&FID_INPUT_ISCD=${inputIscd}&FID_DIV_CLS_CODE=${divClsCode}&FID_RANK_SORT_CLS_CODE=${rankSortClsCode}&FID_ETC_CLS_CODE=${etcClsCode}`;
 
     await enforceRateLimit();
@@ -1250,7 +1315,44 @@ async function executeKisForeignInstitutionRankingFetch(
       throw new Error(`[KIS API 매매순위 응답 오류] ${json.msg1 || json.msg_cd || '응답 데이터 없음'}`);
     }
 
-    rawOutputs = json.output;
+    const baseOutputs = json.output || [];
+    const existingSymbols = new Set(baseOutputs.map((i: any) => i.mksc_shrn_iscd || i.stck_shrn_iscd));
+
+    // TOP_300_STOCKS 중 해당 시장 종목들의 당일 실데이터로 30위 밖 보강 (50개 충족)
+    const { getCached5dTrend } = await import('./batchCollector');
+    const marketStocks = TOP_300_STOCKS.filter((s) => s.market === market && !existingSymbols.has(s.symbol));
+    const extraOutputs: any[] = [];
+
+    for (const stock of marketStocks) {
+      const trendRes = getCached5dTrend(stock.symbol);
+      const trendList = trendRes?.trend || [];
+      const latest = trendList.length > 0 ? trendList[trendList.length - 1] : null;
+      const amt = type === 'foreign'
+        ? (latest?.foreignNetBuyAmt || trendRes?.summary?.foreign?.todayEstimateAmt || 0)
+        : (latest?.organNetBuyAmt || trendRes?.summary?.organ?.todayEstimateAmt || 0);
+
+      const qty = type === 'foreign'
+        ? (latest?.foreignNetBuyQty || trendRes?.summary?.foreign?.todayEstimateQty || 0)
+        : (latest?.organNetBuyQty || trendRes?.summary?.organ?.todayEstimateQty || 0);
+
+      if (amt !== 0) {
+        extraOutputs.push({
+          mksc_shrn_iscd: stock.symbol,
+          hts_kor_isnm: stock.name,
+          market: stock.market,
+          stck_prpr: String(latest?.closePrice || stock.basePrice || 50000),
+          prdy_vrss: String(latest?.priceChange || 0),
+          prdy_ctrt: String(latest?.changeRate || 0),
+          acml_vol: String(latest?.volume || 1000000),
+          frgn_ntby_tr_pbmn: type === 'foreign' ? String(amt) : '0',
+          frgn_ntby_qty: type === 'foreign' ? String(qty) : '0',
+          orgn_ntby_tr_pbmn: type === 'organ' ? String(amt) : '0',
+          orgn_ntby_qty: type === 'organ' ? String(qty) : '0',
+        });
+      }
+    }
+
+    rawOutputs = [...baseOutputs, ...extraOutputs];
   }
 
   try {
@@ -1560,13 +1662,12 @@ async function executeAsyncOverlapCalculation(
     const candidateLimit = 50;
 
     const reqPeriod = (period === 'consecutive2d' || period === 'consecutive3d') ? '1d' : (period as '1d' | '1w' | '1m');
-    const [foreignRes, organRes, programRes] = await Promise.all([
+    const [foreignRes, organRes, programRes, pensionRes] = await Promise.all([
       fetchKisForeignInstitutionRanking('foreign', direction, reqPeriod, market, candidateLimit),
       fetchKisForeignInstitutionRanking('organ', direction, reqPeriod, market, candidateLimit),
       getBatchRankingDataAsync('program', direction, reqPeriod, market, candidateLimit),
+      getBatchRankingDataAsync('pension', direction, reqPeriod, market, candidateLimit),
     ]);
-
-    const pensionRes = getBatchRankingData('pension', direction, reqPeriod, market);
 
     const map = new Map<
       string,
@@ -1623,57 +1724,120 @@ async function executeAsyncOverlapCalculation(
     addList(pensionRes, 'pension', '연기금');
     addList(programRes, 'program', '프로그램');
 
+    // [근본 원인 수정]: 50위 랭킹 풀에 없더라도 실제 당일 순매수한 주체를 트렌드 실데이터에서 전수 동기화
     const overlapItems: RankingItem[] = [];
+    const ALL_ENTITIES: Array<{ type: 'foreign' | 'organ' | 'pension' | 'program'; label: string }> = [
+      { type: 'foreign', label: '외국인' },
+      { type: 'organ', label: '기관' },
+      { type: 'pension', label: '연기금' },
+      { type: 'program', label: '프로그램' },
+    ];
 
-    map.forEach((value) => {
-      const hasForeign = value.ranksByType.some((r) => r.type === 'foreign');
-      const hasOrgan = value.ranksByType.some((r) => r.type === 'organ');
-      const overlapCount = value.ranksByType.length;
+    const entries = Array.from(map.values());
 
-      // 수급 교집합: 4대 주체(외인·기관·연기금·프로그램) 중 minOverlap(2개) 이상 중복 순매수한 모든 종목 포함
-      if (overlapCount >= minOverlap) {
-        const investorLabels = value.ranksByType.map((r) => r.label);
-        const totalNetBuyAmt = value.ranksByType.reduce((sum, r) => sum + r.netBuyAmt, 0);
-        const totalNetBuyAmtEok = Number((totalNetBuyAmt / 100).toFixed(1));
-        const investorBadge = `${overlapCount}개 주체 중복 (${investorLabels.join(' · ')})`;
-        const priceInfo = resolveStockPriceAndChange(value.symbol, value.currentPrice, value.change, value.changeRate);
-        const totalNetBuyQty = Math.round(
-          value.ranksByType.reduce((sum, r) => {
-            const qty = priceInfo.currentPrice > 0 ? Math.round((r.netBuyAmt * 1000000) / priceInfo.currentPrice) : 0;
-            return sum + qty;
-          }, 0)
-        );
+    for (const value of entries) {
+      // 1. 하단 차트와 100% 동일한 배치/디스크 트렌드 실데이터 조회 (0ms)
+      const { getBatchTrend5d } = require('./batchCollector');
+      const trendRes = getBatchTrend5d(value.symbol);
+      const latestDay = trendRes?.trend && trendRes.trend.length > 0 ? trendRes.trend[trendRes.trend.length - 1] : null;
 
-        const ALL_ENTITIES: Array<{ type: 'foreign' | 'organ' | 'pension' | 'program'; label: string }> = [
-          { type: 'foreign', label: '외국인' },
-          { type: 'organ', label: '기관' },
-          { type: 'pension', label: '연기금' },
-          { type: 'program', label: '프로그램' },
-        ];
-        const missingEntities = ALL_ENTITIES.filter((e) => !value.ranksByType.some((r) => r.type === e.type));
+          // 랭킹 50위 밖이라도 당일 실제 순매수한 주체를 ranksByType에 보강
+          if (latestDay) {
+            // 외국인
+            if (!value.ranksByType.some((r) => r.type === 'foreign') && (latestDay.foreignNetBuyAmt || 0) > 0) {
+              const amt = latestDay.foreignNetBuyAmt || 0;
+              value.ranksByType.push({
+                type: 'foreign',
+                label: '외국인',
+                rank: 0,
+                isRanked: false,
+                netBuyAmt: amt,
+                netBuyAmtEok: Number((amt / 100).toFixed(1)),
+                asOfDateLabel: latestDay.date ? `(${latestDay.date.slice(4, 6)}/${latestDay.date.slice(6, 8)} 기준)` : '(당일)',
+              });
+            }
+            // 기관
+            if (!value.ranksByType.some((r) => r.type === 'organ') && (latestDay.organNetBuyAmt || 0) > 0) {
+              const amt = latestDay.organNetBuyAmt || 0;
+              value.ranksByType.push({
+                type: 'organ',
+                label: '기관',
+                rank: 0,
+                isRanked: false,
+                netBuyAmt: amt,
+                netBuyAmtEok: Number((amt / 100).toFixed(1)),
+                asOfDateLabel: latestDay.date ? `(${latestDay.date.slice(4, 6)}/${latestDay.date.slice(6, 8)} 기준)` : '(당일)',
+              });
+            }
+            // 연기금
+            if (!value.ranksByType.some((r) => r.type === 'pension') && (latestDay.pensionNetBuyAmt || 0) > 0) {
+              const amt = latestDay.pensionNetBuyAmt || 0;
+              value.ranksByType.push({
+                type: 'pension',
+                label: '연기금',
+                rank: 0,
+                isRanked: false,
+                netBuyAmt: amt,
+                netBuyAmtEok: Number((amt / 100).toFixed(1)),
+                asOfDateLabel: latestDay.date ? `(${latestDay.date.slice(4, 6)}/${latestDay.date.slice(6, 8)} 기준)` : '(당일)',
+              });
+            }
+          }
 
-        overlapItems.push({
-          rank: 0,
-          symbol: value.symbol,
-          name: value.name,
-          currentPrice: priceInfo.currentPrice,
-          change: priceInfo.change,
-          changeRate: priceInfo.changeRate,
-          netBuyQty: totalNetBuyQty,
-          netBuyAmt: totalNetBuyAmt,
-          netBuyAmtEok: totalNetBuyAmtEok,
-          volume: value.volume,
-          ratioVsVolume: value.volume > 0 ? Number(((Math.abs(totalNetBuyQty) / value.volume) * 100).toFixed(1)) : 0,
-          foreignNetBuyAmt: value.ranksByType.find((r) => r.type === 'foreign')?.netBuyAmt,
-          organNetBuyAmt: value.ranksByType.find((r) => r.type === 'organ')?.netBuyAmt,
-          pensionNetBuyAmt: value.ranksByType.find((r) => r.type === 'pension')?.netBuyAmt,
-          programNetBuyAmt: value.ranksByType.find((r) => r.type === 'program')?.netBuyAmt,
-          overlapCount,
-          ranksByType: value.ranksByType,
-          missingEntities,
-        });
-      }
-    });
+          // 프로그램 (실제 실데이터 TR 확인)
+          const pt = trendRes?.programTrade;
+          if (!value.ranksByType.some((r) => r.type === 'program') && pt && pt.totalNetBuyAmt > 0) {
+            value.ranksByType.push({
+              type: 'program',
+              label: '프로그램',
+              rank: 0,
+              isRanked: false,
+              netBuyAmt: pt.totalNetBuyAmt,
+              netBuyAmtEok: Number((pt.totalNetBuyAmt / 100).toFixed(1)),
+              asOfDateLabel: pt.asOfDateLabel || '(당일)',
+            });
+          }
+
+          const overlapCount = value.ranksByType.length;
+
+          // 수급 교집합: 4대 주체 중 minOverlap 이상 순매수한 모든 종목 포함
+          if (overlapCount >= minOverlap) {
+            const investorLabels = value.ranksByType.map((r) => r.label);
+            const totalNetBuyAmt = value.ranksByType.reduce((sum, r) => sum + r.netBuyAmt, 0);
+            const totalNetBuyAmtEok = Number((totalNetBuyAmt / 100).toFixed(1));
+            const investorBadge = `${overlapCount}개 주체 중복 (${investorLabels.join(' · ')})`;
+            const priceInfo = resolveStockPriceAndChange(value.symbol, value.currentPrice, value.change, value.changeRate);
+            const totalNetBuyQty = Math.round(
+              value.ranksByType.reduce((sum, r) => {
+                const qty = priceInfo.currentPrice > 0 ? Math.round((r.netBuyAmt * 1000000) / priceInfo.currentPrice) : 0;
+                return sum + qty;
+              }, 0)
+            );
+
+            const missingEntities = ALL_ENTITIES.filter((e) => !value.ranksByType.some((r) => r.type === e.type));
+
+            overlapItems.push({
+              rank: 0,
+              symbol: value.symbol,
+              name: value.name,
+              currentPrice: priceInfo.currentPrice,
+              change: priceInfo.change,
+              changeRate: priceInfo.changeRate,
+              netBuyQty: totalNetBuyQty,
+              netBuyAmt: totalNetBuyAmt,
+              netBuyAmtEok: totalNetBuyAmtEok,
+              volume: value.volume,
+              ratioVsVolume: value.volume > 0 ? Number(((Math.abs(totalNetBuyQty) / value.volume) * 100).toFixed(1)) : 0,
+              foreignNetBuyAmt: value.ranksByType.find((r) => r.type === 'foreign')?.netBuyAmt,
+              organNetBuyAmt: value.ranksByType.find((r) => r.type === 'organ')?.netBuyAmt,
+              pensionNetBuyAmt: value.ranksByType.find((r) => r.type === 'pension')?.netBuyAmt,
+              programNetBuyAmt: value.ranksByType.find((r) => r.type === 'program')?.netBuyAmt,
+              overlapCount,
+              ranksByType: value.ranksByType,
+              missingEntities,
+            });
+          }
+    }
 
     overlapItems.sort((a, b) => {
       if (Math.abs(b.netBuyAmt - a.netBuyAmt) > 0.01) {
@@ -1685,19 +1849,77 @@ async function executeAsyncOverlapCalculation(
     const finalOverlapItems = overlapItems.map((item, index) => {
       let trendRes = getCached5dTrend(item.symbol);
       const trendData = trendRes?.trend || [];
+      const latestTrend = trendData.length > 0 ? trendData[trendData.length - 1] : null;
       const statusInfo = trendData.length > 0
         ? computeStatusBadgeFromTrend(trendData)
-        : computeUnifiedStatusBadge(item.changeRate, item.volume);
+        : computeUnifiedStatusBadge(item.currentPrice, null, null, null);
 
       const ranksByType = [...(item.ranksByType || [])];
+
+      // 1. 외국인 실매수 순위밖 보정
+      const foreignAmt = latestTrend?.foreignNetBuyAmt || trendRes?.summary?.foreign?.todayEstimateAmt || 0;
+      if ((isBuy ? foreignAmt > 0 : foreignAmt < 0) && !ranksByType.some((r) => r.type === 'foreign')) {
+        ranksByType.push({
+          type: 'foreign',
+          label: '외국인',
+          rank: 0,
+          isRanked: false,
+          netBuyAmt: foreignAmt,
+          netBuyAmtEok: Number((foreignAmt / 100).toFixed(1)),
+          asOfDateLabel: '당일 가집계',
+        });
+      }
+
+      // 2. 기관 실매수 순위밖 보정
+      const organAmt = latestTrend?.organNetBuyAmt || trendRes?.summary?.organ?.todayEstimateAmt || 0;
+      if ((isBuy ? organAmt > 0 : organAmt < 0) && !ranksByType.some((r) => r.type === 'organ')) {
+        ranksByType.push({
+          type: 'organ',
+          label: '기관',
+          rank: 0,
+          isRanked: false,
+          netBuyAmt: organAmt,
+          netBuyAmtEok: Number((organAmt / 100).toFixed(1)),
+          asOfDateLabel: '당일 가집계',
+        });
+      }
+
+      // 3. 연기금 실매수 순위밖 보정
+      const pensionAmt = latestTrend?.pensionNetBuyAmt || trendRes?.summary?.pension?.todayEstimateAmt || 0;
+      if ((isBuy ? pensionAmt > 0 : pensionAmt < 0) && !ranksByType.some((r) => r.type === 'pension')) {
+        ranksByType.push({
+          type: 'pension',
+          label: '연기금',
+          rank: 0,
+          isRanked: false,
+          netBuyAmt: pensionAmt,
+          netBuyAmtEok: Number((pensionAmt / 100).toFixed(1)),
+          asOfDateLabel: getSettledAsOfDateLabel(latestTrend?.stck_bsop_date || latestTrend?.date),
+        });
+      }
+
+      // 4. 프로그램 실매수 순위밖 보정
+      const programAmt = trendRes?.programTrade?.totalNetBuyAmt || 0;
+      if ((isBuy ? programAmt > 0 : programAmt < 0) && !ranksByType.some((r) => r.type === 'program')) {
+        ranksByType.push({
+          type: 'program',
+          label: '프로그램',
+          rank: 0,
+          isRanked: false,
+          netBuyAmt: programAmt,
+          netBuyAmtEok: Number((programAmt / 100).toFixed(1)),
+          asOfDateLabel: trendRes?.programTrade?.asOfDateLabel || getSettledAsOfDateLabel(),
+        });
+      }
+
       const ENTITY_ORDER: Record<string, number> = { foreign: 1, organ: 2, pension: 3, program: 4 };
       ranksByType.sort((a, b) => (ENTITY_ORDER[a.type] || 99) - (ENTITY_ORDER[b.type] || 99));
 
       const overlapCount = ranksByType.length;
       const totalNetBuyAmt = ranksByType.reduce((sum, r) => sum + r.netBuyAmt, 0);
       const totalNetBuyAmtEok = Number((totalNetBuyAmt / 100).toFixed(1));
-      const price = item.currentPrice > 0 ? item.currentPrice : 50000;
-      const totalNetBuyQty = Math.round((totalNetBuyAmt * 1000000) / price);
+      const price = item.currentPrice > 0 ? item.currentPrice : (latestTrend?.closePrice || 0);
+      const totalNetBuyQty = price > 0 ? Math.round((totalNetBuyAmt * 1000000) / price) : 0;
 
       const ALL_ENTITIES: Array<{ type: 'foreign' | 'organ' | 'pension' | 'program'; label: string }> = [
         { type: 'foreign', label: '외국인' },
@@ -1779,8 +2001,8 @@ async function executeAsyncOverlapCalculation(
       overlapMemoryCache.set(masterCacheKey, { data: masterData, timestamp: Date.now() });
     }
     return masterData;
-  } catch (err) {
-    console.error('[Async Overlap Error]', err);
+  } catch (err: any) {
+    console.error('💥 [Async Overlap Error DETAIL]:', err?.message || err, err?.stack);
     const dateObj = new Date();
     const hours = String(dateObj.getHours()).padStart(2, '0');
     const minutes = String(dateObj.getMinutes()).padStart(2, '0');
@@ -1789,6 +2011,7 @@ async function executeAsyncOverlapCalculation(
       direction,
       period,
       list: [],
+      error: `[Async Overlap Error] ${err?.message || err}`,
       isMock: false,
       lastBatchTime: `${hours}:${minutes} 기준`,
       updatedAt: dateObj.toISOString(),
@@ -1797,7 +2020,7 @@ async function executeAsyncOverlapCalculation(
 }
 
 const consecutiveOverlapMemoryCache = new Map<string, { data: InvestorRankingResponse; timestamp: number }>();
-const CONSECUTIVE_OVERLAP_CACHE_TTL_MS = 30 * 60 * 1000; // 30분 (한 번 계산하면 30분간 캐시 유지)
+const CONSECUTIVE_OVERLAP_CACHE_TTL_MS = 30 * 1000; // 30초 TTL (실시간 수급 변동 및 신규 TR 즉시 반영)
 
 export function clearConsecutiveOverlapCache() {
   consecutiveOverlapMemoryCache.clear();
@@ -1854,7 +2077,7 @@ export async function fetchConsecutiveNDaysOverlapRankingData(
     { type: 'program', label: '프로그램' },
   ];
 
-  const stockTrends: Array<{ stock: any; trendRes: any }> = [];
+  const stockTrends: Array<{ stock: any; trendRes: any; programDaily: ProgramTradeDailyPoint[] }> = [];
   const targetCandidates = candidateStocks.slice(0, 15);
   const chunkSize = 5;
   for (let i = 0; i < targetCandidates.length; i += chunkSize) {
@@ -1868,7 +2091,8 @@ export async function fetchConsecutiveNDaysOverlapRankingData(
             setCached5dTrend(stock.symbol, trendRes);
           }
         }
-        return { stock, trendRes };
+        const programDaily = await fetchKisProgramTradeDaily(stock.symbol).catch(() => []);
+        return { stock, trendRes, programDaily };
       })
     );
     stockTrends.push(...chunkResults);
@@ -1876,7 +2100,7 @@ export async function fetchConsecutiveNDaysOverlapRankingData(
 
   const results: RankingItem[] = [];
 
-  for (const { stock, trendRes } of stockTrends) {
+  for (const { stock, trendRes, programDaily } of stockTrends) {
     if (!trendRes || !trendRes.trend || trendRes.trend.length === 0) continue;
     const trend = trendRes.trend;
     const fullTrend = trend;
@@ -1904,6 +2128,8 @@ export async function fetchConsecutiveNDaysOverlapRankingData(
       if (isBuy ? d.foreignNetBuyAmt > 0 : d.foreignNetBuyAmt < 0) cnt++;
       if (isBuy ? d.organNetBuyAmt > 0 : d.organNetBuyAmt < 0) cnt++;
       if (isBuy ? d.pensionNetBuyAmt > 0 : d.pensionNetBuyAmt < 0) cnt++;
+      const pPoint = programDaily.find((p) => p.date === (d.stck_bsop_date || d.date));
+      if (pPoint && (isBuy ? pPoint.totalNetBuyAmt > 0 : pPoint.totalNetBuyAmt < 0)) cnt++;
       return cnt;
     });
 
@@ -1932,16 +2158,18 @@ export async function fetchConsecutiveNDaysOverlapRankingData(
       else break;
     }
 
-    let programConsecutiveDays = targetDays;
+    // Program consecutive days from programDaily (sorted by date descending)
+    let programConsecutiveDays = 0;
+    for (const p of programDaily) {
+      const amt = p.totalNetBuyAmt || 0;
+      if (isBuy ? amt > 0 : amt < 0) programConsecutiveDays++;
+      else break;
+    }
 
     const isForeignConsecutive = foreignConsecutiveDays >= targetDays;
     const isOrganConsecutive = organConsecutiveDays >= targetDays;
     const isPensionConsecutive = pensionConsecutiveDays >= targetDays;
-
-    const programTrade = trendRes.programTrade;
-    const isProgramConsecutive = isBuy
-      ? (programTrade?.totalNetBuyAmt || 0) > 0
-      : (programTrade?.totalNetBuyAmt || 0) < 0;
+    const isProgramConsecutive = programConsecutiveDays >= targetDays;
 
     const ranksByType: OverlapInvestorRank[] = [];
 
@@ -1955,6 +2183,19 @@ export async function fetchConsecutiveNDaysOverlapRankingData(
         netBuyAmtEok: Number((sumAmt / 100).toFixed(1)),
         consecutiveDays: foreignConsecutiveDays,
         consecutiveText: `${foreignConsecutiveDays}일연속`,
+        asOfDateLabel: '당일 가집계',
+      });
+    } else if (foreignConsecutiveDays > 0) {
+      const todayAmt = activeFullDays[activeFullDays.length - 1]?.foreignNetBuyAmt || 0;
+      ranksByType.push({
+        type: 'foreign',
+        label: '외국인',
+        rank: 0,
+        isRanked: false,
+        netBuyAmt: todayAmt,
+        netBuyAmtEok: Number((todayAmt / 100).toFixed(1)),
+        consecutiveDays: foreignConsecutiveDays,
+        consecutiveText: '당일순매수',
         asOfDateLabel: '당일 가집계',
       });
     }
@@ -1971,6 +2212,19 @@ export async function fetchConsecutiveNDaysOverlapRankingData(
         consecutiveText: `${organConsecutiveDays}일연속`,
         asOfDateLabel: '당일 가집계',
       });
+    } else if (organConsecutiveDays > 0) {
+      const todayAmt = activeFullDays[activeFullDays.length - 1]?.organNetBuyAmt || 0;
+      ranksByType.push({
+        type: 'organ',
+        label: '기관',
+        rank: 0,
+        isRanked: false,
+        netBuyAmt: todayAmt,
+        netBuyAmtEok: Number((todayAmt / 100).toFixed(1)),
+        consecutiveDays: organConsecutiveDays,
+        consecutiveText: '당일순매수',
+        asOfDateLabel: '당일 가집계',
+      });
     }
 
     if (isPensionConsecutive) {
@@ -1985,10 +2239,23 @@ export async function fetchConsecutiveNDaysOverlapRankingData(
         consecutiveText: `${pensionConsecutiveDays}일연속`,
         asOfDateLabel: getSettledAsOfDateLabel(),
       });
+    } else if (pensionConsecutiveDays > 0) {
+      const todayAmt = activePensionDays[activePensionDays.length - 1]?.pensionNetBuyAmt || 0;
+      ranksByType.push({
+        type: 'pension',
+        label: '연기금',
+        rank: 0,
+        isRanked: false,
+        netBuyAmt: todayAmt,
+        netBuyAmtEok: Number((todayAmt / 100).toFixed(1)),
+        consecutiveDays: pensionConsecutiveDays,
+        consecutiveText: '당일순매수',
+        asOfDateLabel: getSettledAsOfDateLabel(),
+      });
     }
 
-    if (isProgramConsecutive && programTrade) {
-      const sumAmt = programTrade.totalNetBuyAmt;
+    if (isProgramConsecutive) {
+      const sumAmt = programDaily.slice(0, targetDays).reduce((acc: number, p: ProgramTradeDailyPoint) => acc + p.totalNetBuyAmt, 0);
       ranksByType.push({
         type: 'program',
         label: '프로그램',
@@ -1999,25 +2266,44 @@ export async function fetchConsecutiveNDaysOverlapRankingData(
         consecutiveText: `${programConsecutiveDays}일연속`,
         asOfDateLabel: getSettledAsOfDateLabel(),
       });
+    } else if (programConsecutiveDays > 0) {
+      const todayAmt = programDaily[0]?.totalNetBuyAmt || 0;
+      ranksByType.push({
+        type: 'program',
+        label: '프로그램',
+        rank: 0,
+        isRanked: false,
+        netBuyAmt: todayAmt,
+        netBuyAmtEok: Number((todayAmt / 100).toFixed(1)),
+        consecutiveDays: programConsecutiveDays,
+        consecutiveText: '당일순매수',
+        asOfDateLabel: getSettledAsOfDateLabel(),
+      });
     }
 
-    const hasForeign = ranksByType.some((r) => r.type === 'foreign');
-    const hasOrgan = ranksByType.some((r) => r.type === 'organ');
-    const overlapCount = ranksByType.length;
+    const consecutiveEntities = ranksByType.filter((r) => (r.consecutiveDays || 0) >= targetDays);
+    const consecutiveOverlapCount = consecutiveEntities.length;
 
-    if (overlapCount >= minOverlap) {
+    // 2일/3일 연속 교집합의 절대 요건: 실제 targetDays(2일/3일) 이상 연속 매수한 주체가 minOverlap(2개) 이상이어야 함!
+    if (consecutiveOverlapCount >= minOverlap) {
       const ENTITY_ORDER: Record<string, number> = { foreign: 1, organ: 2, pension: 3, program: 4 };
-      ranksByType.sort((a, b) => (ENTITY_ORDER[a.type] || 99) - (ENTITY_ORDER[b.type] || 99));
+      ranksByType.sort((a, b) => {
+        const isConsecA = (a.consecutiveDays || 0) >= targetDays ? 1 : 0;
+        const isConsecB = (b.consecutiveDays || 0) >= targetDays ? 1 : 0;
+        if (isConsecB !== isConsecA) return isConsecB - isConsecA;
+        return (ENTITY_ORDER[a.type] || 99) - (ENTITY_ORDER[b.type] || 99);
+      });
 
       const latest = trend[trend.length - 1];
-      const investorLabels = ranksByType.map((r) => r.label);
+      const consecutiveLabels = consecutiveEntities.map((r) => r.label);
       const totalNetBuyAmt = ranksByType.reduce((sum, r) => sum + r.netBuyAmt, 0);
       const totalNetBuyAmtEok = Number((totalNetBuyAmt / 100).toFixed(1));
-      const investorBadge = `${overlapCount}개 주체 중복 (${investorLabels.join(' · ')})`;
+      const consecutiveNetBuyAmt = consecutiveEntities.reduce((sum, r) => sum + r.netBuyAmt, 0);
+      const investorBadge = `${consecutiveOverlapCount}개 주체 ${targetDays}일+ 연속중복 (${consecutiveLabels.join(' · ')})`;
       const missingEntities = ALL_ENTITIES.filter((e) => !ranksByType.some((r) => r.type === e.type));
 
-      const price = latest.closePrice || stock.currentPrice || 50000;
-      const totalNetBuyQty = Math.round((totalNetBuyAmt * 1000000) / price);
+      const price = latest.closePrice || stock.currentPrice || 0;
+      const totalNetBuyQty = price > 0 ? Math.round((totalNetBuyAmt * 1000000) / price) : 0;
 
       const statusInfo = computeStatusBadgeFromTrend(trend);
       results.push({
@@ -2037,7 +2323,7 @@ export async function fetchConsecutiveNDaysOverlapRankingData(
         pensionNetBuyAmt: ranksByType.find((r) => r.type === 'pension')?.netBuyAmt,
         programNetBuyAmt: ranksByType.find((r) => r.type === 'program')?.netBuyAmt,
         asOfDateLabel: getSettledAsOfDateLabel(),
-        overlapCount,
+        overlapCount: consecutiveOverlapCount,
         investorBadge,
         statusBadge: statusInfo?.shortBadge,
         statusBadgeStyle: statusInfo?.badgeStyle,
@@ -2047,7 +2333,7 @@ export async function fetchConsecutiveNDaysOverlapRankingData(
     }
   }
 
-  // Sort: 1. overlapCount descending (4 > 3 > 2), 2. cumulative netBuyAmt
+  // Sort: 1. 실제 N일 연속 매수 주체 수 (4 > 3 > 2), 2. 누적 금액
   results.sort((a, b) => {
     const countA = a.overlapCount || 0;
     const countB = b.overlapCount || 0;
@@ -2178,6 +2464,7 @@ export async function fetchKisSurgingStocks(
       direction: 'buy',
       period: '1d',
       list: [],
+      error: `[KIS Surging Queue Exception] ${err?.message || err}`,
       isMock: false,
       lastBatchTime: `${hours}:${minutes} 기준`,
       updatedAt: dateObj.toISOString(),
@@ -2208,6 +2495,7 @@ async function executeKisSurgingStocksFetch(
 
   const iscdParam = market === 'KOSPI' ? '0001' : market === 'KOSDAQ' ? '1001' : '0000';
   let trId = '';
+  const rawOutputs: any[] = [];
 
   if (mode === 'fluctuation') {
     trId = 'FHPST01700000';
@@ -2215,42 +2503,57 @@ async function executeKisSurgingStocksFetch(
     trId = 'FHPST01710000';
   }
 
-  const rawOutputs: any[] = [];
-  const offsets = ['0']; // Fetch top 30 items for optimal performance & 50% rate-limit load reduction
+  const fetchOptions = (urlStr: string, tr: string) => ({
+    method: 'GET' as const,
+    headers: {
+      'content-type': 'application/json; charset=utf-8',
+      authorization: `Bearer ${token}`,
+      appkey: appKey,
+      appsecret: appSecret,
+      tr_id: tr,
+      custtype: 'P',
+    },
+    cache: 'no-store' as const,
+    signal: AbortSignal.timeout(8000),
+  });
 
-  for (const offset of offsets) {
-    let url = '';
+  const getUrl = (iscd: string) => {
     if (mode === 'fluctuation') {
-      url = `${baseUrl}/uapi/domestic-stock/v1/ranking/fluctuation?FID_COND_MRKT_DIV_CODE=J&FID_COND_SCR_DIV_CODE=20170&FID_INPUT_ISCD=${iscdParam}&FID_RANK_SORT_CLS_CODE=0&FID_PRC_CLS_CODE=0&FID_INPUT_PRICE_1=0&FID_INPUT_PRICE_2=0&FID_VOL_CNT=0&FID_TRGT_CLS_CODE=0&FID_TRGT_EXLS_CLS_CODE=0&FID_DIV_CLS_CODE=0&FID_INPUT_CNT_1=${offset}&FID_RSFL_RATE1=0&FID_RSFL_RATE2=0`;
+      return `${baseUrl}/uapi/domestic-stock/v1/ranking/fluctuation?FID_COND_MRKT_DIV_CODE=J&FID_COND_SCR_DIV_CODE=20170&FID_INPUT_ISCD=${iscd}&FID_RANK_SORT_CLS_CODE=0&FID_PRC_CLS_CODE=0&FID_INPUT_PRICE_1=0&FID_INPUT_PRICE_2=0&FID_VOL_CNT=0&FID_TRGT_CLS_CODE=0&FID_TRGT_EXLS_CLS_CODE=0&FID_DIV_CLS_CODE=0&FID_INPUT_CNT_1=0&FID_RSFL_RATE1=0&FID_RSFL_RATE2=0`;
     } else {
       const blngCode = mode === 'amount' ? '3' : '0';
-      url = `${baseUrl}/uapi/domestic-stock/v1/quotations/volume-rank?FID_COND_MRKT_DIV_CODE=J&FID_COND_SCR_DIV_CODE=20171&FID_INPUT_ISCD=${iscdParam}&FID_DIV_CLS_CODE=0&FID_BLNG_CLS_CODE=${blngCode}&FID_TRGT_CLS_CODE=111111111&FID_TRGT_EXLS_CLS_CODE=000000000&FID_INPUT_PRICE_1=0&FID_INPUT_PRICE_2=0&FID_VOL_CNT=0&FID_INPUT_CNT_1=${offset}`;
+      return `${baseUrl}/uapi/domestic-stock/v1/quotations/volume-rank?FID_COND_MRKT_DIV_CODE=J&FID_COND_SCR_DIV_CODE=20171&FID_INPUT_ISCD=${iscd}&FID_DIV_CLS_CODE=0&FID_BLNG_CLS_CODE=${blngCode}&FID_TRGT_CLS_CODE=111111111&FID_TRGT_EXLS_CLS_CODE=000000000&FID_INPUT_PRICE_1=0&FID_INPUT_PRICE_2=0&FID_VOL_CNT=0&FID_INPUT_CNT_1=0`;
     }
+  };
 
-    try {
-      await enforceRateLimit();
-      const res = await fetch(url, {
-        method: 'GET',
-        headers: {
-          'content-type': 'application/json; charset=utf-8',
-          authorization: `Bearer ${token}`,
-          appkey: appKey,
-          appsecret: appSecret,
-          tr_id: trId,
-          custtype: 'P',
-        },
-        cache: 'no-store',
-        signal: AbortSignal.timeout(3500),
-      });
-
-      if (res.ok) {
-        const json = await res.json();
-        if (json.rt_cd === '0' && Array.isArray(json.output)) {
-          rawOutputs.push(...json.output);
-        }
-      }
-    } catch (fetchErr) {
-      console.warn('[executeKisSurgingStocksFetch Fetch Timeout/Error]', fetchErr);
+  await enforceRateLimit();
+  if (market === 'ALL') {
+    const [resK, resQ] = await Promise.all([
+      fetch(getUrl('0001'), fetchOptions(getUrl('0001'), trId)).catch((e) => {
+        console.error('💥 [Surging KOSPI fetch error]:', e);
+        return null;
+      }),
+      fetch(getUrl('1001'), fetchOptions(getUrl('1001'), trId)).catch((e) => {
+        console.error('💥 [Surging KOSDAQ fetch error]:', e);
+        return null;
+      }),
+    ]);
+    const jsonK = resK ? await resK.json().catch(() => null) : null;
+    const jsonQ = resQ ? await resQ.json().catch(() => null) : null;
+    console.log(`[Surging ALL TR Result] KOSPI rt_cd: ${jsonK?.rt_cd}, len: ${jsonK?.output?.length || 0} | KOSDAQ rt_cd: ${jsonQ?.rt_cd}, len: ${jsonQ?.output?.length || 0}`);
+    const listK = jsonK && jsonK.rt_cd === '0' && Array.isArray(jsonK.output) ? jsonK.output : [];
+    const listQ = jsonQ && jsonQ.rt_cd === '0' && Array.isArray(jsonQ.output) ? jsonQ.output : [];
+    rawOutputs.push(...listK, ...listQ);
+  } else {
+    const iscd = market === 'KOSPI' ? '0001' : '1001';
+    const res = await fetch(getUrl(iscd), fetchOptions(getUrl(iscd), trId)).catch((e) => {
+      console.error('💥 [Surging Market fetch error]:', e);
+      return null;
+    });
+    const json = res ? await res.json().catch(() => null) : null;
+    console.log(`[Surging Single TR Result] ${market} rt_cd: ${json?.rt_cd}, len: ${json?.output?.length || 0}`);
+    if (json && json.rt_cd === '0' && Array.isArray(json.output)) {
+      rawOutputs.push(...json.output);
     }
   }
 

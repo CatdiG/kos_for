@@ -1319,26 +1319,42 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
                               </span>
                               {[...(item.ranksByType || [])]
                                 .sort((a, b) => {
+                                  const targetDays = overlapMode === 'consecutive3d' ? 3 : 2;
+                                  const isConsecA = overlapMode !== 'daily' && a.consecutiveText !== '당일순매수' && (a.consecutiveDays || 0) >= targetDays ? 1 : 0;
+                                  const isConsecB = overlapMode !== 'daily' && b.consecutiveText !== '당일순매수' && (b.consecutiveDays || 0) >= targetDays ? 1 : 0;
+                                  if (isConsecB !== isConsecA) return isConsecB - isConsecA;
                                   const order: Record<string, number> = { foreign: 1, organ: 2, pension: 3, program: 4 };
                                   return (order[a.type] || 99) - (order[b.type] || 99);
                                 })
-                                .map((r) => (
-                                  <span
-                                    key={r.type}
-                                    className={`inline-flex items-center gap-1 text-[9px] px-1.5 py-0.5 rounded font-semibold border whitespace-nowrap shrink-0 ${getInvestorRankBadge(
-                                      r.type
-                                    )}`}
-                                  >
-                                    <span>{r.label}</span>
-                                    <strong className="font-mono text-[10px]">
-                                       {overlapMode !== 'daily'
-                                         ? (r.consecutiveText || `${r.consecutiveDays || 2}일연속`)
-                                        : (r.isRanked === false || !r.rank || r.rank <= 0
-                                            ? '순위밖'
-                                            : `${r.rank}위`)}
-                                    </strong>
-                                  </span>
-                                ))}
+                                .map((r) => {
+                                  const targetDays = overlapMode === 'consecutive3d' ? 3 : 2;
+                                  const isDailyOnly = overlapMode !== 'daily' && (r.consecutiveText === '당일순매수' || (r.consecutiveDays || 0) < targetDays);
+                                  return (
+                                    <span
+                                      key={r.type}
+                                      className={`inline-flex items-center gap-1 text-[9px] px-1.5 py-0.5 rounded font-semibold border whitespace-nowrap shrink-0 ${
+                                        isDailyOnly
+                                          ? 'border-slate-300 dark:border-slate-600 bg-slate-100/70 dark:bg-slate-800/60 text-slate-500 dark:text-slate-400 opacity-80'
+                                          : getInvestorRankBadge(r.type)
+                                      }`}
+                                    >
+                                      {isDailyOnly ? (
+                                        <span>{r.label} 당일순매수</span>
+                                      ) : (
+                                        <>
+                                          <span>{r.label}</span>
+                                          <strong className="font-mono text-[10px]">
+                                            {overlapMode !== 'daily'
+                                              ? (r.consecutiveText || `${r.consecutiveDays || 2}일연속`)
+                                              : (r.isRanked === false || !r.rank || r.rank <= 0
+                                                  ? '순위밖'
+                                                  : `${r.rank}위`)}
+                                          </strong>
+                                        </>
+                                      )}
+                                    </span>
+                                  );
+                                })}
                               {item.missingEntities?.map((m) => (
                                 <span
                                   key={m.type}
