@@ -13,8 +13,7 @@ type SortKey =
   | 'closePrice'
   | 'priceChange'
   | 'foreignNetBuyAmt'
-  | 'organNetBuyAmt'
-  | 'pensionNetBuyAmt';
+  | 'organNetBuyAmt';
 
 export interface MonthOption {
   offset: number;         // 0: 이번 달, 1: 1개월 전, 2: 2개월 전, 3: 3개월 전
@@ -130,7 +129,7 @@ export default function InvestorTrendTable({ trend }: InvestorTrendTableProps) {
           <div>
             <h3 className="font-bold text-base text-slate-900 dark:text-white">일별 상세 수급 데이터</h3>
             <p className="text-xs text-slate-500 dark:text-[#787b86]">
-              날짜별 종가, 대비, 외국인 · 기관 · 연기금 순매수 내역
+              날짜별 종가, 대비, 외국인 · 기관 수급 내역
             </p>
           </div>
         </div>
@@ -274,16 +273,6 @@ export default function InvestorTrendTable({ trend }: InvestorTrendTableProps) {
                     {renderSortIcon('organNetBuyAmt')}
                   </div>
                 </th>
-
-                <th
-                  onClick={() => handleSort('pensionNetBuyAmt')}
-                  className="py-3 px-4 font-semibold text-right cursor-pointer hover:text-slate-900 dark:hover:text-white transition select-none text-purple-600 dark:text-purple-400"
-                >
-                  <div className="flex items-center justify-end gap-1.5">
-                    <span>연기금 순매수</span>
-                    {renderSortIcon('pensionNetBuyAmt')}
-                  </div>
-                </th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-[#2a2e39]/60">
@@ -356,17 +345,6 @@ export default function InvestorTrendTable({ trend }: InvestorTrendTableProps) {
                       }`}
                     >
                       {formatCellVal(row.organNetBuyAmt, row.organNetBuyQty)}
-                    </td>
-
-                    {/* 연기금 순매수 */}
-                    <td
-                      className={`py-3 px-4 text-right font-bold ${
-                        row.pensionNetBuyAmt >= 0
-                          ? 'text-purple-600 dark:text-purple-400'
-                          : 'text-blue-600 dark:text-blue-400'
-                      }`}
-                    >
-                      {formatCellVal(row.pensionNetBuyAmt, row.pensionNetBuyQty)}
                     </td>
                   </tr>
                 );

@@ -208,8 +208,6 @@ export interface RawDailyInvestorRecord {
   foreign_net_buy_amt: number;
   organ_net_buy_qty: number;
   organ_net_buy_amt: number;
-  pension_net_buy_qty: number;
-  pension_net_buy_amt: number;
   program_net_buy_qty?: number;
   program_net_buy_amt?: number;
   raw_payload?: any;
@@ -253,8 +251,6 @@ export async function saveRawDailyDataToSupabase(records: RawDailyInvestorRecord
       foreign_net_buy_amt: r.foreign_net_buy_amt || 0,
       organ_net_buy_qty: r.organ_net_buy_qty || 0,
       organ_net_buy_amt: r.organ_net_buy_amt || 0,
-      pension_net_buy_qty: r.pension_net_buy_qty || 0,
-      pension_net_buy_amt: r.pension_net_buy_amt || 0,
       program_net_buy_qty: r.program_net_buy_qty || 0,
       program_net_buy_amt: r.program_net_buy_amt || 0,
       updated_at: new Date().toISOString(),

@@ -34,8 +34,8 @@ export default function SupplySummaryCards({
           <span className="w-2 h-2 rounded-full bg-blue-500 animate-ping" />
           <span className="font-semibold text-slate-600 dark:text-slate-400">수급 현황 불러오는 중...</span>
         </div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 w-full">
-          {[1, 2, 3, 4].map((i) => (
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 w-full">
+          {[1, 2, 3].map((i) => (
             <div
               key={i}
               className="h-32 bg-white dark:bg-[#131722] rounded-xl border border-slate-200 dark:border-[#2a2e39] p-4 animate-pulse flex flex-col justify-between"
@@ -65,34 +65,27 @@ export default function SupplySummaryCards({
     return `${isNeg ? '-' : '+'}${abs.toLocaleString()}백만`;
   };
 
-  const isSelectedStock = Boolean(selectedStockItem && selectedStockItem.symbol === stockInfo?.symbol);
-
-  const foreignAmt = (isSelectedStock && selectedStockItem?.foreignNetBuyAmt !== undefined)
-    ? selectedStockItem.foreignNetBuyAmt
-    : (summary.foreign.todayEstimateAmt ?? 0);
-
-  const organAmt = (isSelectedStock && selectedStockItem?.organNetBuyAmt !== undefined)
-    ? selectedStockItem.organNetBuyAmt
-    : (summary.organ.todayEstimateAmt ?? 0);
-
-  const pensionAmt = (isSelectedStock && selectedStockItem?.pensionNetBuyAmt !== undefined)
-    ? selectedStockItem.pensionNetBuyAmt
-    : (summary.pension.todayEstimateAmt ?? 0);
-
+  // 단일 진실 공급원(Single Source of Truth):
+  // 백엔드 API(/api/stock/investor-trend)의 실시간 summary 데이터를 어느 탭에서나 100% 일관되게 단일 소비
   const foreignMetric = {
     ...summary.foreign,
-    todayEstimateAmt: foreignAmt,
+    todayEstimateAmt: summary.foreign.todayEstimateAmt ?? 0,
+    todayEstimateQty: summary.foreign.todayEstimateQty ?? 0,
+    asOfDateLabel: summary.foreign.asOfDateLabel || getSettledAsOfDateLabel(),
+    isFallback: summary.foreign.isFallback ?? false,
   };
 
   const organMetric = {
     ...summary.organ,
-    todayEstimateAmt: organAmt,
+    todayEstimateAmt: summary.organ.todayEstimateAmt ?? 0,
+    todayEstimateQty: summary.organ.todayEstimateQty ?? 0,
+    asOfDateLabel: summary.organ.asOfDateLabel || getSettledAsOfDateLabel(),
+    isFallback: summary.organ.isFallback ?? false,
   };
 
-  const pensionMetric = {
-    ...summary.pension,
-    todayEstimateAmt: pensionAmt,
-  };
+  const programAmt = programTrade?.totalNetBuyAmt ?? (summary.program?.todayEstimateAmt ?? 0);
+  const programQty = programTrade?.totalNetBuyQty ?? (summary.program?.todayEstimateQty ?? 0);
+  const programAsOfDateLabel = programTrade?.asOfDateLabel || summary.program?.asOfDateLabel || getSettledAsOfDateLabel();
 
   const cards = [
     {
@@ -107,21 +100,7 @@ export default function SupplySummaryCards({
       icon: Landmark,
       metric: organMetric,
     },
-    {
-      title: '연기금 수급 현황',
-      subtitle: 'Pension Fund',
-      icon: Coins,
-      metric: pensionMetric,
-    },
   ];
-
-  const programAmt = (isSelectedStock && selectedStockItem?.programNetBuyAmt !== undefined)
-    ? selectedStockItem.programNetBuyAmt
-    : (programTrade?.totalNetBuyAmt ?? 0);
-
-  const programQty = (isSelectedStock && selectedStockItem?.netBuyQty !== undefined)
-    ? (selectedStockItem.programNetBuyAmt !== undefined ? selectedStockItem.netBuyQty : (programTrade?.totalNetBuyQty ?? 0))
-    : (programTrade?.totalNetBuyQty ?? 0);
 
   const programDirectionInfo = getSupplyDirection(programAmt);
   const ProgramIcon = programDirectionInfo.Icon;
@@ -131,16 +110,25 @@ export default function SupplySummaryCards({
   const nonArbDir = getSupplyDirection(nonArbAmt);
   const arbDir = getSupplyDirection(arbAmt);
 
-  const programAsOfDateLabel = programTrade?.asOfDateLabel || summary.program?.asOfDateLabel || getSettledAsOfDateLabel();
-  const foreignAsOfDateLabel = summary.foreign.asOfDateLabel || '당일 가집계';
-  const organAsOfDateLabel = summary.organ.asOfDateLabel || '당일 가집계';
-  const pensionAsOfDateLabel = summary.pension.asOfDateLabel || getSettledAsOfDateLabel();
-
   return (
-    <div className="w-full">
-      {/* 4 Summary Cards Grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 w-full">
-        {/* 1~3: Foreign, Institution, Pension Fund */}
+    <div className="w-full space-y-2">
+      {/* Target Stock Label Header */}
+      {stockInfo && (
+        <div className="flex items-center justify-between px-1">
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-bold text-slate-700 dark:text-slate-200">
+              📌 {stockInfo.name} <span className="font-mono text-slate-400 dark:text-slate-500 font-normal">({stockInfo.symbol})</span> 개별 수급 현황
+            </span>
+          </div>
+          <span className="text-[11px] font-mono text-slate-500 dark:text-slate-400">
+            현재가: {stockInfo.currentPrice.toLocaleString()}원 ({stockInfo.changeRate > 0 ? '+' : ''}{stockInfo.changeRate}%)
+          </span>
+        </div>
+      )}
+
+      {/* 3 Summary Cards Grid */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 w-full">
+        {/* 1~2: Foreign, Institution */}
         {cards.map((card) => {
           const Icon = card.icon;
           const directionInfo = getSupplyDirection(card.metric.todayEstimateAmt);
@@ -194,16 +182,28 @@ export default function SupplySummaryCards({
                 {/* Today Estimate Main Metric */}
                 <div className="my-3 pb-3 border-b border-slate-100 dark:border-[#2a2e39]/60">
                   <div className="text-xs text-slate-500 dark:text-[#787b86] mb-1 whitespace-nowrap flex items-center justify-between">
-                    <span>
-                      {card.title.includes('연기금')
-                        ? '마감 정산 순매수'
-                        : (card.metric.isFallback ? '추정 순매수' : '당일 가집계 순매수')}
-                    </span>
-                    <span className="text-[10px] font-mono text-slate-500 dark:text-slate-400 font-semibold">
-                      {card.title.includes('연기금')
-                        ? (card.metric.asOfDateLabel || getSettledAsOfDateLabel())
-                        : (card.metric.asOfDateLabel || '당일 가집계')}
-                    </span>
+                    {(() => {
+                      const isEstimate = card.metric.asOfDateLabel?.includes('잠정') || card.metric.asOfDateLabel?.includes('추정') || card.metric.asOfDateLabel?.includes('가집계');
+                      return (
+                        <>
+                          <span className="flex items-center gap-1">
+                            {isEstimate ? '당일 잠정 순매수' : '마감 확정 순매수'}
+                            {isEstimate ? (
+                              <span className="text-[9px] px-1 py-0.2 rounded bg-amber-50 dark:bg-amber-950/50 text-amber-600 dark:text-amber-400 font-bold border border-amber-200 dark:border-amber-800/40">
+                                추정
+                              </span>
+                            ) : (
+                              <span className="text-[9px] px-1 py-0.2 rounded bg-emerald-50 dark:bg-emerald-950/50 text-emerald-600 dark:text-emerald-400 font-bold border border-emerald-200 dark:border-emerald-800/40">
+                                확정
+                              </span>
+                            )}
+                          </span>
+                          <span className="text-[10px] font-mono text-slate-500 dark:text-slate-400 font-semibold">
+                            {card.metric.asOfDateLabel || getSettledAsOfDateLabel()}
+                          </span>
+                        </>
+                      );
+                    })()}
                   </div>
                   <div className="flex items-baseline justify-between gap-1">
                     <div
@@ -310,14 +310,33 @@ export default function SupplySummaryCards({
             {/* Total Program Net Buy Main Metric */}
             <div className="my-3 pb-3 border-b border-slate-100 dark:border-[#2a2e39]/60">
               <div className="text-xs text-slate-500 dark:text-[#787b86] mb-1 flex items-center justify-between whitespace-nowrap">
-                <span>
-                  {programAsOfDateLabel.includes('실시간')
-                    ? '당일 실시간 순매수'
-                    : (programAsOfDateLabel.includes('가집계') ? '당일 가집계 순매수' : '마감 정산 순매수')}
-                </span>
-                <span className="text-[10px] font-mono text-slate-500 dark:text-slate-400 font-semibold">
-                  {programAsOfDateLabel}
-                </span>
+                {(() => {
+                  const isRealtime = programAsOfDateLabel.includes('실시간');
+                  const isEstimate = programAsOfDateLabel.includes('가집계') || programAsOfDateLabel.includes('잠정') || programAsOfDateLabel.includes('추정');
+                  return (
+                    <>
+                      <span className="flex items-center gap-1">
+                        {isRealtime ? '당일 실시간 순매수' : (isEstimate ? '당일 잠정 순매수' : '마감 확정 순매수')}
+                        {isRealtime ? (
+                          <span className="text-[9px] px-1 py-0.2 rounded bg-blue-50 dark:bg-blue-950/50 text-blue-600 dark:text-blue-400 font-bold border border-blue-200 dark:border-blue-800/40">
+                            실시간
+                          </span>
+                        ) : isEstimate ? (
+                          <span className="text-[9px] px-1 py-0.2 rounded bg-amber-50 dark:bg-amber-950/50 text-amber-600 dark:text-amber-400 font-bold border border-amber-200 dark:border-amber-800/40">
+                            추정
+                          </span>
+                        ) : (
+                          <span className="text-[9px] px-1 py-0.2 rounded bg-emerald-50 dark:bg-emerald-950/50 text-emerald-600 dark:text-emerald-400 font-bold border border-emerald-200 dark:border-emerald-800/40">
+                            확정
+                          </span>
+                        )}
+                      </span>
+                      <span className="text-[10px] font-mono text-slate-500 dark:text-slate-400 font-semibold">
+                        {programAsOfDateLabel}
+                      </span>
+                    </>
+                  );
+                })()}
               </div>
               <div className="flex items-baseline justify-between gap-1">
                 <div className={`text-xl sm:text-2xl font-bold font-mono tracking-tight flex items-center gap-0.5 whitespace-nowrap ${programDirectionInfo.colorClass}`}>

@@ -24,6 +24,7 @@ export default function StockSearch({
   const [inputVal, setInputVal] = useState<string>('');
   const [isOpen, setIsOpen] = useState<boolean>(false);
   const [selectedIndex, setSelectedIndex] = useState<number>(-1);
+  const [isThrottled, setIsThrottled] = useState<boolean>(false);
 
   const wrapperRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
@@ -262,15 +263,21 @@ export default function StockSearch({
               </div>
             </div>
 
-            {/* Refresh Button */}
+            {/* Refresh Button with 3s Throttle Protection */}
             {onRefresh && (
               <button
-                onClick={onRefresh}
-                disabled={isFetching}
-                title="수급 데이터 새로고침"
-                className="p-2.5 rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-[#1e222d] dark:hover:bg-[#2a2e39] text-slate-600 dark:text-[#787b86] hover:text-slate-900 dark:hover:text-white border border-slate-200 dark:border-[#2a2e39] transition disabled:opacity-50 cursor-pointer"
+                onClick={() => {
+                  if (isThrottled || isFetching) return;
+                  setIsThrottled(true);
+                  onRefresh();
+                  setTimeout(() => setIsThrottled(false), 3000);
+                }}
+                disabled={isFetching || isThrottled}
+                title={isThrottled ? '새로고침 쿨다운 중 (3초)' : '수급 데이터 새로고침'}
+                className="p-2.5 rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-[#1e222d] dark:hover:bg-[#2a2e39] text-slate-600 dark:text-[#787b86] hover:text-slate-900 dark:hover:text-white border border-slate-200 dark:border-[#2a2e39] transition disabled:opacity-50 cursor-pointer flex items-center gap-1"
               >
-                <RefreshCw className={`w-4 h-4 ${isFetching ? 'animate-spin text-red-600' : ''}`} />
+                <RefreshCw className={`w-4 h-4 ${isFetching || isThrottled ? 'animate-spin text-red-600' : ''}`} />
+                {isThrottled && <span className="text-[10px] font-mono font-bold text-amber-600">3s</span>}
               </button>
             )}
           </div>

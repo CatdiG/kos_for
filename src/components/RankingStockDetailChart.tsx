@@ -219,23 +219,22 @@ const CustomSupplyTooltip = ({ active, payload, label }: any) => {
   const dataPoint = payload[0]?.payload;
   if (!dataPoint) return null;
 
-  const fAmt = dataPoint.foreignNetBuyAmt || 0;
-  const oAmt = dataPoint.organNetBuyAmt || 0;
-  const pAmt = dataPoint.pensionNetBuyAmt || 0;
-  const prAmt = dataPoint.programNetBuyAmt || 0;
-
   const fmt = (v: number) => {
     const sign = v >= 0 ? '+' : '';
     if (Math.abs(v) >= 100) return `${sign}${(v / 100).toFixed(1)}억`;
     return `${sign}${v.toLocaleString()}백만`;
   };
 
+  const fAmt = payload.find((p: any) => p.dataKey === 'foreignNetBuyAmt')?.value || 0;
+  const oAmt = payload.find((p: any) => p.dataKey === 'organNetBuyAmt')?.value || 0;
+  const prAmt = payload.find((p: any) => p.dataKey === 'programNetBuyAmt')?.value || 0;
+
   return (
-    <div className="bg-white/95 dark:bg-[#1a1e29]/95 border border-slate-200 dark:border-[#2a2e39] p-3 rounded-xl shadow-lg text-xs space-y-2 z-50 font-sans backdrop-blur-sm min-w-[210px]">
-      <div className="font-bold border-b border-slate-100 dark:border-slate-800 pb-1.5 text-slate-800 dark:text-slate-200 flex items-center justify-between gap-3">
-        <span>{label} (4대 주체 일별 순매수/순매도)</span>
+    <div className="bg-white/95 dark:bg-[#1e222d]/95 backdrop-blur-md p-2.5 rounded-xl border border-slate-200 dark:border-[#2a2e39] shadow-xl text-xs space-y-1 z-50">
+      <div className="font-bold text-slate-700 dark:text-slate-200 pb-1 border-b border-slate-100 dark:border-slate-800">
+        {label} 수급 동향
       </div>
-      <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 text-[11px]">
+      <div className="space-y-0.5">
         <div className="flex justify-between gap-1">
           <span className="text-orange-500 font-bold flex items-center gap-1">🟠 외국인:</span>
           <span className={`font-mono font-bold ${fAmt >= 0 ? 'text-red-500' : 'text-blue-500'}`}>{fmt(fAmt)}</span>
@@ -243,10 +242,6 @@ const CustomSupplyTooltip = ({ active, payload, label }: any) => {
         <div className="flex justify-between gap-1">
           <span className="text-teal-500 font-bold flex items-center gap-1">🟢 기관:</span>
           <span className={`font-mono font-bold ${oAmt >= 0 ? 'text-red-500' : 'text-blue-500'}`}>{fmt(oAmt)}</span>
-        </div>
-        <div className="flex justify-between gap-1">
-          <span className="text-purple-500 font-bold flex items-center gap-1">🟣 연기금:</span>
-          <span className={`font-mono font-bold ${pAmt >= 0 ? 'text-red-500' : 'text-blue-500'}`}>{fmt(pAmt)}</span>
         </div>
         <div className="flex justify-between gap-1">
           <span className="text-amber-500 font-bold flex items-center gap-1">🟡 프로그램:</span>
@@ -282,13 +277,12 @@ export default function RankingStockDetailChart({
     if (onPeriodChange) onPeriodChange(p);
   };
 
-  // Daily Metric Toggles (Default: Foreign + Organ active, Pension/Program toggleable)
+  // Daily Metric Toggles (Default: Foreign + Organ active, Program toggleable)
   const [showMA5, setShowMA5] = useState(true);
   const [showMA20, setShowMA20] = useState(true);
   const [showMA60, setShowMA60] = useState(true);
   const [showForeign, setShowForeign] = useState(true);
   const [showOrgan, setShowOrgan] = useState(true);
-  const [showPension, setShowPension] = useState(false);
   const [showProgram, setShowProgram] = useState(false);
   const [showDisparate, setShowDisparate] = useState(false);
 
@@ -395,7 +389,6 @@ export default function RankingStockDetailChart({
         closePrice,
         cumForeignNetBuyAmt: item.cumForeignNetBuyAmt || 0,
         cumOrganNetBuyAmt: item.cumOrganNetBuyAmt || 0,
-        cumPensionNetBuyAmt: item.cumPensionNetBuyAmt || 0,
         ma5,
         ma20,
         ma60,
@@ -415,14 +408,12 @@ export default function RankingStockDetailChart({
     // 3. Re-base cumulative supply lines so Day 1 starts at 0 억원 baseline for the chosen period
     const baseForeign = sliced[0].cumForeignNetBuyAmt || 0;
     const baseOrgan = sliced[0].cumOrganNetBuyAmt || 0;
-    const basePension = sliced[0].cumPensionNetBuyAmt || 0;
     const baseProgram = sliced[0].cumProgramNetBuyAmt || 0;
 
     const resList = sliced.map((d) => ({
       ...d,
       cumForeignNetBuyAmt: d.cumForeignNetBuyAmt - baseForeign,
       cumOrganNetBuyAmt: d.cumOrganNetBuyAmt - baseOrgan,
-      cumPensionNetBuyAmt: d.cumPensionNetBuyAmt - basePension,
       cumProgramNetBuyAmt: d.cumProgramNetBuyAmt - baseProgram,
     }));
 
@@ -597,10 +588,6 @@ function calculateUltraTightKrxPriceAxis(minRaw: number, maxRaw: number, targetT
         min = Math.min(min, d.organNetBuyAmt);
         max = Math.max(max, d.organNetBuyAmt);
       }
-      if (showPension && d.pensionNetBuyAmt !== undefined) {
-        min = Math.min(min, d.pensionNetBuyAmt);
-        max = Math.max(max, d.pensionNetBuyAmt);
-      }
       if (showProgram && d.programNetBuyAmt !== undefined) {
         min = Math.min(min, d.programNetBuyAmt);
         max = Math.max(max, d.programNetBuyAmt);
@@ -610,7 +597,7 @@ function calculateUltraTightKrxPriceAxis(minRaw: number, maxRaw: number, targetT
     const range = Math.max(10, Math.abs(max - min));
     const pad = range * 0.15;
     return [Math.floor(min - pad), Math.ceil(max + pad)];
-  }, [displayTrend, showForeign, showOrgan, showPension, showProgram]);
+  }, [displayTrend, showForeign, showOrgan, showProgram]);
 
   // Intraday Data
   const intradayTrend = React.useMemo(() => {
@@ -945,15 +932,6 @@ function calculateUltraTightKrxPriceAxis(minRaw: number, maxRaw: number, targetT
             </button>
             <button
               type="button"
-              onClick={() => setShowPension(!showPension)}
-              className={`px-1.5 py-0.5 rounded font-bold border transition cursor-pointer ${
-                showPension ? 'bg-purple-500/10 text-purple-600 dark:text-purple-400 border-purple-500/30' : 'bg-slate-50 text-slate-400 border-slate-200 opacity-50'
-              }`}
-            >
-              연기금
-            </button>
-            <button
-              type="button"
               onClick={() => setShowProgram(!showProgram)}
               className={`px-1.5 py-0.5 rounded font-bold border transition cursor-pointer ${
                 showProgram ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/30' : 'bg-slate-50 text-slate-400 border-slate-200 opacity-50'
@@ -1167,7 +1145,6 @@ function calculateUltraTightKrxPriceAxis(minRaw: number, maxRaw: number, targetT
                     <ReferenceLine y={0} stroke={isDark ? '#475569' : '#94a3b8'} strokeWidth={1.5} />
                     {showForeign && <Bar dataKey="foreignNetBuyAmt" name="외국인" fill="#f97316" radius={[2, 2, 0, 0]} />}
                     {showOrgan && <Bar dataKey="organNetBuyAmt" name="기관" fill="#14b8a6" radius={[2, 2, 0, 0]} />}
-                    {showPension && <Bar dataKey="pensionNetBuyAmt" name="연기금" fill="#a855f7" radius={[2, 2, 0, 0]} />}
                     {showProgram && <Bar dataKey="programNetBuyAmt" name="프로그램" fill="#f59e0b" radius={[2, 2, 0, 0]} />}
                   </ComposedChart>
                 </ResponsiveContainer>
@@ -1184,12 +1161,6 @@ function calculateUltraTightKrxPriceAxis(minRaw: number, maxRaw: number, targetT
                   <div className="flex items-center gap-1">
                     <span className="w-2.5 h-2.5 bg-[#14b8a6] inline-block rounded-xs" />
                     <span>기관</span>
-                  </div>
-                )}
-                {showPension && (
-                  <div className="flex items-center gap-1">
-                    <span className="w-2.5 h-2.5 bg-[#a855f7] inline-block rounded-xs" />
-                    <span>연기금</span>
                   </div>
                 )}
                 {showProgram && (

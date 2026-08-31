@@ -76,7 +76,7 @@ export default function Header() {
               </span>
             </div>
             <p className="text-xs text-slate-500 dark:text-slate-400 font-medium mt-0.5">
-              외국인 / 기관 / 연기금 / 프로그램 수급 실시간 종합 랭킹
+              외국인 / 기관 / 프로그램 수급 실시간 종합 랭킹
             </p>
           </div>
         </div>

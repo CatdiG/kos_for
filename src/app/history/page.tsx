@@ -17,7 +17,6 @@ export default function HistoryPage() {
   const TABS: Array<{ id: RankingType; label: string }> = [
     { id: 'foreign', label: '외국인' },
     { id: 'organ', label: '기관' },
-    { id: 'pension', label: '연기금' },
     { id: 'program', label: '프로그램' },
     { id: 'surging', label: '급등주' },
     { id: 'comprehensive', label: '단타 종합랭킹' },

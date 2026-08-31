@@ -86,7 +86,7 @@ function getIntradaySnapshotNoticeText(hasRealData: boolean): string {
     targetTimeStr = '내일 오전 09시 30분';
   }
 
-  return `ℹ️ [수급 시점 안내] 🟢 외국인 · 기관: 당일 가집계 반영 완료 (${snapshotLabel}) | 🔵 연기금 · 프로그램: 장중 미정산 (직전 장마감 ${getSettledAsOfDateLabel()} / 다음 갱신: ${targetTimeStr})`;
+  return `ℹ️ [수급 시점 안내] 🟢 외국인 · 기관: 당일 가집계 (${snapshotLabel}) | 🔵 프로그램: 장중 실시간 연동 (다음 갱신: ${targetTimeStr})`;
 }
 
 export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbol, chartData, onSelectSymbol }: InvestorRankingTableProps) {
@@ -292,8 +292,6 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
   };
 
   const [weights, setWeights] = useState(DEFAULT_WEIGHTS);
-  // Sub-mode for Comprehensive Score Ranking: 'balance' (Weighted Average) vs 'singleSignal' (Extreme Single Signal Focus)
-  const [comprehensiveMode, setComprehensiveMode] = useState<'balance' | 'singleSignal'>('balance');
 
   const isComprehensive = activeTab === 'comprehensive' || (activeTab === 'surging' && surgingMode === 'comprehensive');
 
@@ -353,8 +351,6 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
 
       const dynamicTotal = Number((momRmsScore * momWeightRatio + confLinearScore * confWeightRatio).toFixed(1));
 
-      // Single Signal Max Score calculation (Core 3 Momentum Signals ONLY: Fluc, Vol, Amt)
-      // Excludes supply & confirmation metrics (foreign, organ, candle strength, trend alignment)
       const signalScores = [
         { key: 'fluc', label: '🔥 등락률 1위', score: flucScore },
         { key: 'volInc', label: '⚡ 거래량 1위', score: volIncScore },
@@ -362,15 +358,13 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
       ].sort((a, b) => b.score - a.score);
 
       const topSignal = signalScores[0];
-      const maxSignalScore = topSignal.score;
 
       return {
         ...item,
-        maxSignalScore,
         topSignalBadge: `${topSignal.label} (${topSignal.score.toFixed(0)}점)`,
         scoreBreakdown: {
           ...item.scoreBreakdown,
-          totalScore: comprehensiveMode === 'singleSignal' ? maxSignalScore : dynamicTotal,
+          totalScore: dynamicTotal,
         },
       };
     });
@@ -379,11 +373,6 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
   // 3. Sort the FULL Unfiltered List according to active mode & sort fields
   fullList = [...fullList].sort((a, b) => {
     if (isComprehensive) {
-      if (comprehensiveMode === 'singleSignal') {
-        const diff = ((b as any).maxSignalScore || 0) - ((a as any).maxSignalScore || 0);
-        if (Math.abs(diff) > 0.01) return diff;
-        return b.changeRate - a.changeRate;
-      }
       return (b.scoreBreakdown?.totalScore || 0) - (a.scoreBreakdown?.totalScore || 0);
     }
     // Default ranking sort when sortField === 'netBuyAmt'
@@ -503,25 +492,16 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
     }
   };
 
-  const handleComprehensiveModeChange = (mode: 'balance' | 'singleSignal') => {
-    if (mode !== comprehensiveMode) {
-      setComprehensiveMode(mode);
-      setExpandedSymbols({});
-      setCreditOnly(false);
-    }
-  };
-
   // Reset expanded accordion charts whenever ANY tab, sub-mode, badge, filter, or sorting condition changes
   useEffect(() => {
     setExpandedSymbols({});
-  }, [activeTab, surgingMode, market, direction, period, overlapMode, overlapLimit, comprehensiveMode, creditOnly, sortField, sortAsc]);
+  }, [activeTab, surgingMode, market, direction, period, overlapMode, overlapLimit, weights, creditOnly, sortField, sortAsc]);
 
   const tabs: { id: RankingType; label: string; icon: any; isRealtime: boolean; badge?: string }[] = [
     { id: 'surging', label: '급등주', icon: Rocket, isRealtime: true, badge: 'LIVE' },
     { id: 'comprehensive', label: '단타 종합랭킹', icon: Trophy, isRealtime: true, badge: 'SCORE' },
     { id: 'foreign', label: '외국인', icon: Globe2, isRealtime: true },
     { id: 'organ', label: '기관', icon: Landmark, isRealtime: true },
-    { id: 'pension', label: '연기금', icon: Coins, isRealtime: false },
     { id: 'program', label: '프로그램', icon: Cpu, isRealtime: false },
     { id: 'overlap', label: '수급교집합', icon: Flame, isRealtime: true, badge: 'HOT' },
   ];
@@ -529,16 +509,10 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
   const activeTabLabel = tabs.find((t) => t.id === activeTab)?.label || '순위';
 
   const getOverlapBadgeStyle = (count: number) => {
-    if (count >= 4) {
+    if (count >= 3) {
       return {
-        label: '4주체 일치',
+        label: '3주체 일치',
         bg: 'bg-gradient-to-r from-purple-600 to-pink-600 text-white font-black shadow-xs',
-      };
-    }
-    if (count === 3) {
-      return {
-        label: '3주체 강중복',
-        bg: 'bg-red-500 text-white font-bold',
       };
     }
     return {
@@ -553,8 +527,6 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
         return 'bg-red-50 dark:bg-red-950/40 text-red-600 dark:text-red-400 border-red-200 dark:border-red-800/40';
       case 'organ':
         return 'bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400 border-blue-200 dark:border-blue-800/40';
-      case 'pension':
-        return 'bg-purple-50 dark:bg-purple-950/40 text-purple-600 dark:text-purple-400 border-purple-200 dark:border-purple-800/40';
       case 'program':
         return 'bg-amber-50 dark:bg-amber-950/40 text-amber-600 dark:text-amber-400 border-amber-200 dark:border-amber-800/40';
       default:
@@ -562,27 +534,60 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
     }
   };
 
-  const programAsOf = (data as any)?.programTrade?.asOfDateLabel || (data as any)?.summary?.program?.asOfDateLabel || getSettledAsOfDateLabel();
-  const foreignAsOf = (data as any)?.summary?.foreign?.asOfDateLabel || '당일 가집계';
-  const organAsOf = (data as any)?.summary?.organ?.asOfDateLabel || '당일 가집계';
-  const pensionAsOf = (data as any)?.summary?.pension?.asOfDateLabel || getSettledAsOfDateLabel();
+  const rawProgramAsOf = (data as any)?.programTrade?.asOfDateLabel || (data as any)?.summary?.program?.asOfDateLabel || (data as any)?.lastBatchTime || getSettledAsOfDateLabel();
+  const rawForeignAsOf = (data as any)?.asOfDateLabel || (data as any)?.summary?.foreign?.asOfDateLabel || (data as any)?.list?.[0]?.asOfDateLabel || getSettledAsOfDateLabel();
+  const rawOrganAsOf = (data as any)?.asOfDateLabel || (data as any)?.summary?.organ?.asOfDateLabel || (data as any)?.list?.[0]?.asOfDateLabel || getSettledAsOfDateLabel();
 
   const formatParenLabel = (str: string) => {
     const clean = str.replace(/^\((.*)\)$/, '$1');
     return `(${clean})`;
   };
 
-  const isAllSettled = pensionAsOf.includes('기준') &&
-    (foreignAsOf.includes('기준') || foreignAsOf.includes('마감') || foreignAsOf === pensionAsOf) &&
-    (programAsOf.includes('기준') || programAsOf.includes('마감') || programAsOf === pensionAsOf);
+  // KRX 공식 잠정 가집계 공표 차수 (KRX 규정: 09:30, 10:00, 11:30, 13:20, 14:30, 15:35)
+  const now = new Date();
+  const utc = now.getTime() + now.getTimezoneOffset() * 60000;
+  const kst = new Date(utc + 9 * 60 * 60000);
+  const currentKstTimeNum = kst.getHours() * 100 + kst.getMinutes();
 
-  const foreignOrganPart = foreignAsOf === organAsOf
-    ? `외·기 ${formatParenLabel(foreignAsOf)}`
-    : `외 ${formatParenLabel(foreignAsOf)} · 기 ${formatParenLabel(organAsOf)}`;
+  const krxSchedule = [
+    { step: '1차(외인)', time: '09:30', timeNum: 930 },
+    { step: '1차(종합)', time: '10:00', timeNum: 1000 },
+    { step: '2차', time: '11:30', timeNum: 1130 },
+    { step: '3차', time: '13:20', timeNum: 1320 },
+    { step: '4차', time: '14:30', timeNum: 1430 },
+    { step: '장마감', time: '15:35', timeNum: 1535 },
+  ];
 
-  const dynamicNoticeText = isAllSettled
-    ? `${formatParenLabel(pensionAsOf)} 전 주체 종가 정산 완료`
-    : `${foreignOrganPart} · 연 ${formatParenLabel(pensionAsOf)} · 프 ${formatParenLabel(programAsOf)}`;
+  const getLatestKrxSlotTime = () => {
+    const passed = [...krxSchedule].reverse().find((s) => currentKstTimeNum >= s.timeNum);
+    return passed ? passed.time : '장 개장 전';
+  };
+
+  const getNextKrxSlotTime = () => {
+    const next = krxSchedule.find((s) => currentKstTimeNum < s.timeNum);
+    return next ? next.time : '내일 09:30';
+  };
+
+  const isMarketOpenNow = kst.getDay() >= 1 && kst.getDay() <= 5 && currentKstTimeNum >= 900 && currentKstTimeNum < 1530;
+
+  const isAllSettled = (rawForeignAsOf.includes('마감') || (/^\([0-9]+\/[0-9]+.*기준\)$/.test(rawForeignAsOf))) &&
+    (rawOrganAsOf.includes('마감') || (/^\([0-9]+\/[0-9]+.*기준\)$/.test(rawOrganAsOf))) &&
+    (rawProgramAsOf.includes('마감') || (/^\([0-9]+\/[0-9]+.*기준\)$/.test(rawProgramAsOf)));
+
+  const foreignOrganPart = rawForeignAsOf === rawOrganAsOf
+    ? (isMarketOpenNow && rawForeignAsOf.includes('가집계') ? `외·기 (${getLatestKrxSlotTime()} 기준 갱신, 다음 갱신 ${getNextKrxSlotTime()})` : `외·기 ${formatParenLabel(rawForeignAsOf)}`)
+    : `외 ${formatParenLabel(rawForeignAsOf)} · 기 ${formatParenLabel(rawOrganAsOf)}`;
+
+  let dynamicNoticeText = '';
+  if (activeTab === 'surging') {
+    dynamicNoticeText = '실시간 등락률 · 거래량 · 거래대금 체결 기준 (60초 자동 갱신)';
+  } else if (activeTab === 'comprehensive') {
+    dynamicNoticeText = '7대 모멘텀 & 확증 지표 실시간 종합 스코어링 (60초 자동 갱신)';
+  } else {
+    dynamicNoticeText = isAllSettled
+      ? `${formatParenLabel(rawForeignAsOf)} 전 주체 종가 정산 완료`
+      : `${foreignOrganPart} · 프 ${formatParenLabel(rawProgramAsOf)}`;
+  }
 
   return (
     <div className="flex flex-col gap-6 w-full">
@@ -608,6 +613,12 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
                 <span className="text-[11px] px-2.5 py-0.5 rounded-full font-bold bg-gradient-to-r from-red-600 to-orange-500 text-white flex items-center gap-1 shadow-xs animate-pulse whitespace-nowrap shrink-0">
                   <Zap className="w-3 h-3 shrink-0" />
                   실시간 60초 자동 갱신
+                </span>
+              )}
+              {activeTab === 'comprehensive' && (
+                <span className="text-[11px] px-2.5 py-0.5 rounded-full font-bold bg-gradient-to-r from-blue-600 to-indigo-600 text-white flex items-center gap-1 shadow-xs animate-pulse whitespace-nowrap shrink-0">
+                  <Zap className="w-3 h-3 shrink-0" />
+                  실시간 종합 스코어링
                 </span>
               )}
               <span className="text-[10px] px-2 py-0.5 rounded-full font-medium bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20 flex items-center gap-1 whitespace-nowrap shrink-0 font-mono">
@@ -756,7 +767,40 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
             )}
           </div>
 
-          {/* Dedicated Sub-Controls Bar for Surging Tab */}
+          {/* KRX Official Provisional Estimates Timeline Bar (수급 탭 전용 나열형 뱃지 복원) */}
+          {!isSurging && (
+            <div className="flex flex-wrap items-center justify-between gap-2 pt-2.5 border-t border-slate-100 dark:border-[#2a2e39]/60 text-xs">
+              <div className="flex items-center gap-1.5 overflow-x-auto scrollbar-none py-0.5">
+                <span className="font-bold text-slate-500 dark:text-slate-400 shrink-0 flex items-center gap-1">
+                  🏛️ KRX 잠정 공표 일정:
+                </span>
+                {krxSchedule.map((slot, sIdx) => {
+                  const isPassed = currentKstTimeNum >= slot.timeNum;
+                  const nextSlot = krxSchedule[sIdx + 1];
+                  const isCurrent = isPassed && (!nextSlot || currentKstTimeNum < nextSlot.timeNum);
+                  return (
+                    <span
+                      key={slot.time}
+                      className={`px-2 py-0.5 rounded-md font-mono text-[10px] shrink-0 border transition flex items-center gap-1 ${
+                        isCurrent
+                          ? 'bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-300 dark:border-emerald-700 font-bold shadow-xs'
+                          : isPassed
+                          ? 'bg-slate-100 dark:bg-[#1e222d] text-slate-700 dark:text-slate-300 border-slate-200 dark:border-[#2a2e39]'
+                          : 'bg-transparent text-slate-400 dark:text-slate-600 border-dashed border-slate-200 dark:border-[#2a2e39]'
+                      }`}
+                    >
+                      <span className="text-[9px] font-sans text-slate-500 dark:text-slate-400">{slot.step}</span>
+                      <strong className="font-mono">{slot.time}</strong>
+                      {isCurrent ? <span className="text-[8px] bg-emerald-600 text-white px-1 py-0.2 rounded font-sans">최신</span> : isPassed ? '✓' : ''}
+                    </span>
+                  );
+                })}
+              </div>
+              <span className="text-[11px] text-slate-400 dark:text-slate-500 font-mono shrink-0">
+                * 다음 갱신 예정: <strong className="text-slate-700 dark:text-slate-300">{getNextKrxSlotTime()}</strong>
+              </span>
+            </div>
+          )}
           {activeTab === 'surging' && (
             <div className="flex flex-wrap items-center justify-between gap-2 pt-2.5 border-t border-red-100 dark:border-red-950/40">
               <div className="bg-red-50 dark:bg-red-950/40 p-1 rounded-xl flex items-center text-xs font-medium border border-red-200 dark:border-red-800/40 max-w-full overflow-hidden gap-0.5 shrink-0">
@@ -816,35 +860,68 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
           {isComprehensive && (
             <div className="bg-gradient-to-r from-purple-900/10 via-indigo-900/10 to-blue-900/10 dark:from-purple-950/40 dark:via-indigo-950/40 dark:to-blue-950/40 border border-purple-200 dark:border-purple-800/50 rounded-2xl p-3.5 space-y-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="flex flex-wrap items-center gap-2">
+                <div className="flex flex-wrap items-center gap-1.5">
                   <Trophy className="w-4 h-4 text-amber-500 shrink-0 animate-bounce" />
-                  <span className="text-xs font-bold text-slate-900 dark:text-white">
-                    단타 종합랭킹 산출 모드:
+                  <span className="text-xs font-bold text-slate-900 dark:text-white mr-1">
+                    가중치 프리셋:
                   </span>
                   
-                  {/* Comprehensive Mode Selector Toggle */}
-                  <div className="inline-flex items-center gap-1 bg-white/80 dark:bg-[#131722]/80 p-0.5 rounded-xl border border-purple-200 dark:border-purple-800/50 shadow-xs">
+                  {/* Preset Buttons */}
+                  <div className="flex flex-wrap items-center gap-1">
                     <button
                       type="button"
-                      onClick={() => handleComprehensiveModeChange('balance')}
-                      className={`px-2.5 py-1 rounded-lg text-xs font-bold transition cursor-pointer flex items-center gap-1 ${
-                        comprehensiveMode === 'balance'
-                          ? 'bg-purple-600 text-white shadow-xs font-black'
-                          : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                      onClick={() => setWeights(DEFAULT_WEIGHTS)}
+                      className={`px-2.5 py-1 rounded-lg text-xs font-bold transition cursor-pointer border ${
+                        weights.fluc === 10 && weights.volInc === 50 && weights.amt === 20 && weights.trendAlign === 10 && weights.closeStrength === 10
+                          ? 'bg-purple-600 text-white border-purple-600 shadow-xs'
+                          : 'bg-white/80 dark:bg-[#131722]/80 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-[#2a2e39] hover:bg-slate-100'
                       }`}
                     >
-                      <span>⚖️ 가중합 밸런스</span>
+                      <span>⚖️ 기본 밸런스</span>
                     </button>
+
                     <button
                       type="button"
-                      onClick={() => handleComprehensiveModeChange('singleSignal')}
-                      className={`px-2.5 py-1 rounded-lg text-xs font-bold transition cursor-pointer flex items-center gap-1 ${
-                        comprehensiveMode === 'singleSignal'
-                          ? 'bg-gradient-to-r from-red-600 to-amber-600 text-white shadow-xs font-black'
-                          : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                      onClick={() =>
+                        setWeights({
+                          fluc: 33,
+                          volInc: 33,
+                          amt: 34,
+                          foreign: 0,
+                          organ: 0,
+                          trendAlign: 0,
+                          closeStrength: 0,
+                        })
+                      }
+                      className={`px-2.5 py-1 rounded-lg text-xs font-bold transition cursor-pointer border ${
+                        weights.fluc === 33 && weights.volInc === 33 && weights.amt === 34 && weights.foreign === 0 && weights.organ === 0
+                          ? 'bg-gradient-to-r from-red-600 to-amber-600 text-white border-red-600 shadow-xs'
+                          : 'bg-white/80 dark:bg-[#131722]/80 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-[#2a2e39] hover:bg-slate-100'
                       }`}
                     >
-                      <span>🔥 극단적 단일신호 우선</span>
+                      <span>⚡ 모멘텀 3지표 집중</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setWeights({
+                          fluc: 10,
+                          volInc: 20,
+                          amt: 20,
+                          foreign: 25,
+                          organ: 25,
+                          trendAlign: 0,
+                          closeStrength: 0,
+                        })
+                      }
+                      className={`px-2.5 py-1 rounded-lg text-xs font-bold transition cursor-pointer border ${
+                        weights.foreign === 25 && weights.organ === 25
+                          ? 'bg-blue-600 text-white border-blue-600 shadow-xs'
+                          : 'bg-white/80 dark:bg-[#131722]/80 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-[#2a2e39] hover:bg-slate-100'
+                      }`}
+                    >
+                      <span>🌊 수급 확증형</span>
                     </button>
                   </div>
                 </div>
@@ -1323,7 +1400,7 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
                                   const isConsecA = overlapMode !== 'daily' && a.consecutiveText !== '당일순매수' && (a.consecutiveDays || 0) >= targetDays ? 1 : 0;
                                   const isConsecB = overlapMode !== 'daily' && b.consecutiveText !== '당일순매수' && (b.consecutiveDays || 0) >= targetDays ? 1 : 0;
                                   if (isConsecB !== isConsecA) return isConsecB - isConsecA;
-                                  const order: Record<string, number> = { foreign: 1, organ: 2, pension: 3, program: 4 };
+                                  const order: Record<string, number> = { foreign: 1, organ: 2, program: 3 };
                                   return (order[a.type] || 99) - (order[b.type] || 99);
                                 })
                                 .map((r) => {
@@ -1385,15 +1462,9 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
 
                             {/* 종합점수 (총점) */}
                             <td className="p-2.5 text-center whitespace-nowrap font-bold">
-                              {comprehensiveMode === 'singleSignal' ? (
-                                <span className="inline-flex items-center justify-center px-2.5 py-1 rounded-xl text-[11px] font-sans font-black bg-gradient-to-r from-red-600 to-amber-600 text-white shadow-xs">
-                                  {(item as any).topSignalBadge || `${item.scoreBreakdown?.totalScore.toFixed(1)}점`}
-                                </span>
-                              ) : (
-                                <span className="inline-flex items-center justify-center px-3 py-1 rounded-xl text-sm font-mono font-black bg-gradient-to-r from-purple-600 to-indigo-600 text-white shadow-xs">
-                                  {item.scoreBreakdown?.totalScore.toFixed(1)}점
-                                </span>
-                              )}
+                              <span className="inline-flex items-center justify-center px-3 py-1 rounded-xl text-sm font-mono font-black bg-gradient-to-r from-purple-600 to-indigo-600 text-white shadow-xs">
+                                {item.scoreBreakdown?.totalScore.toFixed(1)}점
+                              </span>
                             </td>
 
                             {/* 외국인 수급 */}

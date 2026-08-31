@@ -32,9 +32,9 @@ export async function GET(request: NextRequest) {
     } else if (type === 'foreign' || type === 'organ') {
       const reqPeriod = (period === 'consecutive2d' || period === 'consecutive3d') ? '1d' : (period as '1d' | '1w' | '1m');
       responseData = await fetchKisForeignInstitutionRanking(type, direction, reqPeriod, market, limit);
-    } else if (type === 'pension' || type === 'program') {
+    } else if (type === 'program') {
       const reqPeriod = (period === 'consecutive2d' || period === 'consecutive3d') ? '1d' : (period as '1d' | '1w' | '1m');
-      responseData = await getBatchRankingDataAsync(type, direction, reqPeriod, market, limit);
+      responseData = await getBatchRankingDataAsync('program', direction, reqPeriod, market, limit);
       if (responseData && Array.isArray(responseData.list)) {
         responseData.list = await mergeCreditStatusToRanking(responseData.list);
       }
@@ -63,7 +63,7 @@ export async function GET(request: NextRequest) {
             await resolveAndCacheMissingCredits(missingSymbols).catch(() => null);
           }
         }
-        if (type === 'pension' || type === 'program') {
+        if (type === 'program') {
           await runTop50BatchCollector(false, `after_batch_${type}`).catch(() => null);
         }
       });

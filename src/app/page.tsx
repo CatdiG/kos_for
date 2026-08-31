@@ -11,8 +11,8 @@ import RankingStockDetailChart from '@/components/RankingStockDetailChart';
 import { InvestorTrendResponse, RankingItem, TrendPeriod } from '@/lib/types';
 import { AlertCircle, RefreshCw, X } from 'lucide-react';
 
-async function fetchInvestorTrend(symbol: string, period: TrendPeriod): Promise<InvestorTrendResponse> {
-  const res = await fetch(`/api/stock/investor-trend?symbol=${symbol}&period=${period}`);
+async function fetchInvestorTrend(symbol: string, period: TrendPeriod, signal?: AbortSignal): Promise<InvestorTrendResponse> {
+  const res = await fetch(`/api/stock/investor-trend?symbol=${symbol}&period=${period}`, { signal });
   if (!res.ok) {
     const errJson = await res.json().catch(() => null);
     throw new Error(errJson?.error || '수급 데이터를 가져오는 중 오류가 발생했습니다.');
@@ -35,9 +35,8 @@ export default function DashboardPage() {
     isFetching,
   } = useQuery<InvestorTrendResponse>({
     queryKey: ['investorTrend', symbol, period],
-    queryFn: () => fetchInvestorTrend(symbol, period),
+    queryFn: ({ signal }) => fetchInvestorTrend(symbol, period, signal),
     enabled: Boolean(symbol),
-    placeholderData: (previousData) => previousData,
   });
 
   return (
@@ -77,7 +76,7 @@ export default function DashboardPage() {
           </div>
         )}
 
-        {/* 4 Summary Cards (Foreigner, Institution, Pension Fund, Program Trading) */}
+        {/* 3 Summary Cards (Foreigner, Institution, Program Trading) */}
         <SupplySummaryCards
           summary={data?.summary}
           programTrade={data?.programTrade}
@@ -115,7 +114,7 @@ export default function DashboardPage() {
       {/* Footer */}
       <footer className="border-t border-slate-200 dark:border-[#2a2e39] bg-white dark:bg-[#131722] py-4 px-6 mt-12 text-center text-xs text-slate-500 dark:text-[#787b86] transition-colors duration-200">
         <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-2">
-          <span>한국투자증권(KIS) Open API 기반 외국인 · 기관 · 연기금 주식 수급 분석 시스템</span>
+          <span>한국투자증권(KIS) Open API 기반 외국인 · 기관 · 프로그램 주식 수급 분석 시스템</span>
           <span className="font-mono text-[11px] text-slate-400 dark:text-slate-500">Next.js App Router • Recharts • TanStack Query</span>
         </div>
       </footer>

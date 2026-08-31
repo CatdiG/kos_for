@@ -16,10 +16,10 @@ import { resolveMarketType, resolveStockPriceAndChange } from './mockData';
 // ============================================================================
 // 🛡️ [안전장치 1] 계산 로직 버전 관리 및 영구 저장 보류 스위치
 // ============================================================================
-export const CURRENT_CALC_LOGIC_VERSION = 'v1.0.0-draft';
+export const CURRENT_CALC_LOGIC_VERSION = 'v1.1.0-synced-20260831';
 
 /**
- * 🚨 [안전장치 2] 연기금 및 당일 교집합 뱃지 로직 최종 확정 전까지
+ * 🚨 [안전장치 2] 당일 교집합 뱃지 로직 최종 확정 전까지
  * 계산 결과(b)의 영구 디스크/DB 저장을 보류하고 항상 원본(a)로부터 재계산하도록 강제
  */
 export const ALLOW_PERMANENT_CALC_STORAGE = false;
@@ -113,54 +113,6 @@ export async function loadRawDailyRecordsForDate(targetDate: string): Promise<Ra
     }
   }
 
-  // 1-3. 과거 날짜 데이터가 없는 경우 .pension_cache_300.json 파일에서 복원하여 원본 적재
-  const pensionCachePath = path.join(process.cwd(), 'scratch', '.pension_cache_300.json');
-  if (fs.existsSync(pensionCachePath)) {
-    try {
-      const text = fs.readFileSync(pensionCachePath, 'utf8');
-      const json = JSON.parse(text);
-      const records: RawDailyInvestorRecord[] = [];
-
-      if (json && json.trends) {
-        Object.entries(json.trends).forEach(([symbol, val]: [string, any]) => {
-          const trendList = val?.trend || [];
-          const matchedDay = trendList.find((d: any) => (d.date || d.stck_bsop_date) === normalized) || trendList[trendList.length - 1];
-
-          if (matchedDay) {
-            const stockInfo = TOP_300_STOCKS.find((s) => s.symbol === symbol);
-            records.push({
-              date: normalized,
-              symbol,
-              name: stockInfo?.name || val.stockInfo?.name || `종목_${symbol}`,
-              close_price: matchedDay.closePrice || 10000,
-              volume: matchedDay.volume || 1000000,
-              change_rate: matchedDay.changeRate || 0,
-              foreign_net_buy_qty: matchedDay.foreignNetBuyQty || 0,
-              foreign_net_buy_amt: matchedDay.foreignNetBuyAmt || 0,
-              organ_net_buy_qty: matchedDay.organNetBuyQty || 0,
-              organ_net_buy_amt: matchedDay.organNetBuyAmt || 0,
-              pension_net_buy_qty: matchedDay.pensionNetBuyQty || matchedDay.organNetBuyQty || 0,
-              pension_net_buy_amt: matchedDay.pensionNetBuyAmt || matchedDay.organNetBuyAmt || 0,
-              program_net_buy_qty: val.programTrade?.totalNetBuyQty || 0,
-              program_net_buy_amt: val.programTrade?.totalNetBuyAmt || 0,
-            });
-          }
-        });
-
-        if (records.length > 0) {
-          try {
-            const dir = path.join(process.cwd(), 'scratch', 'raw_daily_data');
-            if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-            fs.writeFileSync(localFilePath, JSON.stringify(records, null, 2), 'utf8');
-          } catch (_) {}
-          return records;
-        }
-      }
-    } catch (e) {
-      console.warn('[History Layer A] .pension_cache_300 복원 실패:', e);
-    }
-  }
-
   return [];
 }
 
@@ -204,6 +156,7 @@ export function calculateRankingsFromRawRecords(
         change: 0,
         changeRate: r.change_rate || 0,
         volume: r.volume,
+        ratioVsVolume: r.volume > 0 ? Number(((Math.abs(r.foreign_net_buy_qty) / r.volume) * 100).toFixed(1)) : 0,
         netBuyAmt: r.foreign_net_buy_amt,
         netBuyQty: r.foreign_net_buy_qty,
         netBuyAmtEok: Number((r.foreign_net_buy_amt / 100).toFixed(1)),
@@ -224,29 +177,10 @@ export function calculateRankingsFromRawRecords(
         change: 0,
         changeRate: r.change_rate || 0,
         volume: r.volume,
+        ratioVsVolume: r.volume > 0 ? Number(((Math.abs(r.organ_net_buy_qty) / r.volume) * 100).toFixed(1)) : 0,
         netBuyAmt: r.organ_net_buy_amt,
         netBuyQty: r.organ_net_buy_qty,
         netBuyAmtEok: Number((r.organ_net_buy_amt / 100).toFixed(1)),
-        asOfDateLabel: dateLabel,
-      }));
-      break;
-    }
-    case 'pension': {
-      const sorted = [...filtered].sort((a, b) =>
-        direction === 'buy' ? b.pension_net_buy_amt - a.pension_net_buy_amt : a.pension_net_buy_amt - b.pension_net_buy_amt
-      );
-      resultList = sorted.slice(0, limit).map((r, idx) => ({
-        rank: idx + 1,
-        symbol: r.symbol,
-        name: r.name,
-        market: resolveMarketType(r.symbol),
-        currentPrice: r.close_price,
-        change: 0,
-        changeRate: r.change_rate || 0,
-        volume: r.volume,
-        netBuyAmt: r.pension_net_buy_amt,
-        netBuyQty: r.pension_net_buy_qty,
-        netBuyAmtEok: Number((r.pension_net_buy_amt / 100).toFixed(1)),
         asOfDateLabel: dateLabel,
       }));
       break;
@@ -264,6 +198,7 @@ export function calculateRankingsFromRawRecords(
         change: 0,
         changeRate: r.change_rate || 0,
         volume: r.volume,
+        ratioVsVolume: r.volume > 0 ? Number(((Math.abs(r.program_net_buy_qty || 0) / r.volume) * 100).toFixed(1)) : 0,
         netBuyAmt: r.program_net_buy_amt || 0,
         netBuyQty: r.program_net_buy_qty || 0,
         netBuyAmtEok: Number(((r.program_net_buy_amt || 0) / 100).toFixed(1)),
@@ -272,23 +207,24 @@ export function calculateRankingsFromRawRecords(
       break;
     }
     case 'overlap': {
-      // 수급 교집합 (4대 주체 중 2개 이상 순매수한 종목)
+      // 수급 교집합 (3대 주체 중 2개 이상 순매수한 종목)
       const overlapCandidates = filtered.map((r) => {
         const ranksByType: any[] = [];
         if (r.foreign_net_buy_amt > 0) {
-          ranksByType.push({ type: 'foreign', label: '외국인', rank: 0, netBuyAmt: r.foreign_net_buy_amt, netBuyAmtEok: Number((r.foreign_net_buy_amt / 100).toFixed(1)), asOfDateLabel: dateLabel });
+          ranksByType.push({ type: 'foreign' as const, label: '외국인', rank: 0, netBuyAmt: r.foreign_net_buy_amt, netBuyAmtEok: Number((r.foreign_net_buy_amt / 100).toFixed(1)), asOfDateLabel: dateLabel });
         }
         if (r.organ_net_buy_amt > 0) {
-          ranksByType.push({ type: 'organ', label: '기관', rank: 0, netBuyAmt: r.organ_net_buy_amt, netBuyAmtEok: Number((r.organ_net_buy_amt / 100).toFixed(1)), asOfDateLabel: dateLabel });
-        }
-        if (r.pension_net_buy_amt > 0) {
-          ranksByType.push({ type: 'pension', label: '연기금', rank: 0, netBuyAmt: r.pension_net_buy_amt, netBuyAmtEok: Number((r.pension_net_buy_amt / 100).toFixed(1)), asOfDateLabel: dateLabel });
+          ranksByType.push({ type: 'organ' as const, label: '기관', rank: 0, netBuyAmt: r.organ_net_buy_amt, netBuyAmtEok: Number((r.organ_net_buy_amt / 100).toFixed(1)), asOfDateLabel: dateLabel });
         }
         if ((r.program_net_buy_amt || 0) > 0) {
-          ranksByType.push({ type: 'program', label: '프로그램', rank: 0, netBuyAmt: r.program_net_buy_amt || 0, netBuyAmtEok: Number(((r.program_net_buy_amt || 0) / 100).toFixed(1)), asOfDateLabel: dateLabel });
+          ranksByType.push({ type: 'program' as const, label: '프로그램', rank: 0, netBuyAmt: r.program_net_buy_amt || 0, netBuyAmtEok: Number(((r.program_net_buy_amt || 0) / 100).toFixed(1)), asOfDateLabel: dateLabel });
         }
 
-        const ALL_ENTITIES = [{ type: 'foreign', label: '외국인' }, { type: 'organ', label: '기관' }, { type: 'pension', label: '연기금' }, { type: 'program', label: '프로그램' }];
+        const ALL_ENTITIES: Array<{ type: 'foreign' | 'organ' | 'program'; label: string }> = [
+          { type: 'foreign', label: '외국인' },
+          { type: 'organ', label: '기관' },
+          { type: 'program', label: '프로그램' },
+        ];
         const missingEntities = ALL_ENTITIES.filter((e) => !ranksByType.some((x) => x.type === e.type));
         const totalNetBuyAmt = ranksByType.reduce((sum, x) => sum + x.netBuyAmt, 0);
 
@@ -301,6 +237,8 @@ export function calculateRankingsFromRawRecords(
           change: 0,
           changeRate: r.change_rate || 0,
           volume: r.volume,
+          ratioVsVolume: 0,
+          netBuyQty: 0,
           netBuyAmt: totalNetBuyAmt,
           netBuyAmtEok: Number((totalNetBuyAmt / 100).toFixed(1)),
           overlapCount: ranksByType.length,
@@ -330,6 +268,10 @@ export function calculateRankingsFromRawRecords(
         change: 0,
         changeRate: r.change_rate || 0,
         volume: r.volume,
+        ratioVsVolume: 0,
+        netBuyQty: 0,
+        netBuyAmt: 0,
+        netBuyAmtEok: 0,
         amountEok: Number(((r.close_price * r.volume) / 100000000).toFixed(1)),
         asOfDateLabel: dateLabel,
       }));
@@ -350,12 +292,12 @@ export function calculateRankingsFromRawRecords(
         change: 0,
         changeRate: r.change_rate || 0,
         volume: r.volume,
+        ratioVsVolume: 0,
+        netBuyQty: 0,
+        netBuyAmt: 0,
+        netBuyAmtEok: 0,
         amountEok: Number(((r.close_price * r.volume) / 100000000).toFixed(1)),
         scoreBreakdown: {
-          totalScore: Number((80 - idx * 1.2).toFixed(1)),
-          flucScore: Number((r.change_rate || 0).toFixed(1)),
-          amtScore: Number(((r.close_price * r.volume) / 1000000000).toFixed(1)),
-          volScore: 50,
           foreignScore: Number((r.foreign_net_buy_amt / 100).toFixed(1)),
           organScore: Number((r.organ_net_buy_amt / 100).toFixed(1)),
         } as ScoreBreakdown,
@@ -435,7 +377,7 @@ export async function recalculateAllHistoryRankings(targetDate: string): Promise
     return { success: false, count: 0 };
   }
 
-  const types: RankingType[] = ['foreign', 'organ', 'pension', 'program', 'overlap', 'surging', 'comprehensive'];
+  const types: RankingType[] = ['foreign', 'organ', 'program', 'overlap', 'surging', 'comprehensive'];
 
   for (const type of types) {
     await getHistoryRankingData({

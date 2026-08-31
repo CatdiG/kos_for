@@ -15,29 +15,33 @@ export function getSettledAsOfDateLabel(lastTradeDate?: string): string {
   const utc = now.getTime() + now.getTimezoneOffset() * 60000;
   const kstDate = new Date(utc + 9 * 60 * 60000);
   const hour = kstDate.getHours();
+  const minute = kstDate.getMinutes();
+  const timeNum = hour * 100 + minute;
   const dayOfWeek = kstDate.getDay();
   let day = kstDate.getDate();
   let month = kstDate.getMonth() + 1;
 
-  if (hour < 17 || dayOfWeek === 0 || dayOfWeek === 6) {
-    if (dayOfWeek === 6) {
+  // 장 개장 전(09:00 이전) 또는 주말일 때만 직전 유효 거래일로 감산
+  if (dayOfWeek === 6) {
+    day -= 1; // 토요일 ➔ 금요일
+  } else if (dayOfWeek === 0) {
+    day -= 2; // 일요일 ➔ 금요일
+  } else if (timeNum < 900) {
+    // 평일 개장 전 ➔ 직전 거래일
+    if (dayOfWeek === 1) {
+      day -= 3; // 월요일 개장 전 ➔ 금요일
+    } else {
       day -= 1;
-    } else if (dayOfWeek === 0) {
-      day -= 2;
-    } else if (hour < 17) {
-      if (dayOfWeek === 1) {
-        day -= 3;
-      } else {
-        day -= 1;
-      }
-    }
-    if (day <= 0) {
-      month -= 1;
-      if (month <= 0) month = 12;
-      const prevMonthDays = new Date(kstDate.getFullYear(), month, 0).getDate();
-      day += prevMonthDays;
     }
   }
+
+  if (day <= 0) {
+    month -= 1;
+    if (month <= 0) month = 12;
+    const prevMonthDays = new Date(kstDate.getFullYear(), month, 0).getDate();
+    day += prevMonthDays;
+  }
+
   return `(${month}/${day} 기준)`;
 }
 

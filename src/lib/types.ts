@@ -31,10 +31,6 @@ export interface InvestorTrendDay {
   organNetBuyQty: number;     // 기관 순매수 수량 (주)
   organNetBuyAmt: number;     // 기관 순매수 금액 (백만원 / 원)
 
-  // 연기금 (Pension Fund)
-  pensionNetBuyQty: number;   // 연기금 순매수 수량 (주)
-  pensionNetBuyAmt: number;   // 연기금 순매수 금액 (백만원 / 원)
-
   // 프로그램 매매 (Program Trading)
   programNetBuyQty?: number;  // 프로그램 순매수 수량 (주)
   programNetBuyAmt?: number;  // 프로그램 순매수 금액 (백만원 / 원)
@@ -42,7 +38,6 @@ export interface InvestorTrendDay {
   // 누적 수급 금액 (선택된 기간 기준)
   cumForeignNetBuyAmt?: number;
   cumOrganNetBuyAmt?: number;
-  cumPensionNetBuyAmt?: number;
   cumProgramNetBuyAmt?: number;
 }
 
@@ -60,7 +55,6 @@ export interface InvestorMetricSummary {
 export interface SupplySummary {
   foreign: InvestorMetricSummary;
   organ: InvestorMetricSummary;
-  pension: InvestorMetricSummary;
   program?: InvestorMetricSummary;
 }
 
@@ -100,7 +94,7 @@ export interface InvestorTrendResponse {
 }
 
 export type MarketType = 'ALL' | 'KOSPI' | 'KOSDAQ';
-export type RankingType = 'foreign' | 'organ' | 'pension' | 'program' | 'overlap' | 'surging' | 'comprehensive';
+export type RankingType = 'foreign' | 'organ' | 'program' | 'overlap' | 'surging' | 'comprehensive';
 export type RankingDirection = 'buy' | 'sell';
 export type RankingPeriod = '1d' | '1w' | '1m' | 'consecutive2d' | 'consecutive3d';
 export type SurgingMode = 'fluctuation' | 'volume' | 'amount' | 'overlap' | 'comprehensive';
@@ -156,14 +150,13 @@ export interface RankingItem {
   type?: RankingType;         // 랭킹 데이터의 투자자 유형
   foreignNetBuyAmt?: number;  // 외국인 순매수 금액 (백만원)
   organNetBuyAmt?: number;    // 기관 순매수 금액 (백만원)
-  pensionNetBuyAmt?: number;  // 연기금 순매수 금액 (백만원)
   programNetBuyAmt?: number;  // 프로그램 순매수 금액 (백만원)
   overlapCount?: number;      // 수급 교집합 탭 전용 중복 주체 수
   investorBadge?: string;     // 수급 교집합 탭 전용 뱃지 문구
   statusBadge?: string;       // 이격도 추세 뱃지 (예: "🔵 바닥 반등")
   statusBadgeStyle?: string;  // 이격도 추세 뱃지 스타일
   ranksByType?: OverlapInvestorRank[];
-  missingEntities?: Array<{ type: 'foreign' | 'organ' | 'pension' | 'program'; label: string }>;
+  missingEntities?: Array<{ type: 'foreign' | 'organ' | 'program'; label: string }>;
   asOfDateLabel?: string;
   aiPickRank?: number;        // AI 추천 순위 배지 (1, 2, 3, 4, 5)
 }
@@ -175,7 +168,7 @@ export interface SurgingRankItem {
 }
 
 export interface OverlapInvestorRank {
-  type: 'foreign' | 'organ' | 'pension' | 'program';
+  type: 'foreign' | 'organ' | 'program';
   label: string;
   rank: number;
   isRanked?: boolean;
@@ -184,6 +177,7 @@ export interface OverlapInvestorRank {
   asOfDateLabel?: string;
   consecutiveDays?: number;
   consecutiveText?: string;
+  isDailyBuy?: boolean;
 }
 
 export interface OverlapRankingItem extends RankingItem {
@@ -203,7 +197,9 @@ export interface InvestorRankingResponse {
   overlapList?: OverlapRankingItem[];
   isMock?: boolean;
   mockReason?: string;
-  lastBatchTime?: string;     // 연기금/프로그램 탭용 배치 시각 (예: "11:30 기준")
+  lastBatchTime?: string;     // 프로그램 탭용 배치 시각 (예: "11:30 기준")
+  asOfDateLabel?: string;     // 당일 가집계/정산 기준일 라벨
+  error?: string;
   updatedAt: string;
   auditLog?: any;
 }
