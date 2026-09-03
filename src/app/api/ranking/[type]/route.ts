@@ -5,7 +5,9 @@ import { MarketType, RankingDirection, RankingPeriod, RankingType } from '@/lib/
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
-export const maxDuration = 60;
+// /api/stock/ranking과 동일한 함수(fetchConsecutive2d/3dOverlapRankingData 등)를 호출하는 레거시 라우트라
+// 같은 60초 강제종료 버그가 잠재해 있다 - 지금은 프론트가 /api/stock/ranking만 쓰지만 일관성을 위해 맞춘다.
+export const maxDuration = 280;
 
 export async function GET(
   request: NextRequest,

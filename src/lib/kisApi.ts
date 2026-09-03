@@ -402,10 +402,13 @@ const INDEX_CODE_MAP: Record<'KOSPI' | 'KOSDAQ', { code: '0001' | '1001'; name: 
  */
 export async function fetchKisIndexDailyTrend(
   market: 'KOSPI' | 'KOSDAQ',
-  period: TrendPeriod = '60d'
+  period: TrendPeriod = '60d',
+  summaryOnly: boolean = false
 ): Promise<IndexTrendResponse> {
   const { code, name } = INDEX_CODE_MAP[market];
-  const cacheKey = `index-${code}-${period}`;
+  // summaryOnly(카드용 현재가만)와 전체(차트용) 응답은 캐시를 분리한다 - summaryOnly 응답의 trend가
+  // 비어있는데 그게 전체 조회 캐시로 잘못 재사용되면 차트가 빈 데이터를 받게 되기 때문.
+  const cacheKey = `index-${code}-${period}${summaryOnly ? '-summary' : ''}`;
   const cached = indexTrendMemoryCache.get(cacheKey);
   if (cached && Date.now() - cached.timestamp < INDEX_TREND_CACHE_TTL_MS) {
     return cached.data;
@@ -418,9 +421,9 @@ export async function fetchKisIndexDailyTrend(
   }
 
   const response = await kisQueue.enqueue(
-    () => fetchWithRetry(() => executeKisIndexDailyTrendFetch(code, name, period)),
+    () => fetchWithRetry(() => executeKisIndexDailyTrendFetch(code, name, period, summaryOnly)),
     'HIGH',
-    `index-trend-${code}-${period}`
+    `index-trend-${code}-${period}${summaryOnly ? '-summary' : ''}`
   );
 
   indexTrendMemoryCache.set(cacheKey, { data: response, timestamp: Date.now() });
@@ -430,7 +433,8 @@ export async function fetchKisIndexDailyTrend(
 async function executeKisIndexDailyTrendFetch(
   indexCode: '0001' | '1001',
   indexName: string,
-  period: TrendPeriod
+  period: TrendPeriod,
+  summaryOnly: boolean = false
 ): Promise<IndexTrendResponse> {
   const token = await getKisAccessToken();
   if (!token) throw new Error('[KIS 인증 토큰 발급 실패]');
@@ -463,6 +467,31 @@ async function executeKisIndexDailyTrendFetch(
   const priceChange = Number(p.bstp_nmix_prdy_vrss || 0) * (priceSign === '4' || priceSign === '5' ? -1 : 1);
 
   // 2. 지수 일자별(일봉) 시세 - KIS는 최신순(내림차순)으로 내려주므로 오름차순으로 뒤집는다
+  // 🚨 [성능 수정] 코스피/코스닥 카드(요약용)는 현재가만 필요하고 일봉 배열은 안 쓰는데, 예전엔 카드
+  // 하나 띄울 때마다 이 무거운 일봉 호출까지 매번 같이 나가서 콜드스타트 때 kisQueue 정체를 더 키웠다.
+  // summaryOnly면 이 두 번째 KIS 호출 자체를 생략한다(카드 컴포넌트가 매 페이지 로드마다 부담하던 지수당
+  // 2회 → 1회로 절반 감소, KOSPI+KOSDAQ 합쳐 4회 → 2회).
+  if (summaryOnly) {
+    return {
+      indexInfo: {
+        code: indexCode,
+        name: indexName,
+        currentPrice: Number(p.bstp_nmix_prpr || 0),
+        change: priceChange,
+        changeRate: Number(p.bstp_nmix_prdy_ctrt || 0),
+        volume: Number(p.acml_vol || 0),
+        tradingValueEok: Number((Number(p.acml_tr_pbmn || 0) / 100).toFixed(1)),
+        advancingCount: Number(p.ascn_issu_cnt || 0),
+        decliningCount: Number(p.down_issu_cnt || 0),
+        unchangedCount: Number(p.stnr_issu_cnt || 0),
+      },
+      period,
+      trend: [],
+      isMock: false,
+      updatedAt: new Date().toISOString(),
+    };
+  }
+
   const todayStr = getKstTodayStr();
   const dailyUrl = `${baseUrl}/uapi/domestic-stock/v1/quotations/inquire-index-daily-price?FID_COND_MRKT_DIV_CODE=U&FID_INPUT_ISCD=${indexCode}&FID_INPUT_DATE_1=${todayStr}&FID_PERIOD_DIV_CODE=D`;
   const dailyRes = await fetch(dailyUrl, { headers: buildHeaders('FHPUP02120000'), cache: 'no-store' });
@@ -2851,8 +2880,14 @@ async function finalizeConsecutiveOverlapResult(
         });
       });
 
+      // 🚨 [성능 수정] 예전엔 이 기록을 await해서 사용자 응답을 막았다 - 콜드스타트 직후 여러 컴포넌트가
+      // 동시에 kisQueue에 몰리는 상황(실측: 108초)에서, 이 Supabase 쓰기까지 응답 경로에 얹혀 불필요하게
+      // 지연을 더하고 있었다. 바로 위(2447줄) insertDailyOverlapFirstSeenIfMissing과 동일하게, 응답 지연
+      // 없이 백그라운드로 기록하고 실패해도(화면 표시엔 지장 없음) 조용히 넘어가도록 바꾼다.
       if (watchRows.length > 0) {
-        await upsertConsecutiveOverlapWatch(todayStr, targetDays, direction, market, watchRows);
+        upsertConsecutiveOverlapWatch(todayStr, targetDays, direction, market, watchRows).catch((e) =>
+          console.warn('[Consecutive Overlap Dropout Tracking Background Failed]', e?.message || e)
+        );
       }
     } catch (e: any) {
       console.warn('[Consecutive Overlap Dropout Tracking Failed]', e?.message || e);
@@ -2942,10 +2977,16 @@ export async function fetchConsecutiveNDaysOverlapRankingData(
     .map((p) => ({ symbol: p.symbol, name: getStockName(p.symbol, p.name), currentPrice: 0 } as any));
   const targetCandidates = [...candidateStocks, ...carriedOver];
 
-  // 콜드스타트 응답이 30초를 넘기지 않도록, 후보가 많을 때는 상위 PRIORITY_LIMIT개만 먼저 계산해서
+  // 콜드스타트 응답 지연 최소화를 위해, 후보가 많을 때는 상위 PRIORITY_LIMIT개만 먼저 계산해서
   // 즉시 응답(isPartial:true)하고, 나머지는 응답을 보낸 뒤 백그라운드에서 이어서 계산해 캐시를 완전판으로
   // 갱신한다. candidateStocks(당일교집합 순매수금액 순)가 앞쪽에 오므로 "가장 유력한 후보부터" 먼저 보여준다.
-  const PRIORITY_LIMIT = 30;
+  //
+  // 🚨 [성능 수정] 종목당 라이브 KIS 호출이 2건(수급동향+프로그램매매)이고 전부 하나의 kisQueue(300ms
+  // 직렬 간격)를 공유한다 - 예전 값(30)은 "30개 × 1초 ≈ 30초 이내"를 가정했지만, 실측으로는 콜드스타트
+  // 직후 다른 컴포넌트(지수카드, 종목상세차트 등)까지 같은 큐에 몰리면서 108초까지 걸리는 게 확인됐다.
+  // 후보 수를 줄이면 그만큼 이번 요청이 큐를 점유하는 시간이 줄어 전체 정체가 완화된다 - 완전판은 그대로
+  // 백그라운드에서 마저 채워지므로(아래 restCandidates 경로) 정확도 손실은 없고, 최초 응답 속도만 개선된다.
+  const PRIORITY_LIMIT = 15;
   const priorityCandidates = targetCandidates.slice(0, PRIORITY_LIMIT);
   const restCandidates = targetCandidates.slice(PRIORITY_LIMIT);
 
@@ -3042,7 +3083,13 @@ export async function fetchConsecutiveNDaysOverlapRankingData(
   // 2단계: 응답을 이미 보낸 뒤(await 하지 않음) 나머지 후보 + DB 사전필터로 좁혀진 universeExtra
   // 생존종목(캐시 미보유분)을 이어서 라이브로 조회해 캐시를 완전판으로 덮어쓰고, 이때만 이탈을 기록한다.
   // 실패해도 이번 요청 응답에는 영향 없음(다음 요청이 다시 시도).
-  (async () => {
+  //
+  // 🚨 [Vercel 버그 수정] 예전엔 그냥 await 없는 IIFE였다 - 로컬(next dev)은 Node 프로세스가 계속 살아있어
+  // 항상 끝까지 완료됐지만, Vercel 서버리스는 응답을 보내는 즉시 함수 컨테이너를 죽여버려서 이 백그라운드
+  // 완성 단계가 중간에 잘려나갔다(실측: 버셀에서 계속 "우선순위 15종목"짜리 반쪽 결과에 머물러 있었고,
+  // 로컬과 결과가 달랐던 근본 원인). Next.js의 after()(라우트 파일에서 이미 크레딧/배치예열에 쓰던 것과
+  // 동일한 패턴)로 등록하면 Vercel이 이 작업이 끝날 때까지(라우트의 maxDuration 내에서) 함수를 살려둔다.
+  const backgroundCompletion = async () => {
     try {
       const restResults = await Promise.all(restCandidates.map(fetchTrendPair));
       const universeExtraLiveResults = await Promise.all(universeExtraNeedsLiveFetch.map(fetchTrendPair));
@@ -3055,7 +3102,15 @@ export async function fetchConsecutiveNDaysOverlapRankingData(
     } catch (e: any) {
       console.warn('[Consecutive Overlap Background Completion Failed]', e?.message || e);
     }
-  })();
+  };
+  try {
+    // Next.js Route Handler 요청 컨텍스트 밖(스크립트에서 직접 호출 등)에서는 after()가 던질 수 있으니
+    // 안전하게 폴백해서 예전과 동일한 fire-and-forget으로라도 동작하게 한다.
+    const { after } = await import('next/server');
+    after(backgroundCompletion);
+  } catch (_) {
+    backgroundCompletion();
+  }
 
   return partialMasterData;
 }

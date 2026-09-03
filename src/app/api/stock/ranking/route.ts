@@ -5,7 +5,11 @@ import { MarketType, RankingDirection, RankingPeriod, RankingType } from '@/lib/
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
-export const maxDuration = 60; // Set Vercel serverless function max duration to 60 seconds
+// 🚨 [버그 수정] 60초였던 예전 값이 실측으로 확인된 근본 원인이었다 - 수급교집합(당일/2일/3일연속)은
+// 콜드스타트 시 종목별 라이브 KIS 조회가 여러 건 필요해 60초를 넘기는 경우가 실제로 있었는데, Vercel이
+// 정확히 60초에 FUNCTION_INVOCATION_TIMEOUT(504)으로 함수를 강제 종료해버렸다(재현: 버셀 배포 URL에
+// 당일교집합 요청 시 60.37초에 504). Hobby 플랜도 최대 300초까지 지원하므로 여유 있게 늘린다.
+export const maxDuration = 280;
 
 export async function GET(request: NextRequest) {
   const routeStart = Date.now();

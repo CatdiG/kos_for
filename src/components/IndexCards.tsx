@@ -13,7 +13,8 @@ interface IndexCardsProps {
 }
 
 async function fetchIndexSummary(market: 'KOSPI' | 'KOSDAQ'): Promise<IndexTrendResponse> {
-  const res = await fetch(`/api/stock/index-trend?market=${market}&period=5d`);
+  // 카드는 현재가/등락률만 표시하므로 일봉 배열이 필요 없다 - summaryOnly로 KIS 호출을 절반(2회→1회)으로 줄인다.
+  const res = await fetch(`/api/stock/index-trend?market=${market}&period=5d&summaryOnly=1`);
   if (!res.ok) throw new Error('지수 조회 실패');
   return res.json();
 }

@@ -14,11 +14,13 @@ export async function GET(request: NextRequest) {
   const periodParam = (searchParams.get('period') || '60d') as TrendPeriod;
   const validPeriods: TrendPeriod[] = ['5d', '20d', '60d'];
   const period: TrendPeriod = validPeriods.includes(periodParam) ? periodParam : '60d';
+  // 코스피/코스닥 카드(요약용)는 현재가만 필요해 일봉 조회를 생략하는 경량 모드
+  const summaryOnly = searchParams.get('summaryOnly') === '1' || searchParams.get('summaryOnly') === 'true';
 
-  console.log(`[PERF ROUTE START /api/stock/index-trend] market=${market}, period=${period}`);
+  console.log(`[PERF ROUTE START /api/stock/index-trend] market=${market}, period=${period}, summaryOnly=${summaryOnly}`);
 
   try {
-    const data = await fetchKisIndexDailyTrend(market, period);
+    const data = await fetchKisIndexDailyTrend(market, period, summaryOnly);
     const elapsedMs = Date.now() - routeStart;
     console.log(`[PERF ROUTE END /api/stock/index-trend] Total: ${elapsedMs}ms`);
 
