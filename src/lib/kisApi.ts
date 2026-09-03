@@ -4466,24 +4466,61 @@ export async function getStockBadgeSummary(symbol: string, market: MarketType = 
   };
 
   // 1~3, 5번은 이 컨테이너 자신의 캐시를 그 자리에서 채우도록 병렬로 직접 호출한다(위 설명 참고).
-  // 하나가 실패해도(.catch) 나머지 뱃지 판정에 영향 없도록 개별적으로 방어한다.
-  const [
-    surgingFluctuationRes, surgingVolumeRes, surgingAmountRes,
-    comprehensiveRes,
-    foreignBuyRes, foreignSellRes, organBuyRes, organSellRes,
-    overlapDailyBuyRes, overlapDailySellRes,
-  ] = await Promise.all([
-    fetchKisSurgingStocks('fluctuation', market).catch(() => null),
-    fetchKisSurgingStocks('volume', market).catch(() => null),
-    fetchKisSurgingStocks('amount', market).catch(() => null),
-    fetchKisComprehensiveScoreRanking(market).catch(() => null),
-    fetchKisForeignInstitutionRanking('foreign', 'buy', '1d', market, 50).catch(() => null),
-    fetchKisForeignInstitutionRanking('foreign', 'sell', '1d', market, 50).catch(() => null),
-    fetchKisForeignInstitutionRanking('organ', 'buy', '1d', market, 50).catch(() => null),
-    fetchKisForeignInstitutionRanking('organ', 'sell', '1d', market, 50).catch(() => null),
-    fetchOverlapRankingData('buy', '1d', 2, 50, market).catch(() => null),
-    fetchOverlapRankingData('sell', '1d', 2, 50, market).catch(() => null),
+  //
+  // 🚨 [버그 수정] 처음엔 그냥 Promise.all로 10개를 다 기다렸는데, 프로덕션 실측(진짜 콜드 컨테이너 +
+  // 다른 요청과 같은 kisQueue를 공유하는 실제 트래픽 상황)에서 30초를 넘겨 FUNCTION_INVOCATION_TIMEOUT으로
+  // 배지 라우트 전체가 죽는 게 확인됐다 - 로컬 콜드 테스트(8.3초)보다 훨씬 오래 걸릴 수 있다는 뜻.
+  // Promise.all은 "전부 끝나야 응답"이라 느린 것 하나가 전체를 막는 구조라, 대신 전체에 시간 예산을
+  // 두고 그 안에 끝난 것만 쓴다 - 늦게 끝난 건 이번 응답엔 못 넣지만 각자의 캐시는 계속 채워지므로
+  // 다음 요청부턴 더 빨라진다(완전히 버려지는 게 아니라 "이번 회차에서만 그 뱃지가 빠지는" 정도로 완화).
+  const BADGE_SOURCE_TIME_BUDGET_MS = 18000; // 라우트 maxDuration(30초)보다 충분히 여유있게
+  const slot = <T,>(): { value: T | null } => ({ value: null });
+  const surgingFluctuationSlot = slot<InvestorRankingResponse>();
+  const surgingVolumeSlot = slot<InvestorRankingResponse>();
+  const surgingAmountSlot = slot<InvestorRankingResponse>();
+  const comprehensiveSlot = slot<InvestorRankingResponse>();
+  const foreignBuySlot = slot<InvestorRankingResponse>();
+  const foreignSellSlot = slot<InvestorRankingResponse>();
+  const organBuySlot = slot<InvestorRankingResponse>();
+  const organSellSlot = slot<InvestorRankingResponse>();
+  const overlapDailyBuySlot = slot<InvestorRankingResponse>();
+  const overlapDailySellSlot = slot<InvestorRankingResponse>();
+
+  const fillSlot = async <T,>(s: { value: T | null }, p: Promise<T>) => {
+    try {
+      s.value = await p;
+    } catch {
+      s.value = null;
+    }
+  };
+
+  const allFilled = Promise.all([
+    fillSlot(surgingFluctuationSlot, fetchKisSurgingStocks('fluctuation', market)),
+    fillSlot(surgingVolumeSlot, fetchKisSurgingStocks('volume', market)),
+    fillSlot(surgingAmountSlot, fetchKisSurgingStocks('amount', market)),
+    fillSlot(comprehensiveSlot, fetchKisComprehensiveScoreRanking(market)),
+    fillSlot(foreignBuySlot, fetchKisForeignInstitutionRanking('foreign', 'buy', '1d', market, 50)),
+    fillSlot(foreignSellSlot, fetchKisForeignInstitutionRanking('foreign', 'sell', '1d', market, 50)),
+    fillSlot(organBuySlot, fetchKisForeignInstitutionRanking('organ', 'buy', '1d', market, 50)),
+    fillSlot(organSellSlot, fetchKisForeignInstitutionRanking('organ', 'sell', '1d', market, 50)),
+    fillSlot(overlapDailyBuySlot, fetchOverlapRankingData('buy', '1d', 2, 50, market)),
+    fillSlot(overlapDailySellSlot, fetchOverlapRankingData('sell', '1d', 2, 50, market)),
   ]);
+  await Promise.race([
+    allFilled,
+    new Promise((resolve) => setTimeout(resolve, BADGE_SOURCE_TIME_BUDGET_MS)),
+  ]);
+
+  const surgingFluctuationRes = surgingFluctuationSlot.value;
+  const surgingVolumeRes = surgingVolumeSlot.value;
+  const surgingAmountRes = surgingAmountSlot.value;
+  const comprehensiveRes = comprehensiveSlot.value;
+  const foreignBuyRes = foreignBuySlot.value;
+  const foreignSellRes = foreignSellSlot.value;
+  const organBuyRes = organBuySlot.value;
+  const organSellRes = organSellSlot.value;
+  const overlapDailyBuyRes = overlapDailyBuySlot.value;
+  const overlapDailySellRes = overlapDailySellSlot.value;
 
   // 1. 급등주 3종 서브모드
   pushIfFound('surging-fluctuation', '급등주(등락률)', surgingFluctuationRes?.list);
