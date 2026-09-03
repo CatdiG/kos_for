@@ -677,3 +677,79 @@ export async function insertDailyOverlapFirstSeenIfMissing(
   }
 }
 
+// ============================================================================
+// 🏷️ shared_rank_cache: "전 탭 뱃지 모음"(getStockBadgeSummary)이 Vercel의 서로 다른
+// 서버리스 컨테이너끼리도 서로의 랭킹 계산 결과를 볼 수 있게 하는 공유 캐시.
+//
+// 🚨 [설계 원칙] 이 테이블은 RLS가 켜져 있고 anon/authenticated 정책이 하나도 없다 - 반드시
+// getSupabaseAdmin()(SERVICE_ROLE_KEY, 서버 전용 - 클라이언트 번들에 절대 노출 안 됨)으로만
+// 접근해야 한다. getSupabasePublic()(브라우저에도 노출되는 anon key)으로는 RLS에 막혀 이
+// 테이블을 절대 못 읽는다 - 실수로라도 getSupabasePublic()을 이 함수들에 섞어 쓰지 말 것.
+// 쓰기는 전부 fire-and-forget(실패해도 조용히 넘어감 - 캐시 갱신 실패가 화면 응답을 막으면 안 됨).
+// ============================================================================
+
+export interface SharedRankCacheEntry {
+  cacheKey: string;
+  list: any[];
+  updatedAt: string;
+}
+
+/**
+ * 랭킹 계산이 끝난 직후 fire-and-forget으로 호출 - 응답을 기다리게 하지 않는다.
+ * 실패해도(RLS 미설정, 테이블 미생성 등) 조용히 넘어간다 - 인메모리 캐시가 여전히
+ * 정상 동작하므로 이 저장 실패가 사용자에게 보이는 기능을 막아서는 안 된다.
+ */
+export async function upsertSharedRankCache(cacheKey: string, list: any[]): Promise<void> {
+  if (!list || list.length === 0) return;
+  const client = getSupabaseAdmin();
+  if (!client) return;
+
+  try {
+    const { error } = await client
+      .from('shared_rank_cache')
+      .upsert({ cache_key: cacheKey, list, updated_at: new Date().toISOString() }, { onConflict: 'cache_key' });
+    if (error) {
+      console.warn('[Supabase shared_rank_cache Upsert Error]', error.message);
+    }
+  } catch (e: any) {
+    console.warn('[Supabase shared_rank_cache Upsert Exception]', e?.message || e);
+  }
+}
+
+/**
+ * 여러 cache_key를 한 번의 IN 쿼리로 일괄 조회한다 - 뱃지 조회 하나당 카테고리 수만큼
+ * 개별 쿼리를 날리지 않기 위함. maxAgeMs보다 오래된 행은 결과에서 제외한다(뱃지가 옛날
+ * 순위를 마치 지금 순위인 것처럼 보여주는 걸 막기 위한 안전장치 - 수칙 1-5와 같은 취지).
+ */
+export async function fetchSharedRankCacheBatch(
+  cacheKeys: string[],
+  maxAgeMs: number = 5 * 60 * 1000
+): Promise<Map<string, any[]>> {
+  const result = new Map<string, any[]>();
+  if (!cacheKeys || cacheKeys.length === 0) return result;
+  const client = getSupabaseAdmin();
+  if (!client) return result;
+
+  try {
+    const { data, error } = await client
+      .from('shared_rank_cache')
+      .select('cache_key, list, updated_at')
+      .in('cache_key', cacheKeys);
+
+    if (error) {
+      console.warn('[Supabase shared_rank_cache Batch Read Error]', error.message);
+      return result;
+    }
+
+    const now = Date.now();
+    (data || []).forEach((row: any) => {
+      if (!row.list || now - new Date(row.updated_at).getTime() > maxAgeMs) return;
+      result.set(row.cache_key, row.list);
+    });
+    return result;
+  } catch (e: any) {
+    console.warn('[Supabase shared_rank_cache Batch Read Exception]', e?.message || e);
+    return result;
+  }
+}
+

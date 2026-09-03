@@ -5,7 +5,7 @@ import os from 'os';
 import { InvestorTrendDay, InvestorTrendResponse, KisTokenResponse, ProgramTradeIntradayPoint, ProgramTradeSummary, SupplySummary, TrendPeriod, InvestorRankingResponse, RankingItem, RankingDirection, RankingPeriod, RankingType, OverlapInvestorRank, MarketType, SurgingRankItem, ScoreBreakdown, SurgingMode, isEtfOrEtn, IntradayCandlePoint, IntradayPivotFibonacciLevels, IntradayChartResponse, IndexTrendResponse, IndexTrendDay, StockBadgeItem, StockBadgeSummaryResponse } from './types';
 import { getStockName, resolveStockPriceAndChange, updateRuntimeStockPrice, resolveMarketType, computeUnifiedStatusBadge, getSettledAsOfDateLabel, getKrxEstimateSlotInfo, findSplitSafeStartIndex, roundToKrxTick, computeRecentVolumeRatio } from './mockData';
 import { TOP_300_STOCKS } from './stockUniverse300';
-import { fetchTokenFromSupabase, fetchCreditBatchFromSupabase, saveCreditBatchToSupabase, fetchIntraday3mCandlesFromSupabase, saveIntraday3mCandlesToSupabase, fetchConsecutiveOverlapWatch, upsertConsecutiveOverlapWatch, fetchDailyOverlapFirstSeen, insertDailyOverlapFirstSeenIfMissing, fetchLatestActiveBeforeDate } from './supabase';
+import { fetchTokenFromSupabase, fetchCreditBatchFromSupabase, saveCreditBatchToSupabase, fetchIntraday3mCandlesFromSupabase, saveIntraday3mCandlesToSupabase, fetchConsecutiveOverlapWatch, upsertConsecutiveOverlapWatch, fetchDailyOverlapFirstSeen, insertDailyOverlapFirstSeenIfMissing, fetchLatestActiveBeforeDate, upsertSharedRankCache, fetchSharedRankCacheBatch } from './supabase';
 export { resolveStockPriceAndChange, computeUnifiedStatusBadge };
 
 interface TokenCacheData {
@@ -46,6 +46,35 @@ export function getGlobalMap<K, V>(name: string): Map<K, V> {
   const g = globalThis as any;
   if (!g[key]) g[key] = new Map<K, V>();
   return g[key] as Map<K, V>;
+}
+
+/**
+ * 🏷️ [shared_rank_cache 연동] getGlobalMap(위)이 "같은 컨테이너 안에서" 여러 모듈 인스턴스가
+ * 캐시를 공유하게 해주는 것과 달리, 이 함수는 "서로 다른 컨테이너끼리도" 공유되도록 Supabase에
+ * 마저 반영한다 - Vercel은 API 라우트마다 별도 컨테이너로 뜰 수 있어(실측 확인됨) 인메모리 캐시
+ * 만으로는 다른 라우트(예: /api/stock/badges)가 이 결과를 절대 볼 수 없기 때문이다.
+ *
+ * 뱃지 판정에 필요한 최소 필드만 골라 저장한다(가격/거래량 등 불필요한 필드는 뺌 - 저장량과
+ * 노출 표면 최소화). fire-and-forget이라 실패해도 응답에 영향 없고, await하지 않는다.
+ */
+export function syncSharedRankCache(cacheKey: string, list: RankingItem[] | undefined | null): void {
+  if (!list || list.length === 0) return;
+  const trimmed = list.map((item) => ({
+    symbol: item.symbol,
+    rank: item.rank,
+    netBuyAmt: item.netBuyAmt,
+    statusBadge: item.statusBadge,
+    statusBadgeStyle: item.statusBadgeStyle,
+    surgingBadge: item.surgingBadge,
+    investorBadge: item.investorBadge,
+    netBuyAmtEok: item.netBuyAmtEok,
+    // getStockBadgeSummary의 pushIfFound가 RankingItem과 동일하게 item.scoreBreakdown?.totalScore로
+    // 읽으므로, 여기서도 평평하게 펴지 않고 같은 모양(중첩 객체)으로 저장해 소스가 바뀌어도 코드가 그대로 동작하게 한다.
+    scoreBreakdown: item.scoreBreakdown ? { totalScore: item.scoreBreakdown.totalScore } : undefined,
+    aiPickRank: item.aiPickRank,
+    ranksByType: item.ranksByType,
+  }));
+  upsertSharedRankCache(cacheKey, trimmed).catch(() => {});
 }
 
 /**
@@ -1632,6 +1661,7 @@ export async function fetchKisForeignInstitutionRanking(
     );
     if (res && res.list && res.list.length > 0) {
       rankingCacheStore.set(cacheKey, res);
+      syncSharedRankCache(cacheKey, res.list);
     }
     return res;
   } catch (err: any) {
@@ -2512,6 +2542,7 @@ async function executeAsyncOverlapCalculation(
 
     if (masterData.list && masterData.list.length > 0) {
       overlapMemoryCache.set(masterCacheKey, { data: masterData, timestamp: Date.now() });
+      syncSharedRankCache(masterCacheKey, masterData.list);
     }
     return masterData;
   } catch (err: any) {
@@ -2949,6 +2980,7 @@ async function finalizeConsecutiveOverlapResult(
 
   if (masterData.list && masterData.list.length > 0) {
     consecutiveOverlapMemoryCache.set(cacheKey, { data: masterData, timestamp: Date.now() });
+    syncSharedRankCache(cacheKey, masterData.list);
   }
 
   return masterData;
@@ -3376,6 +3408,7 @@ export async function fetchKisSurgingStocks(
     );
     if (res && res.list && res.list.length > 0) {
       surgingCacheStore.set(cacheKey, res);
+      syncSharedRankCache(cacheKey, res.list);
     }
     return res;
   } catch (err: any) {
@@ -3940,6 +3973,7 @@ export async function fetchKisComprehensiveScoreRanking(
     };
 
     comprehensiveCacheStore.set(cacheKey, { data: result, timestamp: Date.now() });
+    syncSharedRankCache(cacheKey, result.list);
 
     return result;
   } catch (err) {
@@ -4428,10 +4462,17 @@ export async function fetchKis3mCandlesFullDay(
 // "있으면 쓰고 없으면 그냥 건너뛴다" - 콜드 상태에서 후보 종목마다 라이브 조회가 최대 15~95건까지
 // 발생할 수 있어(실측 최대 108초, CONSECUTIVE_OVERLAP_CACHE_TTL_MS 참고) 여기서 직접 호출하면
 // 힘들게 고친 kisQueue congestion(로컬 무한로딩 버그)을 뱃지 조회 하나로 재현하게 되기 때문이다.
+// pushIfFound가 실제로 쓰는 필드만 뽑은 최소 타입 - Supabase shared_rank_cache에서 온 트림된 행과
+// 라이브 함수가 돌려주는 완전한 RankingItem 양쪽 다 이 타입을 만족하므로 소스를 가리지 않고 재사용한다.
+type BadgeSourceItem = Pick<
+  RankingItem,
+  'symbol' | 'rank' | 'netBuyAmt' | 'statusBadge' | 'statusBadgeStyle' | 'surgingBadge' | 'investorBadge' | 'netBuyAmtEok' | 'scoreBreakdown' | 'aiPickRank' | 'ranksByType'
+>;
+
 export async function getStockBadgeSummary(symbol: string, market: MarketType = 'ALL'): Promise<StockBadgeItem[]> {
   const badges: StockBadgeItem[] = [];
 
-  const findIn = (list: RankingItem[] | undefined): { item: RankingItem; rank: number } | null => {
+  const findIn = (list: BadgeSourceItem[] | undefined): { item: BadgeSourceItem; rank: number } | null => {
     if (!Array.isArray(list)) return null;
     const idx = list.findIndex((r) => r.symbol === symbol);
     if (idx === -1) return null;
@@ -4441,7 +4482,7 @@ export async function getStockBadgeSummary(symbol: string, market: MarketType = 
   // expectedDirection이 있으면 item.netBuyAmt 부호가 그 방향과 실제로 일치할 때만 채택한다 - 프로그램
   // 순매도 캐시에서 실제로는 순매수(양수)인 종목이 순위표 하위에 그대로 끼어 있던 게 실측으로 확인돼서
   // (getBatchRankingData가 방향별로 완전히 분리 정렬하지 않는 경우가 있음) 방어적으로 걸러낸다.
-  const pushIfFound = (tabId: string, tabLabel: string, list: RankingItem[] | undefined, expectedDirection?: RankingDirection) => {
+  const pushIfFound = (tabId: string, tabLabel: string, list: BadgeSourceItem[] | undefined, expectedDirection?: RankingDirection) => {
     const found = findIn(list);
     if (!found) return;
     const { item, rank } = found;
@@ -4465,100 +4506,120 @@ export async function getStockBadgeSummary(symbol: string, market: MarketType = 
     });
   };
 
-  // 1~3, 5번은 이 컨테이너 자신의 캐시를 그 자리에서 채우도록 병렬로 직접 호출한다(위 설명 참고).
+  // 카테고리별 cache_key를 먼저 계산해둔다 - 아래 Supabase 일괄조회와 각 in-memory Map의 실제 .set()
+  // 호출부(syncSharedRankCache 호출 지점들)가 쓰는 키 형식과 반드시 정확히 일치해야 한다.
+  const K = {
+    surgingFluctuation: `surging-fluctuation-${market}`,
+    surgingVolume: `surging-volume-${market}`,
+    surgingAmount: `surging-amount-${market}`,
+    comprehensive: `comprehensive-${market}`,
+    foreignBuy: `foreign-inst-foreign-buy-1d-${market}-50`,
+    foreignSell: `foreign-inst-foreign-sell-1d-${market}-50`,
+    organBuy: `foreign-inst-organ-buy-1d-${market}-50`,
+    organSell: `foreign-inst-organ-sell-1d-${market}-50`,
+    overlapDailyBuy: `v3_master_buy_1d_2_${market}`,
+    overlapDailySell: `v3_master_sell_1d_2_${market}`,
+    programBuy: `program_buy_1d`,
+    programSell: `program_sell_1d`,
+    overlap2dBuy: `c_buy_2d_2_${market}_50`,
+    overlap2dSell: `c_sell_2d_2_${market}_50`,
+    overlap3dBuy: `c_buy_3d_2_${market}_50`,
+    overlap3dSell: `c_sell_3d_2_${market}_50`,
+  } as const;
+
+  // 🚨 [Supabase 공유 캐시 우선 조회] 이 컨테이너 자신의 인메모리 캐시가 비어 있어도, 다른 컨테이너가
+  // 최근(5분 이내)에 계산해서 Supabase에 반영해둔 게 있으면 라이브 호출 없이 바로 가져다 쓴다. 여러
+  // 서버리스 컨테이너가 각자 계산해온 결과가 결국 이 한 테이블로 모이므로, 트래픽이 조금이라도 있는
+  // 프로덕션에서는 대부분 아래 "라이브 직접 호출" 단계 자체가 필요 없어진다.
+  const shared = await fetchSharedRankCacheBatch(Object.values(K)).catch(() => new Map<string, BadgeSourceItem[]>());
+
+  // 1~3, 5번(급등주 3종/단타종합/외국인·기관/당일교집합, 총 10개)은 Supabase에 없는 것만 라이브로 채운다.
   //
-  // 🚨 [버그 수정] 처음엔 그냥 Promise.all로 10개를 다 기다렸는데, 프로덕션 실측(진짜 콜드 컨테이너 +
+  // 🚨 [버그 수정] 처음엔 10개를 무조건 Promise.all로 다 기다렸는데, 프로덕션 실측(진짜 콜드 컨테이너 +
   // 다른 요청과 같은 kisQueue를 공유하는 실제 트래픽 상황)에서 30초를 넘겨 FUNCTION_INVOCATION_TIMEOUT으로
-  // 배지 라우트 전체가 죽는 게 확인됐다 - 로컬 콜드 테스트(8.3초)보다 훨씬 오래 걸릴 수 있다는 뜻.
-  // Promise.all은 "전부 끝나야 응답"이라 느린 것 하나가 전체를 막는 구조라, 대신 전체에 시간 예산을
-  // 두고 그 안에 끝난 것만 쓴다 - 늦게 끝난 건 이번 응답엔 못 넣지만 각자의 캐시는 계속 채워지므로
-  // 다음 요청부턴 더 빨라진다(완전히 버려지는 게 아니라 "이번 회차에서만 그 뱃지가 빠지는" 정도로 완화).
-  const BADGE_SOURCE_TIME_BUDGET_MS = 18000; // 라우트 maxDuration(30초)보다 충분히 여유있게
-  const slot = <T,>(): { value: T | null } => ({ value: null });
-  const surgingFluctuationSlot = slot<InvestorRankingResponse>();
-  const surgingVolumeSlot = slot<InvestorRankingResponse>();
-  const surgingAmountSlot = slot<InvestorRankingResponse>();
-  const comprehensiveSlot = slot<InvestorRankingResponse>();
-  const foreignBuySlot = slot<InvestorRankingResponse>();
-  const foreignSellSlot = slot<InvestorRankingResponse>();
-  const organBuySlot = slot<InvestorRankingResponse>();
-  const organSellSlot = slot<InvestorRankingResponse>();
-  const overlapDailyBuySlot = slot<InvestorRankingResponse>();
-  const overlapDailySellSlot = slot<InvestorRankingResponse>();
-
-  const fillSlot = async <T,>(s: { value: T | null }, p: Promise<T>) => {
-    try {
-      s.value = await p;
-    } catch {
-      s.value = null;
-    }
-  };
-
-  const allFilled = Promise.all([
-    fillSlot(surgingFluctuationSlot, fetchKisSurgingStocks('fluctuation', market)),
-    fillSlot(surgingVolumeSlot, fetchKisSurgingStocks('volume', market)),
-    fillSlot(surgingAmountSlot, fetchKisSurgingStocks('amount', market)),
-    fillSlot(comprehensiveSlot, fetchKisComprehensiveScoreRanking(market)),
-    fillSlot(foreignBuySlot, fetchKisForeignInstitutionRanking('foreign', 'buy', '1d', market, 50)),
-    fillSlot(foreignSellSlot, fetchKisForeignInstitutionRanking('foreign', 'sell', '1d', market, 50)),
-    fillSlot(organBuySlot, fetchKisForeignInstitutionRanking('organ', 'buy', '1d', market, 50)),
-    fillSlot(organSellSlot, fetchKisForeignInstitutionRanking('organ', 'sell', '1d', market, 50)),
-    fillSlot(overlapDailyBuySlot, fetchOverlapRankingData('buy', '1d', 2, 50, market)),
-    fillSlot(overlapDailySellSlot, fetchOverlapRankingData('sell', '1d', 2, 50, market)),
-  ]);
-  await Promise.race([
-    allFilled,
-    new Promise((resolve) => setTimeout(resolve, BADGE_SOURCE_TIME_BUDGET_MS)),
-  ]);
-
-  const surgingFluctuationRes = surgingFluctuationSlot.value;
-  const surgingVolumeRes = surgingVolumeSlot.value;
-  const surgingAmountRes = surgingAmountSlot.value;
-  const comprehensiveRes = comprehensiveSlot.value;
-  const foreignBuyRes = foreignBuySlot.value;
-  const foreignSellRes = foreignSellSlot.value;
-  const organBuyRes = organBuySlot.value;
-  const organSellRes = organSellSlot.value;
-  const overlapDailyBuyRes = overlapDailyBuySlot.value;
-  const overlapDailySellRes = overlapDailySellSlot.value;
+  // 배지 라우트 전체가 죽는 게 확인됐다. Promise.all은 "전부 끝나야 응답"이라 느린 것 하나가 전체를 막는
+  // 구조라, 대신 전체에 시간 예산을 두고 그 안에 끝난 것만 쓴다 - 늦게 끝난 건 이번 응답엔 못 넣지만
+  // 각자의 캐시(및 Supabase)는 계속 채워지므로 다음 요청부턴 더 빨라진다.
+  const LIVE_SOURCES: Array<{ key: string; fetcher: () => Promise<InvestorRankingResponse> }> = [
+    { key: K.surgingFluctuation, fetcher: () => fetchKisSurgingStocks('fluctuation', market) },
+    { key: K.surgingVolume, fetcher: () => fetchKisSurgingStocks('volume', market) },
+    { key: K.surgingAmount, fetcher: () => fetchKisSurgingStocks('amount', market) },
+    { key: K.comprehensive, fetcher: () => fetchKisComprehensiveScoreRanking(market) },
+    { key: K.foreignBuy, fetcher: () => fetchKisForeignInstitutionRanking('foreign', 'buy', '1d', market, 50) },
+    { key: K.foreignSell, fetcher: () => fetchKisForeignInstitutionRanking('foreign', 'sell', '1d', market, 50) },
+    { key: K.organBuy, fetcher: () => fetchKisForeignInstitutionRanking('organ', 'buy', '1d', market, 50) },
+    { key: K.organSell, fetcher: () => fetchKisForeignInstitutionRanking('organ', 'sell', '1d', market, 50) },
+    { key: K.overlapDailyBuy, fetcher: () => fetchOverlapRankingData('buy', '1d', 2, 50, market) },
+    { key: K.overlapDailySell, fetcher: () => fetchOverlapRankingData('sell', '1d', 2, 50, market) },
+  ];
+  const missing = LIVE_SOURCES.filter((s) => !shared.has(s.key));
+  const liveResults = new Map<string, BadgeSourceItem[] | undefined>();
+  if (missing.length > 0) {
+    const BADGE_SOURCE_TIME_BUDGET_MS = 18000; // 라우트 maxDuration(30초)보다 충분히 여유있게
+    const slots = missing.map(() => ({ value: undefined as BadgeSourceItem[] | undefined }));
+    const allFilled = Promise.all(
+      missing.map((s, i) =>
+        s
+          .fetcher()
+          .then((res) => {
+            slots[i].value = res?.list;
+          })
+          .catch(() => {
+            slots[i].value = undefined;
+          })
+      )
+    );
+    await Promise.race([allFilled, new Promise((resolve) => setTimeout(resolve, BADGE_SOURCE_TIME_BUDGET_MS))]);
+    missing.forEach((s, i) => liveResults.set(s.key, slots[i].value));
+  }
+  const resolve = (key: string): BadgeSourceItem[] | undefined => shared.get(key) || liveResults.get(key);
 
   // 1. 급등주 3종 서브모드
-  pushIfFound('surging-fluctuation', '급등주(등락률)', surgingFluctuationRes?.list);
-  pushIfFound('surging-volume', '급등주(거래량)', surgingVolumeRes?.list);
-  pushIfFound('surging-amount', '급등주(거래대금)', surgingAmountRes?.list);
+  pushIfFound('surging-fluctuation', '급등주(등락률)', resolve(K.surgingFluctuation));
+  pushIfFound('surging-volume', '급등주(거래량)', resolve(K.surgingVolume));
+  pushIfFound('surging-amount', '급등주(거래대금)', resolve(K.surgingAmount));
 
   // 2. 단타 종합랭킹
-  pushIfFound('comprehensive', '단타 종합랭킹', comprehensiveRes?.list);
+  pushIfFound('comprehensive', '단타 종합랭킹', resolve(K.comprehensive));
 
   // 3. 외국인/기관 순매수·순매도
-  pushIfFound('foreign-buy', '외국인 순매수', foreignBuyRes?.list, 'buy');
-  pushIfFound('foreign-sell', '외국인 순매도', foreignSellRes?.list, 'sell');
-  pushIfFound('organ-buy', '기관 순매수', organBuyRes?.list, 'buy');
-  pushIfFound('organ-sell', '기관 순매도', organSellRes?.list, 'sell');
+  pushIfFound('foreign-buy', '외국인 순매수', resolve(K.foreignBuy), 'buy');
+  pushIfFound('foreign-sell', '외국인 순매도', resolve(K.foreignSell), 'sell');
+  pushIfFound('organ-buy', '기관 순매수', resolve(K.organBuy), 'buy');
+  pushIfFound('organ-sell', '기관 순매도', resolve(K.organSell), 'sell');
 
-  // 4. 프로그램 순매수·순매도 (batchCollector의 getBatchRankingData - 캐시 없으면 빈 배열만 반환하고
-  // 백그라운드 예열만 트리거, 이번 응답을 기다리게 하지 않는다. batchCollector도 getGlobalMap 기반이라
-  // 이 컨테이너 안에서는 위 1~3/5번과 동일하게 안전하지만, program은 배치 수집 주기가 따로 있어 라이브
-  // 직접 호출 대상에서는 원래대로 제외한다 - 캐시가 없으면 그냥 건너뛴다.)
+  // 4. 프로그램 순매수·순매도 - Supabase에 있으면 그걸 쓰고, 없는 방향만 기존처럼 getBatchRankingData로
+  // 폴백한다(라이브 호출이 아니라 batchCollector 자체 캐시 peek + 백그라운드 예열 트리거일 뿐이라 원래도
+  // 안전했음 - 이번에도 그대로 유지, 다만 이제 Supabase 덕에 다른 컨테이너 결과도 볼 수 있게 됨).
   try {
-    const { getBatchRankingData } = await import('./batchCollector');
-    (['buy', 'sell'] as const).forEach((direction) => {
-      const res = getBatchRankingData('program', direction, '1d', market);
-      if (res.list && res.list.length > 0 && res.lastBatchTime !== '배치 수집 중') {
-        pushIfFound(`program-${direction}`, `프로그램 ${direction === 'buy' ? '순매수' : '순매도'}`, res.list, direction);
-      }
-    });
+    const sharedProgramBuy = shared.get(K.programBuy);
+    const sharedProgramSell = shared.get(K.programSell);
+    if (sharedProgramBuy) pushIfFound('program-buy', '프로그램 순매수', sharedProgramBuy, 'buy');
+    if (sharedProgramSell) pushIfFound('program-sell', '프로그램 순매도', sharedProgramSell, 'sell');
+    if (!sharedProgramBuy || !sharedProgramSell) {
+      const { getBatchRankingData } = await import('./batchCollector');
+      (['buy', 'sell'] as const).forEach((direction) => {
+        if (direction === 'buy' && sharedProgramBuy) return;
+        if (direction === 'sell' && sharedProgramSell) return;
+        const res = getBatchRankingData('program', direction, '1d', market);
+        if (res.list && res.list.length > 0 && res.lastBatchTime !== '배치 수집 중') {
+          pushIfFound(`program-${direction}`, `프로그램 ${direction === 'buy' ? '순매수' : '순매도'}`, res.list, direction);
+        }
+      });
+    }
   } catch (_) {}
 
   // 5. 수급교집합 - 당일
-  pushIfFound('overlap-daily-buy', '수급교집합(당일) 순매수', overlapDailyBuyRes?.list, 'buy');
-  pushIfFound('overlap-daily-sell', '수급교집합(당일) 순매도', overlapDailySellRes?.list, 'sell');
+  pushIfFound('overlap-daily-buy', '수급교집합(당일) 순매수', resolve(K.overlapDailyBuy), 'buy');
+  pushIfFound('overlap-daily-sell', '수급교집합(당일) 순매도', resolve(K.overlapDailySell), 'sell');
 
-  // 6. 수급교집합 - 2일연속/3일연속 (consecutiveOverlapMemoryCache, minOverlap=2/topLimit=50 고정)
+  // 6. 수급교집합 - 2일연속/3일연속. Supabase에 있으면 그걸 쓰고, 없으면 기존처럼 이 컨테이너 인메모리
+  // peek만 시도한다(여전히 라이브 호출은 절대 하지 않음 - 콜드 시 최대 108초 걸릴 수 있는 그 경로).
   ([2, 3] as const).forEach((targetDays) => {
     (['buy', 'sell'] as const).forEach((direction) => {
-      const cached = consecutiveOverlapMemoryCache.get(`c_${direction}_${targetDays}d_2_${market}_50`);
-      pushIfFound(`overlap-${targetDays}d-${direction}`, `수급교집합(${targetDays}일연속) ${direction === 'buy' ? '순매수' : '순매도'}`, cached?.data.list, direction);
+      const key = targetDays === 2 ? (direction === 'buy' ? K.overlap2dBuy : K.overlap2dSell) : (direction === 'buy' ? K.overlap3dBuy : K.overlap3dSell);
+      const list = shared.get(key) || (consecutiveOverlapMemoryCache.get(`c_${direction}_${targetDays}d_2_${market}_50`)?.data.list as BadgeSourceItem[] | undefined);
+      pushIfFound(`overlap-${targetDays}d-${direction}`, `수급교집합(${targetDays}일연속) ${direction === 'buy' ? '순매수' : '순매도'}`, list, direction);
     });
   });
 

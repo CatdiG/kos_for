@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { TOP_50_STOCKS, getStockName, resolveMarketType, getSettledAsOfDateLabel, resolveStockPriceAndChange } from './mockData';
 import { TOP_300_STOCKS } from './stockUniverse300';
-import { fetchKisInvestorTrend, fetchKisProgramTrade, fetchKisForeignInstitutionRanking, assertNoMockLeak, getKisAccessToken, getEvaluatedCreditStatus, computeStatusBadgeFromTrend, getGlobalMap } from './kisApi';
+import { fetchKisInvestorTrend, fetchKisProgramTrade, fetchKisForeignInstitutionRanking, assertNoMockLeak, getKisAccessToken, getEvaluatedCreditStatus, computeStatusBadgeFromTrend, getGlobalMap, syncSharedRankCache } from './kisApi';
 import { InvestorRankingResponse, RankingItem, RankingType, RankingDirection, RankingPeriod, MarketType } from './types';
 import { saveRawDailyDataToSupabase, RawDailyInvestorRecord } from './supabase';
 
@@ -255,6 +255,7 @@ async function buildAndCacheRankings(type: 'program', rawList: RankingItem[], ti
     assertNoMockLeak(buyRes);
     console.log(`📌 [TRACE 4-POST-PURGE] assertNoMockLeak 필터 통과 후 개수: type=${type}, period=${period}, listCount=${buyRes.list.length}`);
     batchCacheStore.set(`${type}_buy_${period}`, { data: buyRes, timestamp });
+    syncSharedRankCache(`${type}_buy_${period}`, buyRes.list);
 
     const sellPeriodList = rawList.map((item) => {
       let netBuyAmt = item.netBuyAmt;
@@ -283,6 +284,7 @@ async function buildAndCacheRankings(type: 'program', rawList: RankingItem[], ti
     };
 
     batchCacheStore.set(`${type}_sell_${period}`, { data: sellRes, timestamp });
+    syncSharedRankCache(`${type}_sell_${period}`, sellRes.list);
   }
 }
 
