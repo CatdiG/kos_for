@@ -35,6 +35,14 @@
     {
       "path": "/api/cron/archive-3m-candles?startIdx=300&endIdx=360",
       "schedule": "35 13 * * 1-5"
+    },
+    {
+      "path": "/api/cron/collect-raw-daily-data?startIdx=0&endIdx=148",
+      "schedule": "0 20 * * 1-5"
+    },
+    {
+      "path": "/api/cron/collect-raw-daily-data?startIdx=148&endIdx=295",
+      "schedule": "0 21 * * 1-5"
     }
   ]
 }

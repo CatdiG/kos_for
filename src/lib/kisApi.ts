@@ -2990,8 +2990,80 @@ export async function fetchConsecutiveNDaysOverlapRankingData(
   const priorityCandidates = targetCandidates.slice(0, PRIORITY_LIMIT);
   const restCandidates = targetCandidates.slice(PRIORITY_LIMIT);
 
+  // [과거일 DB 재사용] raw_daily_data(장마감 후 자동 수집, api/cron/collect-raw-daily-data)에서 과거
+  // 최대 20영업일치를 먼저 당겨온다 - universeExtra 사전필터(과거 targetDays-1일 게이트)와, 아래 우선순위
+  // 후보의 "과거일 라이브 재조회 생략" 양쪽에 재사용한다.
+  //
+  // 🚨 [주의] 왜 targetDays-1일이 아니라 20일치를 당겨오는가: 처음엔 딱 targetDays-1일만 당겨왔다가 실측
+  // 검증 중 진짜 회귀를 하나 만들었었다 - 주체별 실제 연속일수(foreignConsecutiveDays 등)는 trend 배열을
+  // 뒤에서부터 끊길 때까지 세는 backward loop인데, trend 배열 자체가 딱 targetDays 길이(=window)로 짧으면
+  // 그 이상은 셀 수가 없어서 실제로 4일 연속인 종목도 무조건 "2일연속"/"3일연속"으로 뭉개져 표시됐다
+  // (오늘 낮에 /history 페이지에서 고쳤던 것과 정확히 같은 캡핑 버그를 여기서 다시 만들 뻔했다 - 실측:
+  // LG에너지솔루션이 2일연속 탭에선 "2일연속", 3일연속 탭에선 "3일연속"으로 서로 다르게 표시되는 걸 보고
+  // 발견함). 20일치를 넉넉히 당겨오면 백워드 루프가 진짜 연속일수를 끝까지 셀 수 있다.
+  const DB_HISTORY_LOOKBACK_DAYS = 20;
+  const { fetchRawDailyTrailingDays } = await import('./supabase');
+  const { dates: trailingDatesFull, bySymbol: trailingBySymbol } = await fetchRawDailyTrailingDays(todayStr, DB_HISTORY_LOOKBACK_DAYS).catch(() => ({ dates: [] as string[], bySymbol: new Map() }));
+  // 사전필터(universeExtra) 게이트는 원래 의도대로 "과거 targetDays-1일"만 본다 - 20일치 중 가장 최근 것.
+  const trailingDates = trailingDatesFull.slice(-(targetDays - 1));
+  const passesDirectionAmt = (amt: number) => (isBuy ? amt > 0 : amt < 0);
+
+  // 당일교집합(dailyOverlapRes/candidateStocks)이 이미 계산해둔 오늘자 외국인/기관/프로그램 순매수
+  // (item.ranksByType)를 그대로 재사용해서 "오늘치 확인용" 라이브 재조회를 없앤다 - 이미 손에 쥔 값을
+  // 다시 사러 가지 않는다. carriedOver 종목(직전엔 활성이었지만 오늘 당일교집합 상위 50위 밖으로 빠진
+  // 종목)은 ranksByType이 없으므로 null을 반환해 아래에서 기존 라이브 방식으로 안전하게 폴백한다.
+  const buildTodayAmtsFromRanksByType = (stock: any): { foreign: number; organ: number; program: number } | null => {
+    if (!Array.isArray(stock.ranksByType)) return null;
+    const get = (type: string) => stock.ranksByType.find((r: any) => r.type === type)?.netBuyAmt ?? 0;
+    return { foreign: get('foreign'), organ: get('organ'), program: get('program') };
+  };
+
   const fetchTrendPair = async (stock: any) => {
-    // 오래된 캐시(getCached5dTrend)를 타지 않고, 장중 실시간 가집계가 주입된 최신 트렌드를 직접 조회 (trendDetailCache에 의해 60초간 0ms 캐싱)
+    // 🚨 [성능 수정] 과거 targetDays-1일치가 DB에 다 있고, 이 종목이 당일교집합 결과에서 온 종목이라
+    // 오늘치를 이미 알고 있으면(ranksByType 존재), 외국인/기관 관련 라이브 호출(fetchKisInvestorTrend)을
+    // 통째로 생략한다 - raw_daily_data의 외국인/기관 수치는 실측으로 라이브 재조회와 100% 일치 확인됨
+    // (삼성전자·삼성전기·SK하이닉스 3종목 대조). 프로그램매매는 raw_daily_data 수집 시점(장마감 18:30)에
+    // 아직 미확정인 경우가 실측으로 확인돼서(같은 3종목 중 2개가 저장값 0 vs 실제값 불일치, 날짜별로도
+    // 15~17% 종목이 0으로 저장) 과거일 프로그램매매는 당분간 계속 라이브로 조회한다 - 다음날 아침 재수집
+    // 패치 크론(vercel.json, collect-raw-daily-data 05~06시 KST 재실행)이 며칠 안정적으로 검증되면 뺀다.
+    const todayAmts = buildTodayAmtsFromRanksByType(stock);
+    // 게이트 판정(최소 요건)은 targetDays-1일만 다 있으면 되지만, 실제 trend 배열은 백워드 연속일수를
+    // 정확히 세기 위해 20일 lookback 중 이 종목이 실제로 가진 만큼(20일 전부 없어도 됨 - 신규상장 등
+    // 대비 fail-open) 전부 채워 넣는다.
+    const hasFullDbHistory = trailingDates.length >= targetDays - 1 && trailingDates.every((d) => trailingBySymbol.get(stock.symbol)?.has(d));
+
+    if (todayAmts && hasFullDbHistory) {
+      const symbolDates = trailingBySymbol.get(stock.symbol)!;
+      const trend: any[] = trailingDatesFull
+        .filter((d) => symbolDates.has(d))
+        .map((d) => {
+          const row = symbolDates.get(d)!;
+          return {
+            date: d,
+            stck_bsop_date: d,
+            closePrice: 0,
+            foreignNetBuyAmt: row.foreign_net_buy_amt || 0,
+            organNetBuyAmt: row.organ_net_buy_amt || 0,
+          };
+        });
+      trend.push({
+        date: todayStr,
+        stck_bsop_date: todayStr,
+        closePrice: stock.currentPrice || 0,
+        priceChange: stock.change || 0,
+        changeRate: stock.changeRate || 0,
+        volume: stock.volume || 0,
+        foreignNetBuyAmt: todayAmts.foreign,
+        organNetBuyAmt: todayAmts.organ,
+      });
+
+      // 프로그램매매는 위 이유로 여전히 라이브 1회만 호출한다 - 과거+오늘 전부 이 응답 하나에 들어있다.
+      const programDaily = await fetchKisProgramTradeDaily(stock.symbol).catch(() => []);
+      return { stock, trendRes: { trend }, programDaily };
+    }
+
+    // 폴백: DB 이력 부족(부트스트랩 초반, 신규상장 등) 또는 오늘치 정보 없음(carriedOver 등) - 기존 방식
+    // 그대로 완전 라이브 조회한다(fail-open - 없는 데이터를 억지로 재구성하지 않는다).
     const trendRes = await fetchKisInvestorTrend(stock.symbol, '5d').catch(() => null);
     const programDaily = await fetchKisProgramTradeDaily(stock.symbol).catch(() => []);
     return { stock, trendRes, programDaily };
@@ -3017,9 +3089,6 @@ export async function fetchConsecutiveNDaysOverlapRankingData(
   // 부족한 종목은 배제하지 않고 안전하게 통과시킨다(fail-open - "데이터 없음"을 "조건 미달"로 오판 금지).
   // 당일치는 raw_daily_data에 아직 없으므로(장마감 후에만 적재) 생존 종목은 반드시 라이브로 당일을 확인한다
   // - "당일치를 포함해서 2/3일연속이 되어야 한다"는 요구사항을 그대로 지킨다.
-  const { fetchRawDailyTrailingDays } = await import('./supabase');
-  const { dates: trailingDates, bySymbol: trailingBySymbol } = await fetchRawDailyTrailingDays(todayStr, targetDays - 1).catch(() => ({ dates: [] as string[], bySymbol: new Map() }));
-  const passesDirectionAmt = (amt: number) => (isBuy ? amt > 0 : amt < 0);
 
   const dbFilteredUniverse = trailingDates.length < targetDays - 1
     ? universeExtra // DB 축적이 아직 부족(부트스트랩 초반) - 사전필터를 건너뛰고 전부 통과시킨다
