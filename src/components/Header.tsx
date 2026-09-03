@@ -1,7 +1,8 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
-import { Activity, ShieldCheck, Database, Clock, TrendingUp, Sun, Moon } from 'lucide-react';
+import Link from 'next/link';
+import { Activity, ShieldCheck, Database, Clock, TrendingUp, Sun, Moon, History } from 'lucide-react';
 import { useTheme } from '@/providers/ThemeProvider';
 
 export default function Header() {
@@ -100,6 +101,17 @@ export default function Header() {
             <Clock className="w-3.5 h-3.5 text-slate-400" />
             <span>{timeStr || '09:00:00'}</span>
           </div>
+
+          {/* 과거 수급 아카이브(/history) 페이지 진입 링크 - 이전엔 인앱 링크가 전혀 없어서 URL을
+              직접 쳐야만 접근 가능했다. /history 페이지도 이미 "← 실시간 탭으로 이동"으로 여기로
+              돌아오는 링크가 있으니, 반대 방향도 대칭으로 연결한다. */}
+          <Link
+            href="/history"
+            className="flex items-center gap-1.5 bg-slate-100 dark:bg-[#1e222d] border border-slate-200/60 dark:border-[#2a2e39] px-3 py-1.5 rounded-xl text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-200 dark:hover:bg-[#2a2e39] transition"
+          >
+            <History className="w-3.5 h-3.5 text-slate-500 dark:text-slate-400" />
+            <span>과거 수급 아카이브</span>
+          </Link>
 
           {/* Theme Toggle Switch */}
           <button
