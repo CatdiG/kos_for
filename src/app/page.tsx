@@ -28,6 +28,9 @@ export default function DashboardPage() {
   const [selectedStockItem, setSelectedStockItem] = useState<RankingItem | undefined>();
   const [isSearchedStockOpen, setIsSearchedStockOpen] = useState<boolean>(false);
   const [selectedIndex, setSelectedIndex] = useState<'KOSPI' | 'KOSDAQ' | null>(null);
+  // 종목 검색창 강제 초기화 신호 - 매매순위 테이블에서 다른 종목을 클릭하거나 코스피/코스닥 지수 카드를
+  // 클릭해 다른 화면으로 이동할 때만 증가시킨다(검색창 자체 선택 시엔 증가시키지 않음).
+  const [clearSearchSignal, setClearSearchSignal] = useState<number>(0);
 
   const {
     data,
@@ -54,6 +57,7 @@ export default function DashboardPage() {
           selected={selectedIndex}
           onSelect={(market) => {
             setSelectedIndex((prev) => (prev === market ? null : market));
+            setClearSearchSignal((n) => n + 1);
           }}
         />
 
@@ -69,6 +73,7 @@ export default function DashboardPage() {
           }}
           onRefresh={() => refetch()}
           isFetching={isFetching}
+          clearSearchSignal={clearSearchSignal}
         />
 
         {/* 지수 상세 차트 패널 (지수 카드 클릭 시에만 노출) */}
@@ -125,6 +130,7 @@ export default function DashboardPage() {
             setSelectedStockItem(item);
             setIsSearchedStockOpen(false);
             setSelectedIndex(null);
+            setClearSearchSignal((n) => n + 1);
           }}
         />
       </main>

@@ -13,6 +13,11 @@ interface StockSearchProps {
   onSelectSymbol: (symbol: string) => void;
   onRefresh?: () => void;
   isFetching?: boolean;
+  // 🚨 [UI 수정] 검색창에서 종목을 검색해놓은 뒤, 매매순위 테이블에서 다른 종목을 클릭하거나 코스피/코스닥
+  // 지수 카드를 클릭해 다른 화면으로 이동했을 때 - 검색창엔 여전히 이전에 검색했던 종목명이 남아있어
+  // 사용자가 헷갈리는 문제가 있었다. 이 두 경로(부모 page.tsx)에서만 증가시키는 신호값을 받아서, 검색창
+  // 자체 선택(handleSelect)이 아닌 "외부에서 다른 화면으로 이동"한 경우에만 검색창 텍스트를 비운다.
+  clearSearchSignal?: number;
 }
 
 export default function StockSearch({
@@ -21,11 +26,20 @@ export default function StockSearch({
   onSelectSymbol,
   onRefresh,
   isFetching = false,
+  clearSearchSignal,
 }: StockSearchProps) {
   const [inputVal, setInputVal] = useState<string>('');
   const [isOpen, setIsOpen] = useState<boolean>(false);
   const [selectedIndex, setSelectedIndex] = useState<number>(-1);
   const [isThrottled, setIsThrottled] = useState<boolean>(false);
+
+  // clearSearchSignal이 바뀔 때만(검색창 자체 선택 시엔 바뀌지 않음) 검색창 입력값을 비운다.
+  React.useEffect(() => {
+    if (clearSearchSignal === undefined) return;
+    setInputVal('');
+    setIsOpen(false);
+    setSelectedIndex(-1);
+  }, [clearSearchSignal]);
 
   const wrapperRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
@@ -227,7 +241,7 @@ export default function StockSearch({
 
         {/* Refresh & Current Stock Quick Display */}
         {stockInfo && (
-          <div className="flex items-center justify-between lg:justify-end gap-4 border-t lg:border-t-0 pt-3 lg:pt-0 border-slate-100 dark:border-[#2a2e39]">
+          <div className="flex items-center justify-between lg:justify-end gap-4 border-t lg:border-t-0 pt-3 lg:pt-0 border-slate-100 dark:border-[#2a2e39] shrink-0">
             <div className="flex items-center gap-3">
               <div>
                 <div className="flex items-center gap-2">

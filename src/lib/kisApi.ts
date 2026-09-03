@@ -2533,7 +2533,17 @@ async function executeAsyncOverlapCalculation(
 }
 
 const consecutiveOverlapMemoryCache = getGlobalMap<string, { data: InvestorRankingResponse; timestamp: number }>('consecutiveOverlapMemoryCache');
-const CONSECUTIVE_OVERLAP_CACHE_TTL_MS = 30 * 1000; // 30초 TTL (실시간 수급 변동 및 신규 TR 즉시 반영)
+// 🚨 [버그 수정] 원래 30초였다 - 그런데 아래 backgroundCompletion(우선순위 밖 종목까지 마저 채우는 완전판
+// 계산)은 실측(.next/dev/logs/next-development.log 03:48~03:50 구간, DB 사전필터 통과 80~81종목 기준)으로
+// 최대 108초까지 걸리는 게 확인됐다 - 즉 "완성에 필요한 시간(~108초) > TTL(30초)"이라 완성되기도 전에
+// 캐시가 만료되고, 매 요청마다 새 우선순위+백그라운드 계산 사이클이 겹쳐서 쌓이며 같은 kisQueue를
+// 서로 잡아먹어 아무 것도 제때 못 끝나는 게 "로컬 무한로딩 / 누를 때마다 계속 계산" 버그의 근본 원인이었다.
+// 실측 최대치(108초)보다 여유 있게 180초로 늘려 완성 사이클이 최소 한 번은 안정적으로 끝날 시간을 준다.
+const CONSECUTIVE_OVERLAP_CACHE_TTL_MS = 180 * 1000; // 180초 TTL (백그라운드 완전판 계산 실측 최대치보다 여유있게)
+// 같은 cacheKey에 대해 백그라운드 완전판 계산이 이미 진행 중이면 새로 하나 더 띄우지 않는다(중복 실행 가드).
+// TTL을 늘려도 서버 재시작 직후 콜드스타트처럼 완성이 180초를 넘는 극단적 상황에선 여전히 겹칠 수 있어,
+// TTL과 별개로 이중 안전장치로 둔다.
+const consecutiveOverlapBackgroundInFlight = getGlobalMap<string, boolean>('consecutiveOverlapBackgroundInFlight');
 
 export function clearConsecutiveOverlapCache() {
   consecutiveOverlapMemoryCache.clear();
@@ -3186,15 +3196,29 @@ export async function fetchConsecutiveNDaysOverlapRankingData(
       );
     } catch (e: any) {
       console.warn('[Consecutive Overlap Background Completion Failed]', e?.message || e);
+    } finally {
+      // 🚨 [버그 수정] 이 cacheKey의 백그라운드 완성 작업이 끝났으니(성공/실패 무관) 가드를 해제해서,
+      // 다음 요청이 들어오면 그때는 새로 완전판을 다시 계산할 수 있게 한다.
+      consecutiveOverlapBackgroundInFlight.delete(cacheKey);
     }
   };
-  try {
-    // Next.js Route Handler 요청 컨텍스트 밖(스크립트에서 직접 호출 등)에서는 after()가 던질 수 있으니
-    // 안전하게 폴백해서 예전과 동일한 fire-and-forget으로라도 동작하게 한다.
-    const { after } = await import('next/server');
-    after(backgroundCompletion);
-  } catch (_) {
-    backgroundCompletion();
+
+  // 🚨 [버그 수정] 같은 cacheKey에 대해 이미 백그라운드 완전판 계산이 진행 중이면 또 하나 더 띄우지 않는다.
+  // TTL을 180초로 늘려도 서버 재시작 직후 콜드스타트처럼 극단적으로 오래 걸리는 경우, 이 가드가 없으면
+  // 여전히 요청마다 새 완성 작업이 겹쳐서 쌓이며 같은 kisQueue를 서로 잡아먹어 아무 것도 제때 못 끝나는
+  // 문제가 재발한다 - TTL 연장과 이 가드 두 가지를 함께 적용해야 완전히 막힌다.
+  if (consecutiveOverlapBackgroundInFlight.get(cacheKey)) {
+    console.log(`[Consecutive Overlap Background Skip] cacheKey=${cacheKey} - 이미 진행 중인 완전판 계산이 있어 중복 실행을 건너뜁니다.`);
+  } else {
+    consecutiveOverlapBackgroundInFlight.set(cacheKey, true);
+    try {
+      // Next.js Route Handler 요청 컨텍스트 밖(스크립트에서 직접 호출 등)에서는 after()가 던질 수 있으니
+      // 안전하게 폴백해서 예전과 동일한 fire-and-forget으로라도 동작하게 한다.
+      const { after } = await import('next/server');
+      after(backgroundCompletion);
+    } catch (_) {
+      backgroundCompletion();
+    }
   }
 
   return partialMasterData;

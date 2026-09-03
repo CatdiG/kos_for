@@ -40,7 +40,9 @@ export default function StockBadgeStrip({ symbol }: StockBadgeStripProps) {
   if (badges.length === 0) return null;
 
   return (
-    <div className="flex-1 min-w-0 flex flex-wrap items-center gap-1.5 px-1 lg:px-3">
+    // 🚨 [UI 수정] flex-1 하나로 옆 종목명 블록(shrink-0 없음)까지 밀어붙이던 걸,
+    // 오른쪽에 명시적 여백(mr-3)을 둬서 뱃지가 아무리 여러 줄로 늘어나도 종목명 영역을 침범하지 않게 한다.
+    <div className="flex-1 min-w-0 flex flex-wrap items-center gap-1.5 px-1 lg:px-3 mr-3 lg:mr-4">
       {badges.map((b) => (
         <span
           key={b.tabId}
