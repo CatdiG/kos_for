@@ -270,6 +270,34 @@ export interface OverlapInvestorRank {
   isDailyBuy?: boolean;
 }
 
+// ============================================================================
+// 종목 검색 옆 "전 탭 뱃지 모음" 전용 타입 - 현재 존재하는 모든 랭킹 탭(급등주/단타종합랭킹/외국인/기관/
+// 프로그램/수급교집합 당일·2일연속·3일연속)의 캐시에서 해당 종목이 있으면 그 탭의 뱃지를 그대로 모아온다.
+// ============================================================================
+export interface StockBadgeItem {
+  tabId: string;       // 예: 'surging-fluctuation', 'overlap-consecutive2d-buy'
+  tabLabel: string;    // 화면 표시용 탭 이름, 예: "급등주(등락률)"
+  rank: number;
+  // 아래는 각 탭의 원본 RankingItem 필드를 그대로 넘긴다 - 프론트(StockBadgeStrip.tsx)가 각 탭에서
+  // 이미 쓰던 뱃지 JSX/스타일을 그대로 재사용해서 그리도록, 가공하지 않고 원본 그대로 전달한다.
+  statusBadge?: string;
+  statusBadgeStyle?: string;
+  surgingBadge?: string;
+  investorBadge?: string;
+  netBuyAmtEok?: number;
+  scoreTotal?: number;
+  aiPickRank?: number;
+  ranksByType?: OverlapInvestorRank[];
+}
+
+export interface StockBadgeSummaryResponse {
+  symbol: string;
+  name: string;
+  market?: string;
+  badges: StockBadgeItem[];
+  updatedAt: string;
+}
+
 export interface OverlapRankingItem extends RankingItem {
   overlapCount: number;
   investorLabels: string[];

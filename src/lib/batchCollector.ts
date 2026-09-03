@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { TOP_50_STOCKS, getStockName, resolveMarketType, getSettledAsOfDateLabel, resolveStockPriceAndChange } from './mockData';
 import { TOP_300_STOCKS } from './stockUniverse300';
-import { fetchKisInvestorTrend, fetchKisProgramTrade, fetchKisForeignInstitutionRanking, assertNoMockLeak, getKisAccessToken, getEvaluatedCreditStatus, computeStatusBadgeFromTrend } from './kisApi';
+import { fetchKisInvestorTrend, fetchKisProgramTrade, fetchKisForeignInstitutionRanking, assertNoMockLeak, getKisAccessToken, getEvaluatedCreditStatus, computeStatusBadgeFromTrend, getGlobalMap } from './kisApi';
 import { InvestorRankingResponse, RankingItem, RankingType, RankingDirection, RankingPeriod, MarketType } from './types';
 import { saveRawDailyDataToSupabase, RawDailyInvestorRecord } from './supabase';
 
@@ -21,8 +21,10 @@ interface CacheEntry {
 }
 
 // In-Memory Cache Store
-const batchCacheStore = new Map<string, CacheEntry>();
-const trend5dBatchStore = new Map<string, any>();
+// 🚨 [버그 수정] kisApi.ts와 동일한 이유(route.ts 파일마다 별도 모듈 인스턴스가 생겨 평범한 모듈 스코프
+// Map이 라우트 간 공유가 안 되던 문제)로 globalThis 기반 공유 Map(getGlobalMap)으로 전환한다.
+const batchCacheStore = getGlobalMap<string, CacheEntry>('batchCacheStore');
+const trend5dBatchStore = getGlobalMap<string, any>('trend5dBatchStore');
 
 // 투자자별(외국인/기관) 트렌드 캐시 사전예열 순환 커서: 한 번의 실행(cron 1회)에 100종목을 전부
 // fetchKisInvestorTrend(kisQueue 직렬 300ms) 하면 실측 92초가 걸려 maxDuration=60을 초과한다(2026-09-02 로컬 실측).

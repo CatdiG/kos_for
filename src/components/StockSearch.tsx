@@ -5,6 +5,7 @@ import { Search, Building2, TrendingUp, TrendingDown, RefreshCw } from 'lucide-r
 import { StockInfo } from '@/lib/types';
 import { PRESET_STOCKS, TOP_50_STOCKS } from '@/lib/mockData';
 import { buildSearchStockList, getStockName, resolveSymbolOrName } from '@/lib/stockDictionary';
+import StockBadgeStrip from './StockBadgeStrip';
 
 interface StockSearchProps {
   currentSymbol: string;
@@ -220,6 +221,9 @@ export default function StockSearch({
             </div>
           )}
         </div>
+
+        {/* 종목 검색과 종목명/가격 사이 빈 공간 - 현재 존재하는 모든 랭킹 탭 뱃지 모음 */}
+        {stockInfo && <StockBadgeStrip symbol={stockInfo.symbol} />}
 
         {/* Refresh & Current Stock Quick Display */}
         {stockInfo && (
