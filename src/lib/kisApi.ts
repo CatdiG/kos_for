@@ -4413,12 +4413,21 @@ export async function fetchKis3mCandlesFullDay(
 // 🏷️ [신규 독립 모듈] 종목 검색 옆 "전 탭 뱃지 모음" - 현재 이 종목이 급등주/단타종합랭킹/외국인/기관/
 // 프로그램/수급교집합(당일·2일연속·3일연속) 중 어느 탭에 떠 있는지 한눈에 모아 보여준다.
 //
-// 🚨 [설계 원칙] 이 함수는 새 KIS 라이브 호출을 단 1건도 발생시키지 않는다 - 각 탭이 이미 자체적으로
-// 채워둔 인메모리 캐시(surgingCacheStore, rankingCacheStore, comprehensiveCacheStore, overlapMemoryCache,
-// consecutiveOverlapMemoryCache, batchCollector의 batchCacheStore)를 "훑어보기"만 한다. 그 탭을 이번
-// 세션에서 아직 아무도 연 적이 없어 캐시가 비어있으면, 그 탭은 그냥 결과에서 빠진다(억지로 새로 계산하지
-// 않음) - 방금 전 세션에서 콜드스타트 시 여러 탭이 동시에 KIS 큐에 몰려서 100초 넘게 걸리던 문제를 힘들게
-// 고쳤는데, 종목 하나 클릭할 때마다 전 탭을 라이브로 재계산하면 그 문제를 그대로 재현하게 되기 때문이다.
+// 🚨 [버그 수정] 원래는 새 KIS 라이브 호출 없이 각 탭이 이미 채워둔 인메모리 캐시(surgingCacheStore,
+// rankingCacheStore, comprehensiveCacheStore, overlapMemoryCache 등)를 "훑어보기"만 하는 설계였다.
+// 그런데 Vercel 프로덕션에서 실측한 결과 이게 거의 항상 비어있는 결과만 반환했다 - Vercel은 API
+// 라우트마다 별도 서버리스 컨테이너(별도 프로세스)로 뜨는 경우가 있어서, 방금 /api/stock/ranking을
+// 호출해 rankingCacheStore를 채워도 바로 이어진 /api/stock/badges 요청은 완전히 다른 컨테이너라 그
+// 메모리를 전혀 못 보기 때문이다(실측: 삼성중공업 외국인 순매수 1위 조회 직후 뱃지 조회가 badges:[]).
+// 그래서 아래 1~5번(급등주/단타종합/외국인·기관/프로그램/당일교집합)은 캐시를 "훑어보기"만 하는 대신
+// 각 탭이 쓰는 것과 동일한 함수를 직접 호출한다 - 이 함수들은 전부 자체 TTL 캐시를 갖고 있어서(콜드일
+// 때만 실제로 라이브 조회) 이 컨테이너 자신의 캐시를 그 자리에서 채우게 되고, 종목별 반복 조회가 없는
+// "요약형" 조회라 비용도 작다(실측: 외국인 랭킹 콜드 조회 ~900ms, 당일교집합 ~270ms 수준).
+//
+// 단 6번(2일/3일연속 교집합, fetchConsecutiveNDaysOverlapRankingData)만은 예외로 기존처럼 캐시를
+// "있으면 쓰고 없으면 그냥 건너뛴다" - 콜드 상태에서 후보 종목마다 라이브 조회가 최대 15~95건까지
+// 발생할 수 있어(실측 최대 108초, CONSECUTIVE_OVERLAP_CACHE_TTL_MS 참고) 여기서 직접 호출하면
+// 힘들게 고친 kisQueue congestion(로컬 무한로딩 버그)을 뱃지 조회 하나로 재현하게 되기 때문이다.
 export async function getStockBadgeSummary(symbol: string, market: MarketType = 'ALL'): Promise<StockBadgeItem[]> {
   const badges: StockBadgeItem[] = [];
 
@@ -4456,30 +4465,44 @@ export async function getStockBadgeSummary(symbol: string, market: MarketType = 
     });
   };
 
-  // 1. 급등주 3종 서브모드 (surgingCacheStore, 60초 캐시)
-  (['fluctuation', 'volume', 'amount'] as const).forEach((mode) => {
-    const cached = surgingCacheStore.get(`surging-${mode}-${market}`);
-    const labelMap = { fluctuation: '급등주(등락률)', volume: '급등주(거래량)', amount: '급등주(거래대금)' };
-    pushIfFound(`surging-${mode}`, labelMap[mode], cached?.list);
-  });
+  // 1~3, 5번은 이 컨테이너 자신의 캐시를 그 자리에서 채우도록 병렬로 직접 호출한다(위 설명 참고).
+  // 하나가 실패해도(.catch) 나머지 뱃지 판정에 영향 없도록 개별적으로 방어한다.
+  const [
+    surgingFluctuationRes, surgingVolumeRes, surgingAmountRes,
+    comprehensiveRes,
+    foreignBuyRes, foreignSellRes, organBuyRes, organSellRes,
+    overlapDailyBuyRes, overlapDailySellRes,
+  ] = await Promise.all([
+    fetchKisSurgingStocks('fluctuation', market).catch(() => null),
+    fetchKisSurgingStocks('volume', market).catch(() => null),
+    fetchKisSurgingStocks('amount', market).catch(() => null),
+    fetchKisComprehensiveScoreRanking(market).catch(() => null),
+    fetchKisForeignInstitutionRanking('foreign', 'buy', '1d', market, 50).catch(() => null),
+    fetchKisForeignInstitutionRanking('foreign', 'sell', '1d', market, 50).catch(() => null),
+    fetchKisForeignInstitutionRanking('organ', 'buy', '1d', market, 50).catch(() => null),
+    fetchKisForeignInstitutionRanking('organ', 'sell', '1d', market, 50).catch(() => null),
+    fetchOverlapRankingData('buy', '1d', 2, 50, market).catch(() => null),
+    fetchOverlapRankingData('sell', '1d', 2, 50, market).catch(() => null),
+  ]);
 
-  // 2. 단타 종합랭킹 (comprehensiveCacheStore, 60초 캐시)
-  {
-    const cached = comprehensiveCacheStore.get(`comprehensive-${market}`);
-    pushIfFound('comprehensive', '단타 종합랭킹', cached?.data.list);
-  }
+  // 1. 급등주 3종 서브모드
+  pushIfFound('surging-fluctuation', '급등주(등락률)', surgingFluctuationRes?.list);
+  pushIfFound('surging-volume', '급등주(거래량)', surgingVolumeRes?.list);
+  pushIfFound('surging-amount', '급등주(거래대금)', surgingAmountRes?.list);
 
-  // 3. 외국인/기관 순매수·순매도 (rankingCacheStore, 동적 TTL)
-  (['foreign', 'organ'] as const).forEach((type) => {
-    (['buy', 'sell'] as const).forEach((direction) => {
-      const cached = rankingCacheStore.get(`foreign-inst-${type}-${direction}-1d-${market}-50`);
-      const label = `${type === 'foreign' ? '외국인' : '기관'} ${direction === 'buy' ? '순매수' : '순매도'}`;
-      pushIfFound(`${type}-${direction}`, label, cached?.list, direction);
-    });
-  });
+  // 2. 단타 종합랭킹
+  pushIfFound('comprehensive', '단타 종합랭킹', comprehensiveRes?.list);
+
+  // 3. 외국인/기관 순매수·순매도
+  pushIfFound('foreign-buy', '외국인 순매수', foreignBuyRes?.list, 'buy');
+  pushIfFound('foreign-sell', '외국인 순매도', foreignSellRes?.list, 'sell');
+  pushIfFound('organ-buy', '기관 순매수', organBuyRes?.list, 'buy');
+  pushIfFound('organ-sell', '기관 순매도', organSellRes?.list, 'sell');
 
   // 4. 프로그램 순매수·순매도 (batchCollector의 getBatchRankingData - 캐시 없으면 빈 배열만 반환하고
-  // 백그라운드 예열만 트리거, 이번 응답을 기다리게 하지 않는다)
+  // 백그라운드 예열만 트리거, 이번 응답을 기다리게 하지 않는다. batchCollector도 getGlobalMap 기반이라
+  // 이 컨테이너 안에서는 위 1~3/5번과 동일하게 안전하지만, program은 배치 수집 주기가 따로 있어 라이브
+  // 직접 호출 대상에서는 원래대로 제외한다 - 캐시가 없으면 그냥 건너뛴다.)
   try {
     const { getBatchRankingData } = await import('./batchCollector');
     (['buy', 'sell'] as const).forEach((direction) => {
@@ -4490,11 +4513,9 @@ export async function getStockBadgeSummary(symbol: string, market: MarketType = 
     });
   } catch (_) {}
 
-  // 5. 수급교집합 - 당일 (overlapMemoryCache, minOverlap=2/period=1d 고정 - 라이브 탭과 동일 키)
-  (['buy', 'sell'] as const).forEach((direction) => {
-    const cached = overlapMemoryCache.get(`v3_master_${direction}_1d_2_${market}`);
-    pushIfFound(`overlap-daily-${direction}`, `수급교집합(당일) ${direction === 'buy' ? '순매수' : '순매도'}`, cached?.data.list, direction);
-  });
+  // 5. 수급교집합 - 당일
+  pushIfFound('overlap-daily-buy', '수급교집합(당일) 순매수', overlapDailyBuyRes?.list, 'buy');
+  pushIfFound('overlap-daily-sell', '수급교집합(당일) 순매도', overlapDailySellRes?.list, 'sell');
 
   // 6. 수급교집합 - 2일연속/3일연속 (consecutiveOverlapMemoryCache, minOverlap=2/topLimit=50 고정)
   ([2, 3] as const).forEach((targetDays) => {
