@@ -7,6 +7,7 @@ import {
   ComposedChart,
   Line,
   Bar,
+  Cell,
   Area,
   XAxis,
   YAxis,
@@ -15,9 +16,10 @@ import {
   ReferenceLine,
 } from 'recharts';
 import { InvestorTrendResponse, TrendPeriod } from '@/lib/types';
-import { getStockName, resolveStockPriceAndChange, computeUnifiedStatusBadge } from '@/lib/mockData';
-import { TrendingUp, TrendingDown, Calendar, Clock, Activity, RefreshCw, AlertCircle, X } from 'lucide-react';
+import { getStockName, resolveStockPriceAndChange, findSplitSafeStartIndex, roundToKrxTick, computeRecentVolumeRatio } from '@/lib/mockData';
+import { TrendingUp, TrendingDown, Calendar, Activity, RefreshCw, AlertCircle, X } from 'lucide-react';
 import { useTheme } from '@/providers/ThemeProvider';
+import { PRICE_CHART_CONFIG, CandlestickBar, CustomCandleTooltip, getTrendBadgeInfo } from '@/components/chart/CandlestickPrimitives';
 
 interface RankingStockDetailChartProps {
   symbol: string;
@@ -38,182 +40,6 @@ async function fetchTrend(symbol: string, period: TrendPeriod): Promise<Investor
   return res.json();
 }
 
-/**
- * 전 종목 통일 이동평균 추세 및 이격도 배지 산출 (Single Source of Truth)
- */
-function getTrendBadgeInfo(closePrice: number, ma5: number | null, ma20: number | null, ma60: number | null) {
-  const res = computeUnifiedStatusBadge(closePrice, ma5, ma20, ma60);
-  return { badge: res.shortBadge, badgeStyle: res.badgeStyle };
-}
-
-interface CandlestickProps {
-  x?: number;
-  width?: number;
-  openPrice?: number;
-  closePrice?: number;
-  highPrice?: number;
-  lowPrice?: number;
-  yAxis?: any;
-}
-
-// Unified Single Source of Truth for Top Price Chart Subplot Layout & Coordinates
-const PRICE_CHART_CONFIG = {
-  containerHeight: 180,
-  margin: { top: 10, right: 15, left: -10, bottom: 0 },
-  get plotHeight() {
-    return this.containerHeight - this.margin.top - this.margin.bottom; // 170px
-  },
-};
-
-const CandlestickBar = (props: any) => {
-  const {
-    x = 0,
-    width = 0,
-    payload,
-    minPrice,
-    maxPrice,
-    topPadding = PRICE_CHART_CONFIG.margin.top,
-    plotHeight = PRICE_CHART_CONFIG.plotHeight,
-    period,
-  } = props;
-
-  if (!payload || minPrice === undefined || maxPrice === undefined || maxPrice <= minPrice) return null;
-
-  const closePrice = Number(payload.closePrice || 0);
-  const openPrice = Number(payload.openPrice ?? closePrice);
-  const highPrice = Number(payload.highPrice ?? Math.max(openPrice, closePrice));
-  const lowPrice = Number(payload.lowPrice ?? Math.min(openPrice, closePrice));
-
-  const priceToY = (price: number) => {
-    return topPadding + (1 - (price - minPrice) / (maxPrice - minPrice)) * plotHeight;
-  };
-
-  const openY = priceToY(openPrice);
-  const closeY = priceToY(closePrice);
-  const highY = priceToY(highPrice);
-  const lowY = priceToY(lowPrice);
-
-  const isUp = closePrice >= openPrice;
-  // Korean stock market color convention: Red for Gain (#ef4444), Blue for Loss (#3b82f6)
-  const color = isUp ? '#ef4444' : '#3b82f6';
-
-  const candleWidth = Math.max(width * 0.6, 3);
-  const candleX = x + (width - candleWidth) / 2;
-  const candleY = Math.min(openY, closeY);
-  const candleHeight = Math.max(Math.abs(closeY - openY), 4); // Minimum 4px body height for clear rendering
-
-  const lineX = x + width / 2;
-  const topWickY = highY;
-  const bottomWickY = lowY;
-
-  return (
-    <g className="candlestick-bar" key={`candle-${payload.date || payload.formattedDate || x}`}>
-      {/* High-Low Wick Vertical Line */}
-      <line
-        x1={lineX}
-        y1={topWickY}
-        x2={lineX}
-        y2={bottomWickY}
-        stroke={color}
-        strokeWidth={2}
-      />
-      {/* Open-Close Body Rect */}
-      <rect
-        x={candleX}
-        y={candleY}
-        width={candleWidth}
-        height={candleHeight}
-        fill={color}
-        stroke={color}
-        strokeWidth={1}
-        rx={0.5}
-      />
-    </g>
-  );
-};
-
-const CustomCandleTooltip = ({ active, payload, label }: any) => {
-  if (!active || !payload || !payload.length) return null;
-
-  const dataPoint = payload[0]?.payload;
-  if (!dataPoint) return null;
-
-  const openPrice = dataPoint.openPrice ?? dataPoint.closePrice;
-  const highPrice = dataPoint.highPrice ?? dataPoint.closePrice;
-  const lowPrice = dataPoint.lowPrice ?? dataPoint.closePrice;
-  const closePrice = dataPoint.closePrice;
-  const changeRate = dataPoint.changeRate ?? 0;
-
-  const intradayDiff = closePrice - openPrice;
-  const intradayRate = openPrice > 0 ? (intradayDiff / openPrice) * 100 : 0;
-  const isUp = closePrice >= openPrice;
-  const candleLabel = isUp ? `양봉 🔴 (+${intradayRate.toFixed(2)}%)` : `음봉 🔵 (${intradayRate.toFixed(2)}%)`;
-
-  return (
-    <div className="bg-white/95 dark:bg-[#1a1e29]/95 border border-slate-200 dark:border-[#2a2e39] p-2.5 rounded-lg shadow-xl text-xs space-y-1 z-50 font-sans backdrop-blur-sm min-w-[195px] w-auto whitespace-nowrap pointer-events-none">
-      {/* 1번째 줄: 날짜 */}
-      <div className="font-bold border-b border-slate-200 dark:border-slate-700/80 pb-1 text-slate-800 dark:text-slate-100 flex justify-between items-center text-[11px] gap-3">
-        <span>📅 {label}</span>
-      </div>
-
-      {/* 2번째 줄: 최고가 */}
-      <div className="flex justify-between items-center text-[11px] gap-3">
-        <span className="text-slate-500 dark:text-slate-400 font-medium">최고가:</span>
-        <span className="font-mono font-bold text-red-500">{highPrice.toLocaleString()}원</span>
-      </div>
-
-      {/* 3번째 줄: 시가 */}
-      <div className="flex justify-between items-center text-[11px] gap-3">
-        <span className="text-slate-500 dark:text-slate-400 font-medium">시가:</span>
-        <span className="font-mono font-semibold text-slate-700 dark:text-slate-300">{openPrice.toLocaleString()}원</span>
-      </div>
-
-      {/* 4번째 줄: 종가 */}
-      <div className="flex justify-between items-center text-[11px] gap-3">
-        <span className="text-slate-500 dark:text-slate-400 font-medium">종가:</span>
-        <span className="font-mono font-bold text-slate-900 dark:text-white">{closePrice.toLocaleString()}원</span>
-      </div>
-
-      {/* 5번째 줄: 최저가 */}
-      <div className="flex justify-between items-center text-[11px] gap-3">
-        <span className="text-slate-500 dark:text-slate-400 font-medium">최저가:</span>
-        <span className="font-mono font-bold text-blue-500">{lowPrice.toLocaleString()}원</span>
-      </div>
-
-      {/* 6~9번째 줄: 기술적 분석 지지구간 & 추세 요약 */}
-      <div className="pt-1.5 border-t border-slate-200 dark:border-slate-700/80 space-y-1 text-[10px]">
-        <div className="flex justify-between items-center gap-3">
-          <span className="text-slate-500 dark:text-slate-400 font-medium">🟢 추세:</span>
-          <span className="font-bold text-emerald-600 dark:text-emerald-400">
-            {dataPoint.trendStatus || '정배열'}
-          </span>
-        </div>
-
-        <div className="flex justify-between items-center gap-3">
-          <span className="text-orange-600 dark:text-orange-400 font-medium">🛡️ 1차 지지 (20일선):</span>
-          <span className="font-mono font-bold text-orange-500">
-            {dataPoint.ma20 !== undefined && dataPoint.ma20 !== null ? `${Math.round(dataPoint.ma20).toLocaleString()}원` : '-'}
-          </span>
-        </div>
-
-        <div className="flex justify-between items-center gap-3">
-          <span className="text-purple-600 dark:text-purple-400 font-medium">📉 2차 지지 (전저점):</span>
-          <span className="font-mono font-bold text-purple-500">
-            {dataPoint.recentLow !== undefined && dataPoint.recentLow !== null ? `${Math.round(dataPoint.recentLow).toLocaleString()}원` : '-'}
-          </span>
-        </div>
-
-        <div className="flex justify-between items-center gap-3">
-          <span className="text-blue-600 dark:text-blue-400 font-medium">💧 침체 예측가:</span>
-          <span className="font-mono font-bold text-blue-500">
-            {dataPoint.ma20 !== undefined && dataPoint.ma20 !== null ? `${Math.round(dataPoint.ma20 * 0.95).toLocaleString()}원` : '-'}
-          </span>
-        </div>
-      </div>
-    </div>
-  );
-};
-
 const CustomSupplyTooltip = ({ active, payload, label }: any) => {
   if (!active || !payload || !payload.length) return null;
   const dataPoint = payload[0]?.payload;
@@ -225,9 +51,9 @@ const CustomSupplyTooltip = ({ active, payload, label }: any) => {
     return `${sign}${v.toLocaleString()}백만`;
   };
 
-  const fAmt = payload.find((p: any) => p.dataKey === 'foreignNetBuyAmt')?.value || 0;
-  const oAmt = payload.find((p: any) => p.dataKey === 'organNetBuyAmt')?.value || 0;
-  const prAmt = payload.find((p: any) => p.dataKey === 'programNetBuyAmt')?.value || 0;
+  const fAmt = dataPoint.foreignNetBuyAmt ?? (payload.find((p: any) => p.dataKey === 'foreignNetBuyAmt')?.value || 0);
+  const oAmt = dataPoint.organNetBuyAmt ?? (payload.find((p: any) => p.dataKey === 'organNetBuyAmt')?.value || 0);
+  const prAmt = dataPoint.programNetBuyAmt ?? (payload.find((p: any) => p.dataKey === 'programNetBuyAmt')?.value || 0);
 
   return (
     <div className="bg-white/95 dark:bg-[#1e222d]/95 backdrop-blur-md p-2.5 rounded-xl border border-slate-200 dark:border-[#2a2e39] shadow-xl text-xs space-y-1 z-50">
@@ -267,8 +93,8 @@ export default function RankingStockDetailChart({
   // Protect against undefined symbol state transitions
   const safeSymbol = symbol || '005930';
 
-  // Core Active Tab State: 'daily' (일간 누적 수급) | 'intraday' (장중 프로그램 흐름)
-  const [activeTab, setActiveTab] = useState<'daily' | 'intraday'>('daily');
+  // Core Active Tab State: 'daily' (일간 누적 수급) | '3m' (3분봉)
+  const [activeTab, setActiveTab] = useState<'daily' | '3m'>('daily');
   const [localPeriod, setLocalPeriod] = useState<TrendPeriod>('60d');
 
   const period = propPeriod || localPeriod;
@@ -277,23 +103,27 @@ export default function RankingStockDetailChart({
     if (onPeriodChange) onPeriodChange(p);
   };
 
-  // Daily Metric Toggles (Default: Foreign + Organ active, Program toggleable)
+  // Daily Metric Toggles (Default: Foreign + Organ + Program ALL ACTIVE)
   const [showMA5, setShowMA5] = useState(true);
   const [showMA20, setShowMA20] = useState(true);
   const [showMA60, setShowMA60] = useState(true);
   const [showForeign, setShowForeign] = useState(true);
   const [showOrgan, setShowOrgan] = useState(true);
-  const [showProgram, setShowProgram] = useState(false);
+  const [showProgram, setShowProgram] = useState(true);
   const [showDisparate, setShowDisparate] = useState(false);
+  const [showVolumeProfile, setShowVolumeProfile] = useState(false);
 
-  // Intraday Metric Toggles
-  const [showIntradayTotal, setShowIntradayTotal] = useState(true);
-  const [showIntradayNonArb, setShowIntradayNonArb] = useState(true);
-  const [showIntradayArb, setShowIntradayArb] = useState(true);
+  // 3m Candlestick Toggles
+  const [show3mMA5, setShow3mMA5] = useState(true);
+  const [show3mMA20, setShow3mMA20] = useState(true);
+  const [show3mMA60, setShow3mMA60] = useState(true);
+  const [show3mPivot, setShow3mPivot] = useState(true);
+  const [show3mFibo, setShow3mFibo] = useState(true);
+  const [show3mVolumeProfile, setShow3mVolumeProfile] = useState(false);
 
   // Hover Crosshair Horizontal Price Line State (Snaps to OHLC: High, Open, Close, Low)
   const [hoverPriceInfo, setHoverPriceInfo] = useState<{ y: number; price: number; label?: string } | null>(null);
-  const [hoverIntradayPriceInfo, setHoverIntradayPriceInfo] = useState<{ y: number; price: number } | null>(null);
+  const [hover3mPriceInfo, setHover3mPriceInfo] = useState<{ y: number; price: number } | null>(null);
 
   // Symbol Match Guard: Only use propData if it matches currently selected safeSymbol
   const isPropDataMatching = Boolean(propData && propData.stockInfo?.symbol === safeSymbol);
@@ -303,6 +133,30 @@ export default function RankingStockDetailChart({
     queryFn: () => fetchTrend(safeSymbol, period),
     enabled: !isPropDataMatching && Boolean(safeSymbol),
     staleTime: 5 * 60 * 1000,
+    refetchOnMount: false,
+  });
+
+  // 한국 거래소 장중 여부 판별 (평일 09:00 ~ 15:30)
+  const isMarketOpen = React.useMemo(() => {
+    const now = new Date();
+    const utc = now.getTime() + now.getTimezoneOffset() * 60000;
+    const kst = new Date(utc + 9 * 60 * 60000);
+    const day = kst.getDay();
+    const timeNum = kst.getHours() * 100 + kst.getMinutes();
+    return day >= 1 && day <= 5 && timeNum >= 900 && timeNum < 1530;
+  }, []);
+
+  // 3-Minute Candlestick + Pivot/Fibonacci On-Demand Query
+  const intraday3mQuery = useQuery<any>({
+    queryKey: ['intraday3mCandles', safeSymbol],
+    queryFn: async () => {
+      const res = await fetch(`/api/stock/intraday-chart?symbol=${safeSymbol}&timeUnit=3m&t=${Date.now()}`);
+      if (!res.ok) throw new Error('3분봉 데이터를 불러오는데 실패했습니다.');
+      return res.json();
+    },
+    enabled: activeTab === '3m' && Boolean(safeSymbol),
+    staleTime: 30 * 1000,
+    refetchInterval: isMarketOpen ? 30 * 1000 : false,
     refetchOnMount: false,
   });
 
@@ -328,28 +182,40 @@ export default function RankingStockDetailChart({
 
     let cumProg = 0;
 
+    // 액면분할/무상감자 등으로 옛 가격 스케일이 섞인 구간 감지 - 그 지점 이전 데이터는
+    // 이동평균/전저점 계산에서 제외한다 (수칙 1-3: 가짜 보정 없이 오염 구간 자체를 제외)
+    const rawClosesForSplitCheck = trend.map((d) => d.closePrice || 0);
+    const splitBoundaryIdx = findSplitSafeStartIndex(rawClosesForSplitCheck);
+
     // 1. Calculate Moving Averages on the FULL raw trend array BEFORE slicing
     // Newly listed stock guard: Set to null if history count is less than required (5, 20, 60 days)
     const fullTrendWithMA = trend.map((item, idx, arr) => {
+      // 분할 이후 날짜는 분할 경계 이전 데이터를 넘어가지 않도록 슬라이스 하한을 고정
+      const sliceFloor = idx >= splitBoundaryIdx ? splitBoundaryIdx : 0;
+
       // 5-day MA: Calculate over available preceding days (up to 5 days)
-      const slice5 = arr.slice(Math.max(0, idx - 4), idx + 1);
+      const slice5 = arr.slice(Math.max(sliceFloor, idx - 4), idx + 1);
       const ma5 = slice5.length > 0
         ? Math.round(slice5.reduce((sum, d) => sum + (d.closePrice || 0), 0) / slice5.length)
         : null;
 
       // 20-day MA: Calculate over available preceding days (up to 20 days)
-      const slice20 = arr.slice(Math.max(0, idx - 19), idx + 1);
+      const slice20 = arr.slice(Math.max(sliceFloor, idx - 19), idx + 1);
       const ma20 = slice20.length > 0
         ? Math.round(slice20.reduce((sum, d) => sum + (d.closePrice || 0), 0) / slice20.length)
         : null;
 
       // 60-day MA: Calculate over available preceding days (up to 60 days)
-      const slice60 = arr.slice(Math.max(0, idx - 59), idx + 1);
+      const slice60 = arr.slice(Math.max(sliceFloor, idx - 59), idx + 1);
       const ma60 = slice60.length > 0
         ? Math.round(slice60.reduce((sum, d) => sum + (d.closePrice || 0), 0) / slice60.length)
         : null;
 
-      const progAmt = item.programNetBuyAmt ?? Math.round((item.foreignNetBuyAmt || 0) * 0.4 + (item.organNetBuyAmt || 0) * 0.5);
+      // 당일 거래량 / 최근 20일(당일 제외) 평균 거래량 비율 - 세력매집/설거지주의 정교 판별용
+      const sliceVol = arr.slice(Math.max(sliceFloor, idx - 20), idx + 1);
+      const volumeRatio = computeRecentVolumeRatio(sliceVol.map((d) => d.volume));
+
+      const progAmt = item.programNetBuyAmt || 0;
       cumProg += progAmt;
 
       const dateLabel = item.formattedDate || item.date || (item as any).stck_bsop_date || '';
@@ -372,11 +238,11 @@ export default function RankingStockDetailChart({
         : Math.min(openPrice, closePrice);
 
       // 20-day recent low computation for 2nd support line
-      const slice20Lows = arr.slice(Math.max(0, idx - 19), idx + 1);
+      const slice20Lows = arr.slice(Math.max(sliceFloor, idx - 19), idx + 1);
       const recentLow = Math.min(...slice20Lows.map(d => (d.lowPrice && d.lowPrice > 0 ? d.lowPrice : d.closePrice || closePrice)));
 
       // Use unified getTrendBadgeInfo helper for exact status consistency
-      const trendBadgeObj = getTrendBadgeInfo(closePrice, ma5, ma20, ma60);
+      const trendBadgeObj = getTrendBadgeInfo(closePrice, ma5, ma20, ma60, volumeRatio);
       const trendStatus = trendBadgeObj.badge;
 
       return {
@@ -504,10 +370,14 @@ function calculateUltraTightKrxPriceAxis(minRaw: number, maxRaw: number, targetT
       return { ma5: 0, ma20: 0, ma60: 0, disparate20: 100, disparate60: 100, overbought20Price: 0, oversold60Price: 0, badge: '⚪ 이평선 수렴', badgeStyle: 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-300 dark:border-slate-700' };
     }
 
-    const closes = displayTrend.map((d) => d.closePrice).filter((c) => c && c > 0);
-    if (closes.length === 0) {
+    const rawCloses = displayTrend.map((d) => d.closePrice).filter((c) => c && c > 0);
+    if (rawCloses.length === 0) {
       return { ma5: 0, ma20: 0, ma60: 0, disparate20: 100, disparate60: 100, overbought20Price: 0, oversold60Price: 0, badge: '⚪ 이평선 수렴', badgeStyle: 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-300 dark:border-slate-700' };
     }
+
+    // 액면분할/무상감자 등 옛 가격 스케일 구간은 제외하고 계산 (수칙 1-3: 오염 구간 제외 방식)
+    const closes = rawCloses.slice(findSplitSafeStartIndex(rawCloses));
+    const splitSafeDisplayTrend = displayTrend.slice(displayTrend.length - closes.length);
 
     const currentP = closes[closes.length - 1];
     const slice5 = closes.slice(-Math.min(5, closes.length));
@@ -521,15 +391,19 @@ function calculateUltraTightKrxPriceAxis(minRaw: number, maxRaw: number, targetT
     const disparate20 = Number(((currentP / ma20) * 100).toFixed(1));
     const disparate60 = Number(((currentP / ma60) * 100).toFixed(1));
 
-    // Use unified getTrendBadgeInfo helper for exact status consistency
-    const { badge, badgeStyle } = getTrendBadgeInfo(currentP, ma5, ma20, ma60);
+    // 당일 거래량 / 최근 20일(당일 제외) 평균 거래량 비율 - 세력매집/설거지주의 정교 판별용
+    const volumeRatio = computeRecentVolumeRatio(splitSafeDisplayTrend.map((d) => d.volume));
 
-    const overbought20Price = Math.round(ma20 * 1.05);
-    const oversold20Price = Math.round(ma20 * 0.95);
-    const overbought60Price = Math.round(ma60 * 1.10);
-    const oversold60Price = Math.round(ma60 * 0.90);
-    const support1Price = Math.round(ma20);
-    const recentLowPrice = Math.min(...displayTrend.map((d) => (d.lowPrice && d.lowPrice > 0 ? d.lowPrice : d.closePrice)));
+    // Use unified getTrendBadgeInfo helper for exact status consistency
+    const { badge, badgeStyle } = getTrendBadgeInfo(currentP, ma5, ma20, ma60, volumeRatio);
+
+    // 계산된 가격들을 실제 KRX 호가단위에 맞춰 반올림 (예: 4,456원처럼 실제로 존재하지 않는 호가 방지)
+    const overbought20Price = roundToKrxTick(ma20 * 1.05);
+    const oversold20Price = roundToKrxTick(ma20 * 0.95);
+    const overbought60Price = roundToKrxTick(ma60 * 1.10);
+    const oversold60Price = roundToKrxTick(ma60 * 0.90);
+    const support1Price = roundToKrxTick(ma20);
+    const recentLowPrice = Math.min(...splitSafeDisplayTrend.map((d) => (d.lowPrice && d.lowPrice > 0 ? d.lowPrice : d.closePrice)));
 
     return { ma5, ma20, ma60, disparate20, disparate60, overbought20Price, oversold20Price, overbought60Price, oversold60Price, support1Price, recentLowPrice, badge, badgeStyle };
   }, [displayTrend]);
@@ -574,6 +448,40 @@ function calculateUltraTightKrxPriceAxis(minRaw: number, maxRaw: number, targetT
     return calculateUltraTightKrxPriceAxis(min, max, 6);
   }, [displayTrend, showDisparate, disparateInfo]);
 
+  // 매물대(가격대별 누적 거래량) - 하루의 대표가(고가+저가+종가)/3에 그날 실거래량을 배정해
+  // 현재 화면 가격구간(minPrice~maxPrice)을 24개 구간으로 나눠 집계한다 (가짜 틱데이터 없이 실 OHLCV만 사용).
+  const volumeProfileBins = React.useMemo(() => {
+    if (!showVolumeProfile || !displayTrend || displayTrend.length === 0 || minPrice <= 0 || maxPrice <= minPrice) {
+      return [];
+    }
+    const BIN_COUNT = 24;
+    const binSize = (maxPrice - minPrice) / BIN_COUNT;
+    const bins = Array.from({ length: BIN_COUNT }, (_, i) => ({
+      priceLow: minPrice + i * binSize,
+      priceHigh: minPrice + (i + 1) * binSize,
+      volume: 0,
+    }));
+
+    displayTrend.forEach((d) => {
+      const c = d.closePrice || 0;
+      if (c <= 0) return;
+      const o = (d.openPrice && d.openPrice > 0) ? d.openPrice : c;
+      const h = (d.highPrice && d.highPrice > 0) ? d.highPrice : Math.max(o, c);
+      const l = (d.lowPrice && d.lowPrice > 0) ? d.lowPrice : Math.min(o, c);
+      const vol = d.volume || 0;
+      if (vol <= 0) return;
+      const typicalPrice = (h + l + c) / 3;
+      const idx = Math.max(0, Math.min(BIN_COUNT - 1, Math.floor((typicalPrice - minPrice) / binSize)));
+      bins[idx].volume += vol;
+    });
+
+    const maxBinVolume = Math.max(1, ...bins.map((b) => b.volume));
+    let pocIdx = 0;
+    bins.forEach((b, i) => { if (b.volume > bins[pocIdx].volume) pocIdx = i; });
+
+    return bins.map((b, i) => ({ ...b, ratio: b.volume / maxBinVolume, isPoc: i === pocIdx && b.volume > 0 }));
+  }, [showVolumeProfile, displayTrend, minPrice, maxPrice]);
+
   // Subplot 2 Daily Supply Domain Calculation (for grouped daily net buy/sell bars)
   const supplyDomain = React.useMemo(() => {
     if (!displayTrend || displayTrend.length === 0) return ['auto', 'auto'];
@@ -599,56 +507,176 @@ function calculateUltraTightKrxPriceAxis(minRaw: number, maxRaw: number, targetT
     return [Math.floor(min - pad), Math.ceil(max + pad)];
   }, [displayTrend, showForeign, showOrgan, showProgram]);
 
-  // Intraday Data
-  const intradayTrend = React.useMemo(() => {
-    if (data?.programTrade?.intradayTrend && data.programTrade.intradayTrend.length > 0) {
-      return data.programTrade.intradayTrend;
-    }
-    const seed = symbol.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0);
-    const baseP = stockInfo?.currentPrice || 50000;
-    const points = [];
-    const times = ['09:00', '09:30', '10:00', '10:30', '11:00', '11:30', '12:00', '12:30', '13:00', '13:30', '14:00', '14:30', '15:00', '15:20', '15:30'];
-    let cumTot = 0;
-    let cumNonArb = 0;
-    let cumArb = 0;
-    for (let i = 0; i < times.length; i++) {
-      const wave = Math.sin((seed + i * 7) * 0.3) * 0.015;
-      const price = Math.round(baseP * (1 + wave));
-      const stepTot = Math.round(Math.sin((seed * 3 + i * 5) * 0.2) * 250);
-      const stepNonArb = Math.round(stepTot * 0.75);
-      const stepArb = stepTot - stepNonArb;
-      cumTot += stepTot;
-      cumNonArb += stepNonArb;
-      cumArb += stepArb;
-      points.push({
-        time: times[i],
-        price,
-        totalNetBuyAmt: cumTot,
-        nonArbitrageAmt: cumNonArb,
-        arbitrageAmt: cumArb,
-        totalNetBuyQty: Math.round((cumTot * 1000000) / price),
+interface SwingLowPoint {
+  price: number;
+  time: string;
+  formattedDate?: string;
+  index: number;
+}
+
+/**
+ * 3분봉 배열에서 앞뒤 각 2개 봉보다 저가가 더 낮은 국소 최저점(스윙 로우) 중
+ * 아직 그 가격 아래로 종가가 마감된 적 없는(미이탈) 가장 최근 스윙 로우 1개 탐색
+ */
+function findActiveSwingLow(candles: any[]): SwingLowPoint | null {
+  if (!candles || candles.length < 5) return null;
+
+  const swingLows: SwingLowPoint[] = [];
+
+  for (let i = 2; i < candles.length - 2; i++) {
+    const currLow = candles[i].lowPrice;
+    if (
+      currLow < candles[i - 2].lowPrice &&
+      currLow < candles[i - 1].lowPrice &&
+      currLow <= candles[i + 1].lowPrice &&
+      currLow <= candles[i + 2].lowPrice
+    ) {
+      swingLows.push({
+        price: currLow,
+        time: candles[i].time,
+        formattedDate: candles[i].formattedDate,
+        index: i,
       });
     }
-    return points;
-  }, [data, symbol, stockInfo]);
+  }
 
-  const intradayPriceAxis = React.useMemo(() => {
-    if (!intradayTrend || intradayTrend.length === 0) {
-      return { minPrice: 0, maxPrice: 100, priceDomain: ['auto', 'auto'] as any, priceTicks: undefined };
-    }
-    let min = Infinity;
-    let max = -Infinity;
-    intradayTrend.forEach((p) => {
-      if (p.price && p.price > 0) {
-        min = Math.min(min, p.price);
-        max = Math.max(max, p.price);
+  const activeSwingLows = swingLows.filter((sl) => {
+    for (let k = sl.index + 1; k < candles.length; k++) {
+      if (candles[k].closePrice < sl.price) {
+        return false;
       }
-    });
-    if (min === Infinity || max === -Infinity || min <= 0) {
+    }
+    return true;
+  });
+
+  if (activeSwingLows.length === 0) return null;
+  return activeSwingLows[activeSwingLows.length - 1];
+}
+
+  // 3-Minute Candlestick + Pivot R1 Target Tight Domain Computation (하단: 최저가 - 2틱, 상단: R1 + 2틱)
+  const candles3m = intraday3mQuery.data?.candles || [];
+  const levels3m = intraday3mQuery.data?.levels;
+
+  // 1. R1 저항 → 지지 전환 판정 (당일 장중 고가/종가가 R1 이상으로 돌파한 이력이 있는지)
+  const isR1Flipped = React.useMemo(() => {
+    const r1 = levels3m?.pivot?.r1;
+    if (!r1 || !candles3m || candles3m.length === 0) return false;
+    return candles3m.some((c: any) => (c.highPrice || c.closePrice) >= r1);
+  }, [levels3m, candles3m]);
+
+  // 2. 단기 지지선 (스윙 로우) 자동 탐지
+  const activeSwingLow = React.useMemo(() => {
+    return findActiveSwingLow(candles3m);
+  }, [candles3m]);
+
+  const intraday3mPriceAxis = React.useMemo(() => {
+    if (!candles3m || candles3m.length === 0) {
       return { minPrice: 0, maxPrice: 100, priceDomain: ['auto', 'auto'] as any, priceTicks: undefined };
     }
-    return calculateUltraTightKrxPriceAxis(min, max, 6);
-  }, [intradayTrend]);
+    let candleMin = Infinity;
+    let candleMax = -Infinity;
+    candles3m.forEach((c: any) => {
+      const o = c.openPrice || c.closePrice;
+      const h = c.highPrice || Math.max(o, c.closePrice);
+      const l = c.lowPrice || Math.min(o, c.closePrice);
+      candleMin = Math.min(candleMin, o, h, l, c.closePrice);
+      candleMax = Math.max(candleMax, o, h, l, c.closePrice);
+    });
+
+    if (candleMin === Infinity || candleMax === -Infinity || candleMin <= 0) {
+      return { minPrice: 0, maxPrice: 100, priceDomain: ['auto', 'auto'] as any, priceTicks: undefined, showR2: false };
+    }
+
+    const r1 = levels3m?.pivot?.r1;
+    const r2 = levels3m?.pivot?.r2;
+    // 주가가 R1(1차 익절가)의 98% 이상 근접하거나 돌파 시 R2(신고가) 선과 Y축 자동 확장
+    const showR2 = Boolean(r2 && r2 > 0 && r1 && r1 > 0 && candleMax >= r1 * 0.98);
+
+    // 상단 기준가: 주가 급등 시 R2 기준, 평상시 R1 기준
+    let targetMax = candleMax;
+    if (showR2 && r2) {
+      targetMax = Math.max(candleMax, r2);
+    } else if (r1 && r1 > 0) {
+      targetMax = Math.max(candleMax, r1);
+    }
+
+    // 하단 기준가: 당일 3분봉 캔들 최저가 및 스윙 로우 가격 포함
+    let targetMin = candleMin;
+    if (activeSwingLow && activeSwingLow.price > 0) {
+      targetMin = Math.min(targetMin, activeSwingLow.price);
+    }
+
+    const tickSizeMin = getKrxTickSize(targetMin);
+    const tickSizeMax = getKrxTickSize(targetMax);
+
+    // 상하단 10틱 여백 적용 (하단: 최저가 - 10틱, 상단: 기준가 + 10틱)
+    const exactMin = Math.max(0, targetMin - 10 * tickSizeMin);
+    const exactMax = targetMax + 10 * tickSizeMax;
+    const range = exactMax - exactMin;
+
+    // 내부 눈금(Ticks) 생성을 위한 호가 정수배 step 탐색 (4~8개 눈금)
+    const midTickSize = getKrxTickSize((exactMin + exactMax) / 2);
+    const stepMultiples = [1, 2, 5, 10, 20, 25, 50, 100, 200, 250, 500, 1000, 2500, 5000];
+
+    let bestStep = midTickSize * 10;
+    for (const m of stepMultiples) {
+      const step = midTickSize * m;
+      const count = range / step;
+      if (count >= 3 && count <= 8) {
+        bestStep = step;
+        break;
+      }
+    }
+
+    const firstTick = Math.ceil(exactMin / bestStep) * bestStep;
+    const ticks: number[] = [];
+    for (let p = firstTick; p < exactMax - bestStep * 0.1; p += bestStep) {
+      ticks.push(Math.round(p));
+    }
+
+    return {
+      minPrice: exactMin,
+      maxPrice: exactMax,
+      priceDomain: [exactMin, exactMax] as [number, number],
+      priceTicks: ticks.length >= 2 ? ticks : undefined,
+      showR2,
+    };
+  }, [candles3m, levels3m]);
+
+  // 3분봉 매물대(가격대별 누적 거래량) - 일간 차트와 동일한 방식(대표가에 해당 봉 실거래량 배정)을
+  // 3분봉 단위로 그대로 적용한다 (가짜 데이터 없이 실 3분봉 OHLCV만 사용).
+  const volumeProfile3mBins = React.useMemo(() => {
+    const { minPrice, maxPrice } = intraday3mPriceAxis;
+    if (!show3mVolumeProfile || !candles3m || candles3m.length === 0 || minPrice <= 0 || maxPrice <= minPrice) {
+      return [];
+    }
+    const BIN_COUNT = 24;
+    const binSize = (maxPrice - minPrice) / BIN_COUNT;
+    const bins = Array.from({ length: BIN_COUNT }, (_, i) => ({
+      priceLow: minPrice + i * binSize,
+      priceHigh: minPrice + (i + 1) * binSize,
+      volume: 0,
+    }));
+
+    candles3m.forEach((c: any) => {
+      const cl = c.closePrice || 0;
+      if (cl <= 0) return;
+      const o = (c.openPrice && c.openPrice > 0) ? c.openPrice : cl;
+      const h = (c.highPrice && c.highPrice > 0) ? c.highPrice : Math.max(o, cl);
+      const l = (c.lowPrice && c.lowPrice > 0) ? c.lowPrice : Math.min(o, cl);
+      const vol = c.volume || 0;
+      if (vol <= 0) return;
+      const typicalPrice = (h + l + cl) / 3;
+      const idx = Math.max(0, Math.min(BIN_COUNT - 1, Math.floor((typicalPrice - minPrice) / binSize)));
+      bins[idx].volume += vol;
+    });
+
+    const maxBinVolume = Math.max(1, ...bins.map((b) => b.volume));
+    let pocIdx = 0;
+    bins.forEach((b, i) => { if (b.volume > bins[pocIdx].volume) pocIdx = i; });
+
+    return bins.map((b, i) => ({ ...b, ratio: b.volume / maxBinVolume, isPoc: i === pocIdx && b.volume > 0 }));
+  }, [show3mVolumeProfile, candles3m, intraday3mPriceAxis]);
 
   const latest = displayTrend[displayTrend.length - 1];
 
@@ -683,8 +711,9 @@ function calculateUltraTightKrxPriceAxis(minRaw: number, maxRaw: number, targetT
 
   return (
     <div className="bg-white dark:bg-[#131722] border border-slate-200/80 dark:border-[#2a2e39] rounded-xl p-2.5 shadow-xs flex flex-col justify-between transition-colors duration-200 w-full">
-      {/* 100%-Baseline Disparate Ratio Status Header - Ultra Space-Efficient Inline Card Layout */}
-      {activeTab === 'daily' && (
+      {/* Top Header Card - Tab-Aware: Daily (이격도 및 4대가격선) vs 3m (당일 피봇 & 피보나치 단타 가격선) */}
+      {activeTab === 'daily' ? (
+        /* 일간 수급 전용: 100%-Baseline 이격도 & 4대 핵심 가격선 헤더 카드 */
         <div className="flex flex-col gap-1.5 p-2.5 mb-2 bg-slate-50/90 dark:bg-[#161a25]/90 border border-slate-200/80 dark:border-[#2a2e39] rounded-xl font-sans shadow-xs w-full">
           {/* Header Row: Centered Overall Status Badge & Right-aligned Close Button */}
           <div className="relative flex items-center justify-center border-b border-slate-200/60 dark:border-[#2a2e39] pb-1 w-full min-h-[26px]">
@@ -706,9 +735,8 @@ function calculateUltraTightKrxPriceAxis(minRaw: number, maxRaw: number, targetT
 
           {/* 2-Column Asymmetric Grid: Expanded 20D Card (col-span-7) & Compact 60D Card (col-span-5) */}
           <div className="grid grid-cols-1 xl:grid-cols-12 gap-2 w-full">
-            {/* 20D Card (Expanded Width to guarantee single-line price display for high-priced stocks) */}
+            {/* 20D Card */}
             <div className="xl:col-span-7 flex flex-col gap-1.5 bg-white/90 dark:bg-[#1c202c]/90 p-2.5 rounded-lg border border-slate-200/80 dark:border-[#2a2e39] shadow-2xs">
-              {/* Row 1: Title + Percentage + Short Inline Guidelines */}
               <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] font-sans pb-1 border-b border-slate-100 dark:border-slate-800/80">
                 <div className="flex items-center gap-1.5 shrink-0 font-mono">
                   <span className="font-bold text-amber-600 dark:text-amber-400 text-xs font-sans">📊 20일선 이격도:</span>
@@ -720,38 +748,29 @@ function calculateUltraTightKrxPriceAxis(minRaw: number, maxRaw: number, targetT
                   </span>
                 </div>
                 <div className="text-[11px] text-slate-500 dark:text-slate-400 font-sans flex items-center gap-x-2.5 ml-auto flex-wrap shrink-0">
-                  <span>• <strong>95% 이하</strong>: 반등 기대</span>
-                  <span>• <strong>105% 이상</strong>: 과열 경계</span>
+                  <span>• <strong>95% 이하</strong>: 반등</span>
+                  <span>• <strong>105% 이상</strong>: 과열</span>
                 </div>
               </div>
 
-              {/* Row 2: 4개 핵심 가격선통합 (과열가 / 1차 지지 / 2차 지지 / 침체가) */}
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-0 text-xs font-sans pt-1 border-t border-slate-100 dark:border-slate-800/60 w-full whitespace-nowrap">
-                {/* 1. 과열가 (+5%) */}
                 <div className="flex items-center justify-center text-center text-red-600 dark:text-red-400 border-r border-slate-200/80 dark:border-slate-800/80 pr-1 shrink-0 whitespace-nowrap">
                   <span>🔴 과열가: <strong className="font-bold font-mono text-[11px] sm:text-xs">{(disparateInfo?.overbought20Price || 0) > 0 ? `${(disparateInfo?.overbought20Price || 0).toLocaleString()}원` : '-'}</strong></span>
                 </div>
-
-                {/* 2. 1차 지지 (20일선) */}
                 <div className="flex items-center justify-center text-center text-orange-600 dark:text-orange-400 border-r border-slate-200/80 dark:border-slate-800/80 px-1 shrink-0 whitespace-nowrap">
                   <span>🟠 <span className="hidden sm:inline">1차지지</span><span className="sm:hidden">1차</span>: <strong className="font-bold font-mono text-[11px] sm:text-xs">{(disparateInfo?.support1Price || 0) > 0 ? `${(disparateInfo?.support1Price || 0).toLocaleString()}원` : '-'}</strong></span>
                 </div>
-
-                {/* 3. 2차 지지 (전저점) */}
                 <div className="flex items-center justify-center text-center text-purple-600 dark:text-purple-400 border-r border-slate-200/80 dark:border-slate-800/80 px-1 shrink-0 whitespace-nowrap">
                   <span>🟣 <span className="hidden sm:inline">2차지지</span><span className="sm:hidden">2차</span>: <strong className="font-bold font-mono text-[11px] sm:text-xs">{(disparateInfo?.recentLowPrice || 0) > 0 ? `${(disparateInfo?.recentLowPrice || 0).toLocaleString()}원` : '-'}</strong></span>
                 </div>
-
-                {/* 4. 침체가 (-5%) */}
                 <div className="flex items-center justify-center text-center text-blue-600 dark:text-blue-400 pl-1 shrink-0 whitespace-nowrap">
                   <span>🔵 침체가: <strong className="font-bold font-mono text-[11px] sm:text-xs">{(disparateInfo?.oversold20Price || 0) > 0 ? `${(disparateInfo?.oversold20Price || 0).toLocaleString()}원` : '-'}</strong></span>
                 </div>
               </div>
             </div>
 
-            {/* 60D Card (Compact Width) */}
+            {/* 60D Card */}
             <div className="xl:col-span-5 flex flex-col gap-1.5 bg-white/90 dark:bg-[#1c202c]/90 p-2.5 rounded-lg border border-slate-200/80 dark:border-[#2a2e39] shadow-2xs">
-              {/* Row 1: Title + Percentage + Short Inline Guidelines */}
               <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] font-sans pb-1 border-b border-slate-100 dark:border-slate-800/80">
                 <div className="flex items-center gap-1.5 shrink-0 font-mono">
                   <span className="font-bold text-cyan-600 dark:text-cyan-400 text-xs font-sans">📈 60일선 이격도:</span>
@@ -763,19 +782,15 @@ function calculateUltraTightKrxPriceAxis(minRaw: number, maxRaw: number, targetT
                   </span>
                 </div>
                 <div className="text-[11px] text-slate-500 dark:text-slate-400 font-sans flex items-center gap-x-2.5 ml-auto flex-wrap shrink-0">
-                  <span>• <strong>90% 이하</strong>: 반등 기대</span>
-                  <span>• <strong>110% 이상</strong>: 과열 경계</span>
+                  <span>• <strong>90% 이하</strong>: 반등</span>
+                  <span>• <strong>110% 이상</strong>: 과열</span>
                 </div>
               </div>
 
-              {/* Row 2: Divided into 2 Equal Sub-boxes, Each Price Centered Within Its 50% Half */}
               <div className="grid grid-cols-2 gap-0 text-xs font-sans pt-1 border-t border-slate-100 dark:border-slate-800/60 w-full whitespace-nowrap">
-                {/* Left 50% Sub-box: Overbought Price Centered */}
                 <div className="flex items-center justify-center text-center text-red-600 dark:text-red-400 border-r border-slate-200/80 dark:border-slate-800/80 pr-2 whitespace-nowrap">
                   <span>🔴 110% 과열가: <strong className="font-bold font-mono text-xs sm:text-[13px]">{(disparateInfo?.overbought60Price || 0) > 0 ? `${(disparateInfo?.overbought60Price || 0).toLocaleString()}원` : '-'}</strong></span>
                 </div>
-
-                {/* Right 50% Sub-box: Oversold Price Centered */}
                 <div className="flex items-center justify-center text-center text-blue-600 dark:text-blue-400 pl-2 whitespace-nowrap">
                   <span>🔵 90% 침체가: <strong className="font-bold font-mono text-xs sm:text-[13px]">{(disparateInfo?.oversold60Price || 0) > 0 ? `${(disparateInfo?.oversold60Price || 0).toLocaleString()}원` : '-'}</strong></span>
                 </div>
@@ -783,62 +798,218 @@ function calculateUltraTightKrxPriceAxis(minRaw: number, maxRaw: number, targetT
             </div>
           </div>
         </div>
+      ) : (
+        /* 3분봉 전용: 당일 3분봉 단타 피봇 & 피보나치 핵심 가격선 분석 카드 (이격도 삭제 및 피봇 특화) */
+        levels3m && (
+          <div className="flex flex-col gap-1.5 p-2.5 mb-2 bg-slate-50/90 dark:bg-[#161a25]/90 border border-slate-200/80 dark:border-[#2a2e39] rounded-xl font-sans shadow-xs w-full">
+            {/* Header Row: Title & Close Button */}
+            <div className="relative flex items-center justify-between border-b border-slate-200/60 dark:border-[#2a2e39] pb-1 w-full min-h-[26px] gap-2">
+              <div className="flex items-center gap-2 min-w-0">
+                <span className={`shrink-0 px-2 py-0.5 rounded text-[11px] font-bold border shadow-2xs ${disparateInfo.badgeStyle}`}>
+                  {disparateInfo.badge}
+                </span>
+                <span className="text-xs font-bold text-amber-600 dark:text-amber-400 truncate">
+                  당일 3분봉 단타 피봇 & 피보나치 분석 (단위: 원)
+                </span>
+              </div>
+              {onClose && (
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="px-2.5 py-1 rounded-lg bg-slate-200/80 hover:bg-slate-300 dark:bg-[#1e222d] dark:hover:bg-[#2a2e39] text-slate-700 dark:text-slate-200 font-bold text-xs transition flex items-center gap-1 cursor-pointer shadow-2xs"
+                  title="차트 닫기"
+                >
+                  <span>차트 닫기</span>
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+
+            {/* 7개 핵심 피봇 & 피보나치 + 단기 지지선 지표 그리드 */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-1.5 text-xs pt-1 text-center w-full">
+              {/* 1. R2 (신고가) */}
+              <div className="p-1.5 rounded-lg bg-orange-500/10 border border-orange-500/30 text-orange-600 dark:text-orange-400">
+                <div className="text-[10px] font-bold">🟠 피봇 R2 (신고가)</div>
+                <div className="font-mono font-black text-xs">{levels3m.pivot.r2.toLocaleString()}원</div>
+              </div>
+
+              {/* 2. R1 (1차 익절) */}
+              <div className="p-1.5 rounded-lg bg-red-500/10 border border-red-500/30 text-red-600 dark:text-red-400">
+                <div className="text-[10px] font-bold">🔴 1차 익절 (R1)</div>
+                <div className="font-mono font-black text-xs">{levels3m.pivot.r1.toLocaleString()}원</div>
+              </div>
+
+              {/* 3. 피봇 P (중심) */}
+              <div className="p-1.5 rounded-lg bg-yellow-500/10 border border-yellow-500/30 text-yellow-700 dark:text-yellow-400">
+                <div className="text-[10px] font-bold">🟡 피봇 P (중심)</div>
+                <div className="font-mono font-black text-xs">{levels3m.pivot.p.toLocaleString()}원</div>
+              </div>
+
+              {/* 4. 단기 지지선 - 피봇 P 오른쪽 */}
+              <div className="p-1.5 rounded-lg bg-cyan-500/10 border border-cyan-500/30 text-cyan-600 dark:text-cyan-400">
+                <div className="text-[10px] font-bold">💠 단기 지지선</div>
+                <div className="font-mono font-black text-xs">
+                  {activeSwingLow ? `${activeSwingLow.price.toLocaleString()}원` : '미형성'}
+                </div>
+              </div>
+
+              {/* 5. 38.2% 최적 매수 */}
+              <div className="p-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-600 dark:text-emerald-400">
+                <div className="text-[10px] font-bold">🟢 최적 매수 (38.2%)</div>
+                <div className="font-mono font-black text-xs">{levels3m.fibonacci.fibo382.toLocaleString()}원</div>
+              </div>
+
+              {/* 6. 50.0% 손절선 */}
+              <div className="p-1.5 rounded-lg bg-purple-500/10 border border-purple-500/30 text-purple-600 dark:text-purple-400">
+                <div className="text-[10px] font-bold">⛔ 손절선 (50.0%)</div>
+                <div className="font-mono font-black text-xs">{levels3m.fibonacci.fibo500.toLocaleString()}원</div>
+              </div>
+
+              {/* 7. S1 (지지) */}
+              <div className="p-1.5 rounded-lg bg-blue-500/10 border border-blue-500/20 text-blue-600 dark:text-blue-400">
+                <div className="text-[10px] font-medium">🔵 피봇 S1 (지지)</div>
+                <div className="font-mono font-bold text-xs">{levels3m.pivot.s1.toLocaleString()}원</div>
+              </div>
+            </div>
+          </div>
+        )
       )}
 
       {/* Compact Integrated Control Toolbar Bar */}
       <div className="flex flex-wrap items-center justify-between gap-1.5 pb-2 border-b border-slate-100 dark:border-[#2a2e39] text-xs shrink-0">
         {/* Left: View Switcher (Daily vs Intraday) & Period (5D, 20D, 60D) */}
         <div className="flex items-center gap-1.5 flex-wrap">
+          {/* 1. 일간 수급 버튼 + 5D/20D/60D 기간 선택 (부모 박스에 단일 종속) */}
           <div className="flex items-center gap-0.5 bg-slate-100 dark:bg-[#1e222d] p-0.5 rounded-lg border border-slate-200/60 dark:border-[#2a2e39]">
             <button
               type="button"
               onClick={() => setActiveTab('daily')}
-              className={`px-2 py-0.5 rounded text-[11px] font-bold transition flex items-center gap-1 cursor-pointer ${
-                activeTab === 'daily' ? 'bg-blue-600 text-white shadow-xs font-black' : 'text-slate-500 dark:text-gray-400 hover:text-slate-900'
+              className={`px-1.5 py-0.5 rounded text-[11px] font-bold transition flex items-center gap-1 cursor-pointer ${
+                activeTab === 'daily' ? 'text-slate-800 dark:text-slate-200 font-extrabold' : 'text-slate-500 dark:text-gray-400 hover:text-slate-800'
               }`}
             >
               <Calendar className="w-3 h-3 shrink-0" />
-              일간 수급
+              <span>일간 수급</span>
             </button>
+
+            {(['5d', '20d', '60d'] as TrendPeriod[]).map((p) => (
+              <button
+                type="button"
+                key={p}
+                onClick={() => {
+                  handlePeriodChange(p);
+                  if (activeTab !== 'daily') setActiveTab('daily');
+                }}
+                className={`px-1.5 py-0.5 rounded text-[10px] font-bold transition cursor-pointer ${
+                  activeTab === 'daily' && period === p
+                    ? 'bg-white dark:bg-[#2a2e39] text-slate-900 dark:text-white shadow-xs font-black'
+                    : 'text-slate-500 dark:text-gray-400 hover:text-slate-900'
+                }`}
+              >
+                {p.toUpperCase()}
+              </button>
+            ))}
+          </div>
+
+          {/* 2. 3분봉 독립 버튼 (일간수급과 동일한 활성 테마 색상 적용) */}
+          <div className="flex items-center gap-0.5 bg-slate-100 dark:bg-[#1e222d] p-0.5 rounded-lg border border-slate-200/60 dark:border-[#2a2e39]">
             <button
               type="button"
-              onClick={() => setActiveTab('intraday')}
-              className={`px-2 py-0.5 rounded text-[11px] font-bold transition flex items-center gap-1 cursor-pointer ${
-                activeTab === 'intraday' ? 'bg-purple-600 text-white shadow-xs font-black' : 'text-slate-500 dark:text-gray-400 hover:text-slate-900'
+              onClick={() => setActiveTab('3m')}
+              className={`px-2 py-0.5 rounded text-[11px] font-bold transition flex items-center cursor-pointer ${
+                activeTab === '3m'
+                  ? 'bg-white dark:bg-[#2a2e39] text-slate-900 dark:text-white shadow-xs font-black'
+                  : 'text-slate-500 dark:text-gray-400 hover:text-slate-900'
               }`}
             >
-              <Clock className="w-3 h-3 shrink-0" />
-              장중 흐름
+              <span>3분</span>
             </button>
           </div>
 
-          {activeTab === 'daily' && (
-            <div className="flex items-center gap-0.5 bg-slate-100 dark:bg-[#1e222d] p-0.5 rounded-lg border border-slate-200/60 dark:border-[#2a2e39]">
-              {(['5d', '20d', '60d'] as TrendPeriod[]).map((p) => (
-                <button
-                  type="button"
-                  key={p}
-                  onClick={() => handlePeriodChange(p)}
-                  className={`px-1.5 py-0.5 rounded text-[10px] font-bold transition cursor-pointer ${
-                    period === p ? 'bg-white dark:bg-[#2a2e39] text-slate-900 dark:text-white shadow-xs' : 'text-slate-500 hover:text-slate-900'
-                  }`}
-                >
-                  {p.toUpperCase()}
-                </button>
-              ))}
-            </div>
+          {/* 3. 새로고침 버튼 (3분봉 우측 옆으로 배치) */}
+          {activeTab === 'daily' ? (
+            <button
+              type="button"
+              onClick={() => refetch()}
+              disabled={isFetching}
+              className="p-1 text-slate-400 hover:text-slate-900 dark:hover:text-white transition cursor-pointer"
+              title="일간 수급 새로고침"
+            >
+              <RefreshCw className={`w-3 h-3 ${isFetching ? 'animate-spin' : ''}`} />
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => intraday3mQuery.refetch()}
+              disabled={intraday3mQuery.isFetching}
+              className="p-1 text-slate-400 hover:text-slate-900 dark:hover:text-white transition cursor-pointer"
+              title="3분봉 새로고침"
+            >
+              <RefreshCw className={`w-3 h-3 ${intraday3mQuery.isFetching ? 'animate-spin' : ''}`} />
+            </button>
           )}
-
-          <button
-            type="button"
-            onClick={() => refetch()}
-            disabled={isFetching}
-            className="p-1 text-slate-400 hover:text-slate-900 dark:hover:text-white transition cursor-pointer"
-            title="새로고침"
-          >
-            <RefreshCw className={`w-3 h-3 ${isFetching ? 'animate-spin' : ''}`} />
-          </button>
         </div>
+
+        {/* Right: Metric Toggles */}
+        {activeTab === '3m' && (
+          <div className="flex items-center gap-1 flex-wrap text-[10px]">
+            <button
+              type="button"
+              onClick={() => setShow3mMA5(!show3mMA5)}
+              className={`px-1.5 py-0.5 rounded font-bold border transition cursor-pointer ${
+                show3mMA5 ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/30' : 'bg-slate-50 text-slate-400 border-slate-200 opacity-50'
+              }`}
+            >
+              5선
+            </button>
+            <button
+              type="button"
+              onClick={() => setShow3mMA20(!show3mMA20)}
+              className={`px-1.5 py-0.5 rounded font-bold border transition cursor-pointer ${
+                show3mMA20 ? 'bg-yellow-500/10 text-yellow-600 dark:text-yellow-400 border-yellow-500/30' : 'bg-slate-50 text-slate-400 border-slate-200 opacity-50'
+              }`}
+            >
+              20선(황금선)
+            </button>
+            <button
+              type="button"
+              onClick={() => setShow3mMA60(!show3mMA60)}
+              className={`px-1.5 py-0.5 rounded font-bold border transition cursor-pointer ${
+                show3mMA60 ? 'bg-purple-500/10 text-purple-600 dark:text-purple-400 border-purple-500/30' : 'bg-slate-50 text-slate-400 border-slate-200 opacity-50'
+              }`}
+            >
+              60선
+            </button>
+            <button
+              type="button"
+              onClick={() => setShow3mPivot(!show3mPivot)}
+              className={`px-1.5 py-0.5 rounded font-bold border transition cursor-pointer ${
+                show3mPivot ? 'bg-red-500/10 text-red-600 dark:text-red-400 border-red-500/30' : 'bg-slate-50 text-slate-400 border-slate-200 opacity-50'
+              }`}
+            >
+              피봇선(P/R1/S1)
+            </button>
+            <button
+              type="button"
+              onClick={() => setShow3mFibo(!show3mFibo)}
+              className={`px-1.5 py-0.5 rounded font-bold border transition cursor-pointer ${
+                show3mFibo ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/30' : 'bg-slate-50 text-slate-400 border-slate-200 opacity-50'
+              }`}
+            >
+              피보나치(38.2%/50%)
+            </button>
+            <button
+              type="button"
+              onClick={() => setShow3mVolumeProfile(!show3mVolumeProfile)}
+              className={`px-1.5 py-0.5 rounded font-bold border transition cursor-pointer ${
+                show3mVolumeProfile ? 'bg-rose-500/10 text-rose-600 dark:text-rose-400 border-rose-500/30' : 'bg-slate-50 text-slate-400 border-slate-200 opacity-50'
+              }`}
+              title="가격대별 누적 거래량(매물대) 표시"
+            >
+              매물대
+            </button>
+          </div>
+        )}
 
         {/* Right: Metric Toggles */}
         {activeTab === 'daily' && (
@@ -909,6 +1080,16 @@ function calculateUltraTightKrxPriceAxis(minRaw: number, maxRaw: number, targetT
             >
               이격도
             </button>
+            <button
+              type="button"
+              onClick={() => setShowVolumeProfile(!showVolumeProfile)}
+              className={`px-1.5 py-0.5 rounded font-bold border transition cursor-pointer ${
+                showVolumeProfile ? 'bg-rose-500/10 text-rose-600 dark:text-rose-400 border-rose-500/30 font-black ring-1 ring-rose-500/50' : 'bg-slate-50 text-slate-400 border-slate-200 opacity-50'
+              }`}
+              title="가격대별 누적 거래량(매물대) 표시"
+            >
+              매물대
+            </button>
 
             <span className="text-slate-300 dark:text-slate-700">|</span>
 
@@ -940,19 +1121,6 @@ function calculateUltraTightKrxPriceAxis(minRaw: number, maxRaw: number, targetT
               프로그램
             </button>
           </div>
-        )}
-
-        {/* Intraday Close Button if onClose is provided */}
-        {activeTab === 'intraday' && onClose && (
-          <button
-            type="button"
-            onClick={onClose}
-            className="px-2.5 py-1 rounded-lg bg-slate-200/80 hover:bg-slate-300 dark:bg-[#1e222d] dark:hover:bg-[#2a2e39] text-slate-700 dark:text-slate-200 font-bold text-xs transition flex items-center gap-1 cursor-pointer shadow-2xs ml-auto"
-            title="차트 닫기"
-          >
-            <span>차트 닫기</span>
-            <X className="w-3.5 h-3.5" />
-          </button>
         )}
       </div>
 
@@ -1106,6 +1274,36 @@ function calculateUltraTightKrxPriceAxis(minRaw: number, maxRaw: number, targetT
                   </ComposedChart>
                 </ResponsiveContainer>
 
+                {/* 매물대(가격대별 누적 거래량) 반투명 오버레이 - 새 서브플롯 없이 기존 캔들 차트 안에 겹쳐 그림 */}
+                {showVolumeProfile && volumeProfileBins.length > 0 && (
+                  <div className="absolute left-[68px] right-[15px] top-0 bottom-0 pointer-events-none">
+                    <svg width="100%" height="100%" style={{ overflow: 'visible' }}>
+                      {volumeProfileBins.map((bin, i) => {
+                        const topPadding = PRICE_CHART_CONFIG.margin.top;
+                        const plotHeight = PRICE_CHART_CONFIG.plotHeight;
+                        const yHigh = topPadding + (1 - (bin.priceHigh - minPrice) / (maxPrice - minPrice)) * plotHeight;
+                        const yLow = topPadding + (1 - (bin.priceLow - minPrice) / (maxPrice - minPrice)) * plotHeight;
+                        const barHeight = Math.max(1, yLow - yHigh - 1);
+                        const maxBarWidthPct = 32; // 플롯 폭의 최대 32%까지만 침범
+                        const widthPct = bin.ratio * maxBarWidthPct;
+                        if (widthPct <= 0) return null;
+                        return (
+                          <rect
+                            key={`vp-bin-${i}`}
+                            x={`${100 - widthPct}%`}
+                            y={yHigh}
+                            width={`${widthPct}%`}
+                            height={barHeight}
+                            fill={bin.isPoc ? '#f43f5e' : '#64748b'}
+                            opacity={bin.isPoc ? 0.55 : 0.25}
+                            rx={1}
+                          />
+                        );
+                      })}
+                    </svg>
+                  </div>
+                )}
+
                 {/* Real-time Horizontal Dashed Crosshair Line & Dynamic Y-Axis Price Badge Overlay (Snaps to OHLC) */}
                 {hoverPriceInfo && (
                   <div className="absolute inset-0 pointer-events-none z-30">
@@ -1173,113 +1371,256 @@ function calculateUltraTightKrxPriceAxis(minRaw: number, maxRaw: number, targetT
             </div>
           </div>
         ) : (
-          /* TAB 2: [장중 프로그램 흐름 (Intraday)] - Split Subplots */
-          <div className="flex-1 flex flex-col gap-4">
-            {/* Top Subplot Panel 1: Intraday Stock Price Line (09:00 ~ 15:30) */}
+          /* TAB 2: [3분봉 캔들스틱 + 피봇 & 피보나치 가이드라인] */
+          <div className="flex-1 flex flex-col gap-3">
+            {/* Top Subplot: 3분봉 캔들스틱 + 이동평균선 + 피봇/피보나치 오버레이 */}
             <div className="min-h-[310px] h-[310px] bg-slate-50/50 dark:bg-[#161a25]/60 rounded-xl p-3 border border-slate-200/60 dark:border-[#2a2e39] flex flex-col justify-between shrink-0">
               <div className="flex items-center justify-between text-xs font-bold text-slate-700 dark:text-slate-300 pb-1">
-                <span>장중 실시간 주가 추이 (09:00 ~ 15:30)</span>
+                <div className="flex items-center gap-2">
+                  <span>최근 3분봉 롤링 차트</span>
+                  {intraday3mQuery.data?.statusNotice && (
+                    <span className="text-[10px] font-normal px-2 py-0.5 rounded-md bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20">
+                      {intraday3mQuery.data.statusNotice}
+                    </span>
+                  )}
+                </div>
                 <span className="text-[10px] text-slate-400 font-mono">단위: 원</span>
               </div>
               <div
                 className="w-full h-[220px] min-h-[220px] shrink-0 relative"
                 onMouseMove={(e) => {
-                  const { minPrice: iMin, maxPrice: iMax } = intradayPriceAxis;
+                  const { minPrice: iMin, maxPrice: iMax } = intraday3mPriceAxis;
                   if (iMin <= 0 || iMax <= iMin) return;
                   const rect = e.currentTarget.getBoundingClientRect();
                   const offsetY = e.clientY - rect.top;
                   const topPadding = 10;
-                  const plotHeight = 210;
+                  const plotHeight = 186;
                   if (offsetY >= topPadding && offsetY <= topPadding + plotHeight) {
                     const clampedY = Math.max(topPadding, Math.min(topPadding + plotHeight, offsetY));
                     const priceRatio = 1 - (clampedY - topPadding) / plotHeight;
                     const calcPrice = iMin + priceRatio * (iMax - iMin);
                     const tickSize = getKrxTickSize(calcPrice);
                     const roundedPrice = Math.round(calcPrice / tickSize) * tickSize;
-                    setHoverIntradayPriceInfo({ y: clampedY, price: roundedPrice });
+                    setHover3mPriceInfo({ y: clampedY, price: roundedPrice });
                   } else {
-                    setHoverIntradayPriceInfo(null);
+                    setHover3mPriceInfo(null);
                   }
                 }}
-                onMouseLeave={() => setHoverIntradayPriceInfo(null)}
+                onMouseLeave={() => setHover3mPriceInfo(null)}
               >
-                <ResponsiveContainer width="100%" height={220}>
-                  <ComposedChart data={intradayTrend} margin={{ top: 10, right: 15, left: -10, bottom: 0 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke={gridColor} opacity={0.7} />
-                    <XAxis dataKey="time" stroke={axisColor} tick={{ fontSize: 10 }} />
-                    <YAxis stroke={axisColor} tickFormatter={formatYPrice} tick={{ fontSize: 10 }} width={72} domain={intradayPriceAxis.priceDomain} ticks={intradayPriceAxis.priceTicks} />
-                    <Tooltip />
-                    <Area type="monotone" dataKey="price" name="장중 주가" stroke="#3b82f6" fill="#3b82f6" fillOpacity={0.15} strokeWidth={2} />
-                  </ComposedChart>
-                </ResponsiveContainer>
+                {intraday3mQuery.isLoading ? (
+                  <div className="w-full h-full flex items-center justify-center text-xs text-slate-400">
+                    <RefreshCw className="w-4 h-4 animate-spin mr-2" />
+                    3분봉 캔들 및 피봇 지표를 불러오는 중...
+                  </div>
+                ) : (
+                  <ResponsiveContainer width="100%" height={220}>
+                    <ComposedChart data={candles3m} margin={{ top: 10, right: 75, left: -10, bottom: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke={gridColor} opacity={0.7} />
+                      <XAxis dataKey="time" height={24} stroke={axisColor} tick={{ fontSize: 9 }} interval="preserveStartEnd" />
+                      <YAxis stroke={axisColor} tickFormatter={formatYPrice} tick={{ fontSize: 10 }} width={72} domain={intraday3mPriceAxis.priceDomain} allowDataOverflow={true} />
+                      <Tooltip content={<CustomCandleTooltip />} />
 
-                {/* Real-time Horizontal Dashed Crosshair Line & Dynamic Y-Axis Price Badge Overlay */}
-                {hoverIntradayPriceInfo && (
+                      {/* 피봇 수평선 (실선/점선) */}
+                      {show3mPivot && levels3m && (
+                        <>
+                          {/* 주가가 R1에 근접/돌파 시 R2 신고가선 자동 표시 */}
+                          {levels3m.pivot.r2 > 0 && intraday3mPriceAxis.showR2 && (
+                            <ReferenceLine y={levels3m.pivot.r2} stroke="#f97316" strokeWidth={1.5} label={{ value: 'R2 신고가', fill: '#f97316', fontSize: 9, position: 'right' }} />
+                          )}
+                          {/* R1: 돌파 시 점선 '지지전환(R1-1)', 미돌파 시 실선 'R1 익절' */}
+                          <ReferenceLine
+                            y={levels3m.pivot.r1}
+                            stroke="#ef4444"
+                            strokeWidth={1.5}
+                            strokeDasharray={isR1Flipped ? '4 2' : undefined}
+                            label={{
+                              value: isR1Flipped ? '지지전환(R1-1)' : 'R1 익절',
+                              fill: '#ef4444',
+                              fontSize: 9,
+                              position: 'right',
+                              fontWeight: isR1Flipped ? 'bold' : 'normal',
+                            }}
+                          />
+                          <ReferenceLine y={levels3m.pivot.s1} stroke="#3b82f6" strokeWidth={1.5} label={{ value: 'S1 지지', fill: '#3b82f6', fontSize: 9, position: 'right' }} />
+                        </>
+                      )}
+
+                      {/* 단기 지지선 (스윙 로우: 직전 국소 최저점) */}
+                      {activeSwingLow && (
+                        <ReferenceLine
+                          y={activeSwingLow.price}
+                          stroke="#06b6d4"
+                          strokeWidth={1.5}
+                          strokeDasharray="4 2"
+                          label={{
+                            value: '단기 지지선',
+                            fill: '#06b6d4',
+                            fontSize: 9,
+                            position: 'right',
+                            fontWeight: 'bold',
+                          }}
+                        />
+                      )}
+
+                      {/* 피보나치 수평선 (실선: 우측 라벨 정렬) */}
+                      {show3mFibo && levels3m && (
+                        <>
+                          <ReferenceLine y={levels3m.fibonacci.fibo382} stroke="#10b981" strokeWidth={1.5} label={{ value: '38.2% 매수', fill: '#10b981', fontSize: 9, position: 'right' }} />
+                          <ReferenceLine y={levels3m.fibonacci.fibo500} stroke="#a855f7" strokeWidth={1.5} label={{ value: '50% 손절', fill: '#a855f7', fontSize: 9, position: 'right' }} />
+                        </>
+                      )}
+
+                      {/* 3분봉 캔들스틱 */}
+                      <Bar dataKey="closePrice" shape={<CandlestickBar minPrice={intraday3mPriceAxis.minPrice} maxPrice={intraday3mPriceAxis.maxPrice} topPadding={10} plotHeight={186} />} isAnimationActive={false} />
+
+                      {/* 분봉 이동평균선 3종 (점선: 5선 1굵기, 20선 2굵기, 60선 1굵기) */}
+                      {show3mMA5 && <Line type="monotone" dataKey="ma5" stroke="#f97316" strokeDasharray="3 3" strokeWidth={1} dot={false} isAnimationActive={false} name="5선" />}
+                      {show3mMA20 && <Line type="monotone" dataKey="ma20" stroke="#eab308" strokeDasharray="3 3" strokeWidth={2} dot={false} isAnimationActive={false} name="20선(황금선)" />}
+                      {show3mMA60 && <Line type="monotone" dataKey="ma60" stroke="#a855f7" strokeDasharray="3 3" strokeWidth={1} dot={false} isAnimationActive={false} name="60선" />}
+                    </ComposedChart>
+                  </ResponsiveContainer>
+                )}
+
+                {/* 3분봉 매물대(가격대별 누적 거래량) 반투명 오버레이 - 일간 차트와 동일 패턴 */}
+                {show3mVolumeProfile && volumeProfile3mBins.length > 0 && (
+                  <div className="absolute left-[72px] right-[75px] top-0 bottom-0 pointer-events-none">
+                    <svg width="100%" height="100%" style={{ overflow: 'visible' }}>
+                      {volumeProfile3mBins.map((bin, i) => {
+                        const { minPrice: iMin, maxPrice: iMax } = intraday3mPriceAxis;
+                        const topPadding = 10;
+                        const plotHeight = 186;
+                        const yHigh = topPadding + (1 - (bin.priceHigh - iMin) / (iMax - iMin)) * plotHeight;
+                        const yLow = topPadding + (1 - (bin.priceLow - iMin) / (iMax - iMin)) * plotHeight;
+                        const barHeight = Math.max(1, yLow - yHigh - 1);
+                        const maxBarWidthPct = 32;
+                        const widthPct = bin.ratio * maxBarWidthPct;
+                        if (widthPct <= 0) return null;
+                        return (
+                          <rect
+                            key={`vp3m-bin-${i}`}
+                            x={`${100 - widthPct}%`}
+                            y={yHigh}
+                            width={`${widthPct}%`}
+                            height={barHeight}
+                            fill={bin.isPoc ? '#f43f5e' : '#64748b'}
+                            opacity={bin.isPoc ? 0.55 : 0.25}
+                            rx={1}
+                          />
+                        );
+                      })}
+                    </svg>
+                  </div>
+                )}
+
+                {/* Hover Dashed Crosshair */}
+                {hover3mPriceInfo && (
                   <div className="absolute inset-0 pointer-events-none z-30">
                     <div
-                      className="absolute left-[72px] right-[15px] border-b border-dashed border-[#94a3b8]"
-                      style={{ top: `${hoverIntradayPriceInfo.y}px` }}
+                      className="absolute left-[72px] right-[75px] border-b border-dashed border-[#94a3b8]"
+                      style={{ top: `${hover3mPriceInfo.y}px` }}
                     />
                     <div
-                      className="absolute left-1 bg-blue-600 dark:bg-blue-500 text-white font-mono text-[10px] font-bold px-1.5 py-0.5 rounded shadow-lg z-40 border border-white/20"
-                      style={{ top: `${Math.min(Math.max(hoverIntradayPriceInfo.y - 9, 2), 200)}px` }}
+                      className="absolute left-1 bg-amber-600 dark:bg-amber-500 text-white font-mono text-[10px] font-bold px-1.5 py-0.5 rounded shadow-lg z-40 border border-white/20"
+                      style={{ top: `${Math.min(Math.max(hover3mPriceInfo.y - 9, 2), 200)}px` }}
                     >
-                      {hoverIntradayPriceInfo.price.toLocaleString()}원
+                      {hover3mPriceInfo.price.toLocaleString()}원
                     </div>
                   </div>
                 )}
               </div>
 
-              {/* Subplot Intraday 1 Legend Bar */}
-              <div className="flex items-center justify-center gap-3 pt-2 border-t border-slate-200/60 dark:border-[#2a2e39]/60 text-[11px] font-semibold text-slate-600 dark:text-slate-300 shrink-0">
-                <div className="flex items-center gap-1.5">
-                  <span className="w-3.5 h-2 bg-[#3b82f6]/30 border border-[#3b82f6] inline-block rounded-xs" />
-                  <span>장중 주가 추이</span>
+              {/* 3분봉 범례 바 (점선 및 굵기 1:1 완벽 시각화) */}
+              <div className="flex items-center justify-center gap-3 pt-2 border-t border-slate-200/60 dark:border-[#2a2e39]/60 text-[10px] font-semibold text-slate-600 dark:text-slate-300 shrink-0 flex-wrap">
+                <div className="flex items-center gap-1">
+                  <span className="w-2 h-2 bg-red-500 inline-block rounded-xs" />
+                  <span>양봉</span>
                 </div>
+                <div className="flex items-center gap-1">
+                  <span className="w-2 h-2 bg-blue-500 inline-block rounded-xs" />
+                  <span>음봉</span>
+                </div>
+                {/* R1 상태 범례 */}
+                {show3mPivot && levels3m && (
+                  <div className="flex items-center gap-1">
+                    {isR1Flipped ? (
+                      <svg width="18" height="6" className="inline-block shrink-0"><line x1="0" y1="3" x2="18" y2="3" stroke="#ef4444" strokeWidth="1.5" strokeDasharray="3 2" /></svg>
+                    ) : (
+                      <span className="w-2.5 h-1.5 bg-red-500 inline-block rounded-xs" />
+                    )}
+                    <span className={isR1Flipped ? 'text-red-600 dark:text-red-400 font-bold' : ''}>
+                      {isR1Flipped ? '지지전환(R1-1)' : 'R1 익절'}
+                    </span>
+                  </div>
+                )}
+                {/* 단기 지지선 (스윙 로우) 범례 */}
+                {activeSwingLow && (
+                  <div className="flex items-center gap-1">
+                    <svg width="18" height="6" className="inline-block shrink-0">
+                      <line x1="0" y1="3" x2="18" y2="3" stroke="#06b6d4" strokeWidth="1.5" strokeDasharray="4 2" />
+                    </svg>
+                    <span className="text-cyan-600 dark:text-cyan-400 font-bold">
+                      단기 지지선 ({activeSwingLow.price.toLocaleString()}원)
+                    </span>
+                  </div>
+                )}
+                {show3mMA5 && (
+                  <div className="flex items-center gap-1">
+                    <svg width="18" height="6" className="inline-block shrink-0"><line x1="0" y1="3" x2="18" y2="3" stroke="#f97316" strokeWidth="1" strokeDasharray="3 2" /></svg>
+                    <span>5선</span>
+                  </div>
+                )}
+                {show3mMA20 && (
+                  <div className="flex items-center gap-1">
+                    <svg width="18" height="6" className="inline-block shrink-0"><line x1="0" y1="3" x2="18" y2="3" stroke="#eab308" strokeWidth="2" strokeDasharray="3 2" /></svg>
+                    <span className="font-bold text-yellow-600 dark:text-yellow-400">20선(황금선)</span>
+                  </div>
+                )}
+                {show3mMA60 && (
+                  <div className="flex items-center gap-1">
+                    <svg width="18" height="6" className="inline-block shrink-0"><line x1="0" y1="3" x2="18" y2="3" stroke="#a855f7" strokeWidth="1" strokeDasharray="3 2" /></svg>
+                    <span>60선</span>
+                  </div>
+                )}
               </div>
             </div>
 
-            {/* Bottom Subplot Panel 2: Intraday Program Flow (Total, Non-Arb, Arb) */}
-            <div className="min-h-[310px] h-[310px] bg-slate-50/50 dark:bg-[#161a25]/60 rounded-xl p-3 border border-slate-200/60 dark:border-[#2a2e39] flex flex-col justify-between shrink-0">
-              <div className="flex items-center justify-between text-xs font-bold text-slate-700 dark:text-slate-300 pb-1">
-                <span>장중 프로그램 수급 흐름 (분 단위)</span>
-                <span className="text-[10px] text-slate-400 font-mono">0점 기준 (단위: 억원)</span>
+            {/* Bottom Subplot: 3분봉 거래량 바 차트 (상단 차트와 1:1 수직 정렬 동기화) */}
+            <div className="min-h-[130px] h-[130px] bg-slate-50/50 dark:bg-[#161a25]/60 rounded-xl p-2 border border-slate-200/60 dark:border-[#2a2e39] flex flex-col justify-between shrink-0">
+              <div className="flex items-center justify-between text-[11px] font-bold text-slate-700 dark:text-slate-300 pb-0.5">
+                <span>3분봉 거래량</span>
+                <div className="flex items-center gap-2">
+                  <span className="flex items-center gap-1 text-[9px] font-semibold text-red-500">
+                    <span className="w-2 h-2 rounded-xs bg-red-500 inline-block" />매수(양봉)
+                  </span>
+                  <span className="flex items-center gap-1 text-[9px] font-semibold text-blue-500">
+                    <span className="w-2 h-2 rounded-xs bg-blue-500 inline-block" />매도(음봉)
+                  </span>
+                  <span className="text-[9px] text-slate-400 font-mono">단위: 주</span>
+                </div>
               </div>
-              <div className="w-full h-[220px] min-h-[220px] shrink-0 relative">
-                <ResponsiveContainer width="100%" height={220}>
-                  <ComposedChart data={intradayTrend} margin={{ top: 10, right: 15, left: -10, bottom: 0 }}>
+              <div className="w-full h-[90px] min-h-[90px] shrink-0 relative">
+                <ResponsiveContainer width="100%" height={90}>
+                  <ComposedChart data={candles3m} margin={{ top: 5, right: 75, left: -10, bottom: 0 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke={gridColor} opacity={0.7} />
-                    <XAxis dataKey="time" stroke={axisColor} tick={{ fontSize: 10 }} />
-                    <YAxis stroke={axisColor} tickFormatter={formatYAmt} tick={{ fontSize: 10 }} width={72} domain={['auto', 'auto']} />
-                    <Tooltip />
-                    <ReferenceLine y={0} stroke="#64748b" strokeWidth={1.5} strokeDasharray="4 4" />
-                    {showIntradayTotal && <Line type="monotone" dataKey="totalNetBuyAmt" name="전체 프로그램" stroke="#a855f7" strokeWidth={2.5} dot={{ r: 2 }} />}
-                    {showIntradayNonArb && <Line type="monotone" dataKey="nonArbitrageAmt" name="비차익 수급" stroke="#ef4444" strokeWidth={2} dot={{ r: 2 }} />}
-                    {showIntradayArb && <Line type="monotone" dataKey="arbitrageAmt" name="차익 수급" stroke="#3b82f6" strokeWidth={2} dot={{ r: 2 }} />}
+                    <XAxis dataKey="time" stroke={axisColor} tick={{ fontSize: 9 }} interval="preserveStartEnd" />
+                    <YAxis stroke={axisColor} tickFormatter={(v) => (v >= 10000 ? `${Math.round(v / 10000)}만` : v.toLocaleString())} tick={{ fontSize: 9 }} width={72} domain={[0, 'auto']} />
+                    <Tooltip
+                      formatter={(value: any, _name: any, item: any) => {
+                        const isUp = item?.payload?.closePrice >= item?.payload?.openPrice;
+                        return [`${Number(value).toLocaleString()}주`, isUp ? '거래량 (매수 우위/양봉)' : '거래량 (매도 우위/음봉)'];
+                      }}
+                    />
+                    <Bar dataKey="volume" name="거래량" radius={[2, 2, 0, 0]} isAnimationActive={false}>
+                      {candles3m.map((entry: any, idx: number) => (
+                        <Cell
+                          key={`vol-cell-${idx}`}
+                          fill={entry.closePrice >= entry.openPrice ? '#ef4444' : '#3b82f6'}
+                        />
+                      ))}
+                    </Bar>
                   </ComposedChart>
                 </ResponsiveContainer>
-              </div>
-
-              {/* Subplot Intraday 2 Legend Bar */}
-              <div className="flex items-center justify-center gap-3 pt-2 border-t border-slate-200/60 dark:border-[#2a2e39]/60 text-[11px] font-semibold text-slate-600 dark:text-slate-300 shrink-0">
-                {showIntradayTotal && (
-                  <div className="flex items-center gap-1.5">
-                    <span className="w-3.5 h-0.5 bg-[#a855f7] inline-block rounded-full" />
-                    <span>전체 프로그램</span>
-                  </div>
-                )}
-                {showIntradayNonArb && (
-                  <div className="flex items-center gap-1.5">
-                    <span className="w-3.5 h-0.5 bg-[#ef4444] inline-block rounded-full" />
-                    <span>비차익</span>
-                  </div>
-                )}
-                {showIntradayArb && (
-                  <div className="flex items-center gap-1.5">
-                    <span className="w-3.5 h-0.5 bg-[#3b82f6] inline-block rounded-full" />
-                    <span>차익</span>
-                  </div>
-                )}
               </div>
             </div>
           </div>

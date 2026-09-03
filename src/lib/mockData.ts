@@ -4,6 +4,7 @@
  */
 
 import { MarketType } from './types';
+import { TOP_300_STOCKS } from './stockUniverse300';
 
 export function getSettledAsOfDateLabel(lastTradeDate?: string): string {
   if (lastTradeDate && lastTradeDate.length === 8) {
@@ -45,6 +46,61 @@ export function getSettledAsOfDateLabel(lastTradeDate?: string): string {
   return `(${month}/${day} 기준)`;
 }
 
+/**
+ * KRX 가집계 공식 공표 차수 단일 판정 공통 함수 (수칙 1-6 단일화)
+ * 규정: 09:30 1차(외인), 10:00 1차(종합), 11:30 2차, 13:20 3차, 14:30 4차, 15:35 장마감
+ */
+export function getKrxEstimateSlotInfo(customKstDate?: Date) {
+  const now = customKstDate || new Date();
+  const utc = now.getTime() + (customKstDate ? 0 : now.getTimezoneOffset() * 60000);
+  const kst = customKstDate || new Date(utc + 9 * 60 * 60000);
+  const hour = kst.getHours();
+  const minute = kst.getMinutes();
+  const timeNum = hour * 100 + minute;
+  const dayOfWeek = kst.getDay();
+  const timeStr = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+
+  const isMarketOpen = dayOfWeek >= 1 && dayOfWeek <= 5 && timeNum >= 900 && timeNum < 1530;
+  const isWeekdayPostMarket = dayOfWeek >= 1 && dayOfWeek <= 5 && timeNum >= 1530;
+
+  const krxSchedule = [
+    { step: '1차(외인)', time: '09:30', timeNum: 930 },
+    { step: '1차(종합)', time: '10:00', timeNum: 1000 },
+    { step: '2차', time: '11:30', timeNum: 1130 },
+    { step: '3차', time: '13:20', timeNum: 1320 },
+    { step: '4차', time: '14:30', timeNum: 1430 },
+    { step: '장마감', time: '15:35', timeNum: 1535 },
+  ];
+
+  // 현재 시각 기준 이미 경과한 최신 공표 차수
+  const passedSlot = [...krxSchedule].reverse().find((s) => timeNum >= s.timeNum);
+  const nextSlot = krxSchedule.find((s) => timeNum < s.timeNum);
+
+  const slotTime = passedSlot ? passedSlot.time : (timeNum < 930 ? '09:00' : '09:30');
+  const slotStep = passedSlot ? passedSlot.step : '장 개장 전';
+  const nextTime = nextSlot ? nextSlot.time : '내일 09:30';
+
+  const formattedEstimateLabel = isMarketOpen
+    ? `당일 잠정 (${slotTime} 추정)`
+    : (isWeekdayPostMarket ? `당일 최종잠정 (14:30 기준)` : getSettledAsOfDateLabel());
+
+  return {
+    schedule: krxSchedule,
+    currentSlot: {
+      step: slotStep,
+      time: slotTime,
+      timeNum: passedSlot ? passedSlot.timeNum : 900,
+      label: `${slotTime} 기준`,
+    },
+    nextSlotTime: nextTime,
+    isMarketOpen,
+    isWeekdayPostMarket,
+    timeStr,
+    timeNum,
+    formattedEstimateLabel,
+  };
+}
+
 export interface StockInfo {
   symbol: string;
   name: string;
@@ -80,6 +136,12 @@ export function getStockName(symbol: string, fallbackName?: string): string {
 
   const top50 = TOP_50_STOCKS.find((s) => s.symbol === symbol);
   if (top50) return top50.name;
+
+  // TOP_300_STOCKS(코스피+코스닥 시총 상위 300종목 풀)에도 있는지 마지막으로 확인 - 219종목대 등
+  // TOP_50/PRESET엔 없지만 이월(carriedOver) 경로로 유입되는 종목들의 이름이 숫자 코드 그대로
+  // 저장/노출되던 버그(319660 피에스케이, 214370 케어젠 등)를 근본적으로 막기 위함.
+  const top300 = TOP_300_STOCKS.find((s) => s.symbol === symbol);
+  if (top300) return top300.name;
 
   return symbol;
 }
@@ -228,13 +290,75 @@ export function resolveStockPriceAndChange(
 }
 
 /**
+ * 액면분할/무상감자 등으로 전일 대비 종가가 비정상적으로 급변(60% 미만 급락 또는 167% 초과 급등)한
+ * 지점을 감지해, 가장 최근에 발생한 "분할 경계" 인덱스를 반환한다.
+ * 이 인덱스 이전 데이터는 옛 가격 스케일이 섞여있어 이동평균/이격도/전저점 계산에 쓰면 왜곡되므로,
+ * 호출부에서 반드시 이 인덱스 이후 데이터만 사용해야 한다. 분할 이력이 없으면 0(전체 배열 사용).
+ * (과거 가격을 임의 배율로 보정하는 가짜 보간은 하지 않고, 오염 구간 자체를 제외하는 방식)
+ */
+export function findSplitSafeStartIndex(closes: (number | null | undefined)[]): number {
+  if (!closes || closes.length < 2) return 0;
+  for (let i = closes.length - 1; i >= 1; i--) {
+    const prev = closes[i - 1];
+    const cur = closes[i];
+    if (!prev || !cur || prev <= 0 || cur <= 0) continue;
+    const ratio = cur / prev;
+    if (ratio > 1.67 || ratio < 0.6) {
+      return i;
+    }
+  }
+  return 0;
+}
+
+/**
+ * 계산된 가격(이동평균 기반 과열가/침체가 등)을 실제 KRX 호가단위에 맞춰 반올림한다.
+ * (예: 2,000~5,000원 구간은 5원 단위, 5,000~20,000원 구간은 10원 단위 등 - 2023.1 개정 기준)
+ * 실제로 호가에 존재하지 않는 가격(예: 4,456원)이 화면에 뜨는 것을 방지한다.
+ */
+export function roundToKrxTick(price: number): number {
+  if (!price || price <= 0) return price;
+  let tick: number;
+  if (price < 2000) tick = 1;
+  else if (price < 5000) tick = 5;
+  else if (price < 20000) tick = 10;
+  else if (price < 50000) tick = 50;
+  else if (price < 200000) tick = 100;
+  else if (price < 500000) tick = 500;
+  else tick = 1000;
+  return Math.round(price / tick) * tick;
+}
+
+/**
+ * 당일 거래량이 최근 20거래일(당일 제외) 평균 거래량 대비 몇 %인지 산출한다.
+ * (단기과열 상태에서 세력매집/설거지주의를 가르는 보조 지표 - 거래량 급증은 통상 매물 출회/분산 경고 신호)
+ * 데이터가 6일 미만이면 의미있는 평균을 낼 수 없으므로 null 반환.
+ */
+export function computeRecentVolumeRatio(volumes: (number | null | undefined)[]): number | null {
+  const valid = (volumes || []).map((v) => v || 0);
+  if (valid.length < 6) return null;
+
+  const today = valid[valid.length - 1];
+  if (!today || today <= 0) return null;
+
+  const priorWindow = valid.slice(Math.max(0, valid.length - 21), valid.length - 1).filter((v) => v > 0);
+  if (priorWindow.length === 0) return null;
+
+  const avgVolume = priorWindow.reduce((a, b) => a + b, 0) / priorWindow.length;
+  if (avgVolume <= 0) return null;
+
+  return Number(((today / avgVolume) * 100).toFixed(1));
+}
+
+/**
  * 전 종목 통일 이동평균 추세 및 이격도 배지 산출 (Single Source of Truth)
+ * volumeRatio: computeRecentVolumeRatio() 결과(당일 거래량/최근 20일 평균 거래량 ×100). 선택값 - 없으면 가격 구조만으로 판정.
  */
 export function computeUnifiedStatusBadge(
   closePrice: number,
   ma5: number | null,
   ma20: number | null,
-  ma60: number | null
+  ma60: number | null,
+  volumeRatio?: number | null
 ): { shortBadge: string; badgeStyle: string } {
   if (!closePrice || !ma20) {
     return {
@@ -253,10 +377,22 @@ export function computeUnifiedStatusBadge(
       badgeStyle: 'bg-blue-50 dark:bg-blue-950/60 text-blue-600 dark:text-blue-400 border-blue-200 dark:border-blue-800/60 font-bold',
     };
   }
-  // 2. ⚠️ 단기 과열 (20일선 이격도 105% 이상 또는 60일선 110% 이상)
+  // 2. 단기 과열 (20일선 이격도 105% 이상 또는 60일선 110% 이상)
   if (disparate20 >= 105 || disparate60 >= 110) {
+    // 5일선이 20일선 위에 있고(정배열 지지) 20일선 위에서 매집/눌림목 지지 중인 경우
+    const isStructureBullish = Boolean(ma5 && ma20 && ma5 >= ma20 && closePrice >= ma20);
+    // 당일 거래량이 최근 20일 평균 대비 200%(2배) 이상 폭증하면, 구조가 살아있어도
+    // 상투권 매물 출회(분산/설거지)의 전형적 신호로 보고 세력매집 판정에서 제외한다.
+    const isVolumeSpike = volumeRatio !== null && volumeRatio !== undefined && volumeRatio >= 200;
+
+    if (isStructureBullish && !isVolumeSpike) {
+      return {
+        shortBadge: '🔥 단기과열 (세력매집)',
+        badgeStyle: 'bg-amber-50 dark:bg-amber-950/60 text-amber-600 dark:text-amber-400 border-amber-200 dark:border-amber-800/60 font-bold',
+      };
+    }
     return {
-      shortBadge: '⚠️ 단기 과열',
+      shortBadge: '⚠️ 단기과열 (설거지주의)',
       badgeStyle: 'bg-rose-50 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400 border-rose-200 dark:border-rose-800/60 font-bold',
     };
   }

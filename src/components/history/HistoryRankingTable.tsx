@@ -12,6 +12,8 @@ interface HistoryRankingTableProps {
   isLoading: boolean;
   selectedDate: string;
   onStockClick?: (symbol: string) => void;
+  surgingMode?: 'fluctuation' | 'volume' | 'amount' | 'overlap';
+  overlapMode?: 'daily' | 'consecutive2d' | 'consecutive3d';
 }
 
 export const HistoryRankingTable: React.FC<HistoryRankingTableProps> = ({
@@ -22,7 +24,11 @@ export const HistoryRankingTable: React.FC<HistoryRankingTableProps> = ({
   isLoading,
   selectedDate,
   onStockClick,
+  surgingMode,
+  overlapMode,
 }) => {
+  const isConsecutive = overlapMode === 'consecutive2d' || overlapMode === 'consecutive3d';
+  const isSurgingOverlap = type === 'surging' && surgingMode === 'overlap';
   const [searchTerm, setSearchTerm] = useState('');
 
   const filteredItems = items.filter((item) =>
@@ -82,7 +88,10 @@ export const HistoryRankingTable: React.FC<HistoryRankingTableProps> = ({
                 <th className="py-3 px-4 text-right">순매수금액</th>
               ) : null}
               {type === 'overlap' ? (
-                <th className="py-3 px-4 min-w-[200px]">수급 주체</th>
+                <th className="py-3 px-4 min-w-[200px]">{isConsecutive ? '주체별 연속매매' : '수급 주체'}</th>
+              ) : null}
+              {isSurgingOverlap ? (
+                <th className="py-3 px-4 min-w-[180px]">포착 지표</th>
               ) : null}
             </tr>
           </thead>
@@ -118,15 +127,15 @@ export const HistoryRankingTable: React.FC<HistoryRankingTableProps> = ({
                       {item.rank}
                     </td>
                     <td className="py-3 px-4">
-                      <div className="flex items-center gap-2">
-                        <span className="font-semibold text-slate-900 dark:text-slate-100 hover:text-indigo-600 transition-colors">
+                      <div className="flex items-center gap-2 flex-nowrap">
+                        <span className="font-semibold text-slate-900 dark:text-slate-100 hover:text-indigo-600 transition-colors whitespace-nowrap shrink-0">
                           {item.name}
                         </span>
-                        <span className="text-xs text-slate-400">
+                        <span className="text-xs text-slate-400 whitespace-nowrap shrink-0">
                           {item.symbol}
                         </span>
                         {item.market ? (
-                          <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
+                          <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium whitespace-nowrap shrink-0 ${
                             item.market === 'KOSPI' ? 'bg-blue-50 text-blue-600 dark:bg-blue-950/40 dark:text-blue-400' : 'bg-green-50 text-green-600 dark:bg-green-950/40 dark:text-green-400'
                           }`}>
                             {item.market}
@@ -154,7 +163,15 @@ export const HistoryRankingTable: React.FC<HistoryRankingTableProps> = ({
                       </td>
                     ) : null}
                     {type !== 'surging' && type !== 'comprehensive' ? (
-                      <td className="py-3 px-4 text-right font-bold text-indigo-600 dark:text-indigo-400">
+                      <td
+                        className={`py-3 px-4 text-right font-bold ${
+                          (item.netBuyAmtEok || 0) > 0
+                            ? 'text-red-500 dark:text-red-400'
+                            : (item.netBuyAmtEok || 0) < 0
+                            ? 'text-blue-500 dark:text-blue-400'
+                            : 'text-slate-500 dark:text-slate-400'
+                        }`}
+                      >
                         {item.netBuyAmtEok !== undefined ? (
                           <span>
                             {item.netBuyAmtEok > 0 ? `+${item.netBuyAmtEok}` : item.netBuyAmtEok}억
@@ -164,13 +181,40 @@ export const HistoryRankingTable: React.FC<HistoryRankingTableProps> = ({
                     ) : null}
                     {type === 'overlap' ? (
                       <td className="py-3 px-4">
-                        <div className="flex flex-wrap gap-1">
-                          {(item.ranksByType || []).map((r, idx) => (
+                        <div className="flex items-center gap-1 flex-nowrap overflow-x-auto scrollbar-none">
+                          {(item.ranksByType || []).map((r, idx) => {
+                            const isBuySide = r.netBuyAmtEok >= 0;
+                            const badgeColor = isBuySide
+                              ? 'bg-red-50 dark:bg-red-950/40 text-red-600 dark:text-red-400 border-red-100 dark:border-red-900/50'
+                              : 'bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400 border-blue-100 dark:border-blue-900/50';
+                            return (
+                              <span
+                                key={idx}
+                                className={`inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded font-medium border whitespace-nowrap shrink-0 ${badgeColor}`}
+                              >
+                                {isConsecutive ? (
+                                  <>
+                                    <span>{r.label}</span>
+                                    <strong className="font-mono">{r.consecutiveText || '당일'}</strong>
+                                  </>
+                                ) : (
+                                  <span>{r.label} ({r.netBuyAmtEok > 0 ? '+' : ''}{r.netBuyAmtEok}억)</span>
+                                )}
+                              </span>
+                            );
+                          })}
+                        </div>
+                      </td>
+                    ) : null}
+                    {isSurgingOverlap ? (
+                      <td className="py-3 px-4">
+                        <div className="flex items-center gap-1 flex-nowrap overflow-x-auto scrollbar-none">
+                          {(item.surgingRanks || []).map((r, idx) => (
                             <span
                               key={idx}
-                              className="text-[11px] px-2 py-0.5 rounded bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 font-medium border border-indigo-100 dark:border-indigo-900/50"
+                              className="text-[10px] px-1.5 py-0.5 rounded bg-orange-50 dark:bg-orange-950/60 text-orange-600 dark:text-orange-400 font-medium border border-orange-100 dark:border-orange-900/50 whitespace-nowrap shrink-0"
                             >
-                              {r.label} ({r.netBuyAmtEok > 0 ? `+${r.netBuyAmtEok}` : r.netBuyAmtEok}억)
+                              {r.label} {r.rank}위
                             </span>
                           ))}
                         </div>

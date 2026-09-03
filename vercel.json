@@ -3,6 +3,38 @@
     {
       "path": "/api/cron/refresh-kis-token",
       "schedule": "0 22 * * *"
+    },
+    {
+      "path": "/api/cron/archive-3m-candles?startIdx=0&endIdx=60",
+      "schedule": "35 6 * * 1-5"
+    },
+    {
+      "path": "/api/cron/archive-3m-candles?startIdx=60&endIdx=120",
+      "schedule": "35 7 * * 1-5"
+    },
+    {
+      "path": "/api/cron/archive-3m-candles?startIdx=120&endIdx=180",
+      "schedule": "35 8 * * 1-5"
+    },
+    {
+      "path": "/api/cron/collect-raw-daily-data?startIdx=0&endIdx=148",
+      "schedule": "30 9 * * 1-5"
+    },
+    {
+      "path": "/api/cron/collect-raw-daily-data?startIdx=148&endIdx=295",
+      "schedule": "30 10 * * 1-5"
+    },
+    {
+      "path": "/api/cron/archive-3m-candles?startIdx=180&endIdx=240",
+      "schedule": "35 11 * * 1-5"
+    },
+    {
+      "path": "/api/cron/archive-3m-candles?startIdx=240&endIdx=300",
+      "schedule": "35 12 * * 1-5"
+    },
+    {
+      "path": "/api/cron/archive-3m-candles?startIdx=300&endIdx=360",
+      "schedule": "35 13 * * 1-5"
     }
   ]
 }

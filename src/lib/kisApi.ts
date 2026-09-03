@@ -2,10 +2,10 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { InvestorTrendDay, InvestorTrendResponse, KisTokenResponse, ProgramTradeIntradayPoint, ProgramTradeSummary, SupplySummary, TrendPeriod, InvestorRankingResponse, RankingItem, RankingDirection, RankingPeriod, RankingType, OverlapInvestorRank, MarketType, SurgingRankItem, ScoreBreakdown, SurgingMode, isEtfOrEtn } from './types';
-import { getStockName, resolveStockPriceAndChange, updateRuntimeStockPrice, resolveMarketType, computeUnifiedStatusBadge, getSettledAsOfDateLabel } from './mockData';
+import { InvestorTrendDay, InvestorTrendResponse, KisTokenResponse, ProgramTradeIntradayPoint, ProgramTradeSummary, SupplySummary, TrendPeriod, InvestorRankingResponse, RankingItem, RankingDirection, RankingPeriod, RankingType, OverlapInvestorRank, MarketType, SurgingRankItem, ScoreBreakdown, SurgingMode, isEtfOrEtn, IntradayCandlePoint, IntradayPivotFibonacciLevels, IntradayChartResponse, IndexTrendResponse, IndexTrendDay } from './types';
+import { getStockName, resolveStockPriceAndChange, updateRuntimeStockPrice, resolveMarketType, computeUnifiedStatusBadge, getSettledAsOfDateLabel, getKrxEstimateSlotInfo, findSplitSafeStartIndex, roundToKrxTick, computeRecentVolumeRatio } from './mockData';
 import { TOP_300_STOCKS } from './stockUniverse300';
-import { fetchTokenFromSupabase, fetchCreditBatchFromSupabase, saveCreditBatchToSupabase } from './supabase';
+import { fetchTokenFromSupabase, fetchCreditBatchFromSupabase, saveCreditBatchToSupabase, fetchIntraday3mCandlesFromSupabase, saveIntraday3mCandlesToSupabase, fetchConsecutiveOverlapWatch, upsertConsecutiveOverlapWatch, fetchDailyOverlapFirstSeen, insertDailyOverlapFirstSeenIfMissing, fetchLatestActiveBeforeDate } from './supabase';
 export { resolveStockPriceAndChange, computeUnifiedStatusBadge };
 
 interface TokenCacheData {
@@ -328,6 +328,29 @@ export async function enforceRateLimit(): Promise<void> {
   return nextCall;
 }
 
+/**
+ * KST(한국표준시) 기준 오늘 날짜를 YYYYMMDD 문자열로 반환한다.
+ * (주의: 이 파일에는 동일한 UTC+9 변환 로직이 여러 함수에 개별적으로 흩어져 있다 - 전면 리팩토링은
+ *  이번 작업 범위를 벗어나므로 손대지 않지만, 이번에 새로 추가하는 "당일 최초 진입 시각" 기능은
+ *  최소한 이 공통 함수를 통해 새로운 중복을 만들지 않는다.)
+ */
+function getKstTodayStr(): string {
+  const now = new Date();
+  const utc = now.getTime() + now.getTimezoneOffset() * 60000;
+  const kstDate = new Date(utc + 9 * 60 * 60000);
+  return `${kstDate.getFullYear()}${String(kstDate.getMonth() + 1).padStart(2, '0')}${String(kstDate.getDate()).padStart(2, '0')}`;
+}
+
+/** ISO 시각 문자열(또는 생략 시 지금)을 KST 기준 "HH:MM 최초포착" 표시 문구로 변환한다. */
+function formatKstFirstSeenLabel(isoTime?: string): string {
+  const d = isoTime ? new Date(isoTime) : new Date();
+  const utc = d.getTime() + d.getTimezoneOffset() * 60000;
+  const kst = new Date(utc + 9 * 60 * 60000);
+  const hh = String(kst.getHours()).padStart(2, '0');
+  const mm = String(kst.getMinutes()).padStart(2, '0');
+  return `${hh}:${mm} 최초포착`;
+}
+
 export function getDynamicRankingTtl(): number {
   const now = new Date();
   const utc = now.getTime() + now.getTimezoneOffset() * 60000;
@@ -358,6 +381,135 @@ export function getDynamicRankingTtl(): number {
   nextOpenDate.setHours(8, 30, 0, 0);
   const remainingMs = nextOpenDate.getTime() - kstDate.getTime();
   return remainingMs > 0 ? remainingMs : 30 * 1000;
+}
+
+// ============================================================================
+// 📈 [신규 독립 모듈] KOSPI/KOSDAQ 지수 일봉 차트 (현재지수 + 일자별 시세)
+// ============================================================================
+const indexTrendMemoryCache = new Map<string, { data: IndexTrendResponse; timestamp: number }>();
+const INDEX_TREND_CACHE_TTL_MS = 30 * 1000; // 30초 - 여러 사용자가 동시에 볼 수 있어 캐시 필요
+
+const INDEX_CODE_MAP: Record<'KOSPI' | 'KOSDAQ', { code: '0001' | '1001'; name: string }> = {
+  KOSPI: { code: '0001', name: '코스피' },
+  KOSDAQ: { code: '1001', name: '코스닥' },
+};
+
+/**
+ * 국내업종(KOSPI/KOSDAQ) 일봉 차트 데이터 조회. 종목과 달리 지수는 외국인/기관/프로그램
+ * 순매수 개념이 KIS API에 없어(실측으로 확인됨) 일봉 OHLCV + 현재지수 요약만 제공한다.
+ * - 현재지수: TR FHPUP02100000 (inquire-index-price)
+ * - 일자별지수: TR FHPUP02120000 (inquire-index-daily-price, output2에 최근 100영업일치)
+ */
+export async function fetchKisIndexDailyTrend(
+  market: 'KOSPI' | 'KOSDAQ',
+  period: TrendPeriod = '60d'
+): Promise<IndexTrendResponse> {
+  const { code, name } = INDEX_CODE_MAP[market];
+  const cacheKey = `index-${code}-${period}`;
+  const cached = indexTrendMemoryCache.get(cacheKey);
+  if (cached && Date.now() - cached.timestamp < INDEX_TREND_CACHE_TTL_MS) {
+    return cached.data;
+  }
+
+  const appKey = process.env.KIS_APPKEY;
+  const appSecret = process.env.KIS_APPSECRET;
+  if (!appKey || !appSecret || appKey.trim() === '' || appSecret.trim() === '') {
+    throw new Error('[KIS API 인증 오류] .env.local에 KIS_APPKEY 또는 KIS_APPSECRET이 설정되지 않았습니다.');
+  }
+
+  const response = await kisQueue.enqueue(
+    () => fetchWithRetry(() => executeKisIndexDailyTrendFetch(code, name, period)),
+    'HIGH',
+    `index-trend-${code}-${period}`
+  );
+
+  indexTrendMemoryCache.set(cacheKey, { data: response, timestamp: Date.now() });
+  return response;
+}
+
+async function executeKisIndexDailyTrendFetch(
+  indexCode: '0001' | '1001',
+  indexName: string,
+  period: TrendPeriod
+): Promise<IndexTrendResponse> {
+  const token = await getKisAccessToken();
+  if (!token) throw new Error('[KIS 인증 토큰 발급 실패]');
+
+  const rawKey = process.env.KIS_APPKEY || '';
+  const appKey = rawKey.trim().replace(/^["']|["']$/g, '');
+  const rawSecret = process.env.KIS_APPSECRET || '';
+  const appSecret = rawSecret.trim().replace(/^["']|["']$/g, '');
+
+  const isVirtual = process.env.KIS_VIRTUAL === 'true';
+  const baseUrl = process.env.KIS_BASE_URL || (isVirtual ? 'https://openapivts.koreainvestment.com:29443' : 'https://openapi.koreainvestment.com:9443');
+
+  const buildHeaders = (trId: string) => ({
+    'content-type': 'application/json; charset=utf-8',
+    authorization: `Bearer ${token}`,
+    appkey: appKey,
+    appsecret: appSecret,
+    tr_id: trId,
+    custtype: 'P',
+  });
+
+  // 1. 지수 현재가
+  const priceUrl = `${baseUrl}/uapi/domestic-stock/v1/quotations/inquire-index-price?FID_COND_MRKT_DIV_CODE=U&FID_INPUT_ISCD=${indexCode}`;
+  const priceRes = await fetch(priceUrl, { headers: buildHeaders('FHPUP02100000'), cache: 'no-store' });
+  if (!priceRes.ok) throw new Error(`[KIS FHPUP02100000 HTTP ${priceRes.status}] ${indexName} 현재지수 조회 실패`);
+  const priceJson = await priceRes.json();
+  if (priceJson.rt_cd !== '0') throw new Error(`[KIS FHPUP02100000] ${priceJson.msg1 || '알 수 없는 오류'}`);
+  const p = priceJson.output || {};
+  const priceSign = p.prdy_vrss_sign || '3';
+  const priceChange = Number(p.bstp_nmix_prdy_vrss || 0) * (priceSign === '4' || priceSign === '5' ? -1 : 1);
+
+  // 2. 지수 일자별(일봉) 시세 - KIS는 최신순(내림차순)으로 내려주므로 오름차순으로 뒤집는다
+  const todayStr = getKstTodayStr();
+  const dailyUrl = `${baseUrl}/uapi/domestic-stock/v1/quotations/inquire-index-daily-price?FID_COND_MRKT_DIV_CODE=U&FID_INPUT_ISCD=${indexCode}&FID_INPUT_DATE_1=${todayStr}&FID_PERIOD_DIV_CODE=D`;
+  const dailyRes = await fetch(dailyUrl, { headers: buildHeaders('FHPUP02120000'), cache: 'no-store' });
+  if (!dailyRes.ok) throw new Error(`[KIS FHPUP02120000 HTTP ${dailyRes.status}] ${indexName} 일봉 조회 실패`);
+  const dailyJson = await dailyRes.json();
+  if (dailyJson.rt_cd !== '0') throw new Error(`[KIS FHPUP02120000] ${dailyJson.msg1 || '알 수 없는 오류'}`);
+  const rawDaily: any[] = Array.isArray(dailyJson.output2) ? dailyJson.output2 : [];
+
+  const ascending = [...rawDaily].reverse();
+  const limit = period === '5d' ? 5 : period === '20d' ? 20 : 60;
+  const sliced = ascending.slice(-limit);
+
+  const trend: IndexTrendDay[] = sliced.map((d) => {
+    const dateStr = String(d.stck_bsop_date || '');
+    return {
+      date: dateStr,
+      formattedDate: dateStr.length === 8 ? `${dateStr.slice(4, 6)}.${dateStr.slice(6, 8)}` : dateStr,
+      openPrice: Number(d.bstp_nmix_oprc || 0),
+      highPrice: Number(d.bstp_nmix_hgpr || 0),
+      lowPrice: Number(d.bstp_nmix_lwpr || 0),
+      closePrice: Number(d.bstp_nmix_prpr || 0),
+      volume: Number(d.acml_vol || 0),
+      // acml_tr_pbmn은 KIS 지수 API에서 백만원 단위로 내려온다(개별 종목 close*volume 방식과 다름 - 실측
+      // 확인: /100000000으로 나누면 0억대로 뭉개져서 KOSPI 하루 거래대금이 0.2억원이 되는 오류가 있었음).
+      // 억원 환산은 백만원 → 억원이므로 /100.
+      tradingValueEok: Number((Number(d.acml_tr_pbmn || 0) / 100).toFixed(1)),
+    };
+  });
+
+  return {
+    indexInfo: {
+      code: indexCode,
+      name: indexName,
+      currentPrice: Number(p.bstp_nmix_prpr || 0),
+      change: priceChange,
+      changeRate: Number(p.bstp_nmix_prdy_ctrt || 0),
+      volume: Number(p.acml_vol || 0),
+      tradingValueEok: Number((Number(p.acml_tr_pbmn || 0) / 100).toFixed(1)),
+      advancingCount: Number(p.ascn_issu_cnt || 0),
+      decliningCount: Number(p.down_issu_cnt || 0),
+      unchangedCount: Number(p.stnr_issu_cnt || 0),
+    },
+    period,
+    trend,
+    isMock: false,
+    updatedAt: new Date().toISOString(),
+  };
 }
 
 /**
@@ -457,22 +609,17 @@ export async function fetchKisInvestorTrendEstimate(symbol: string): Promise<{
     if (!res.ok) return null;
     const json = await res.json().catch(() => null);
     if (json && json.rt_cd === '0' && Array.isArray(json.output2) && json.output2.length > 0) {
-      const latest = json.output2[0]; // 가장 최신 차수
+      const latest = json.output2[0]; // 가장 최신 차수 수치
       const foreignQty = parseInt(latest.frgn_fake_ntby_qty || '0', 10);
       const organQty = parseInt(latest.orgn_fake_ntby_qty || '0', 10);
-      const stepGb = latest.bsop_hour_gb || '4';
-      const stepMap: Record<string, { step: string; time: string }> = {
-        '1': { step: '1차', time: '10:00' },
-        '2': { step: '2차', time: '11:30' },
-        '3': { step: '3차', time: '13:20' },
-        '4': { step: '4차', time: '14:30' },
-      };
-      const info = stepMap[stepGb] || { step: `${stepGb}차`, time: '14:30' };
+
+      // 단일 공통 함수(getKrxEstimateSlotInfo)를 통해 현재 KST 시각 기준 이미 경과한 차수 판정 (미래 시간 노출 원천 차단)
+      const slotInfo = getKrxEstimateSlotInfo();
       return {
         foreignQty,
         organQty,
-        step: info.step,
-        timeStr: info.time,
+        step: slotInfo.currentSlot.step,
+        timeStr: slotInfo.currentSlot.time,
       };
     }
   } catch (err) {
@@ -803,9 +950,8 @@ async function executeKisInvestorTrendFetch(
       const basePrice = stockInfo.currentPrice > 0 ? stockInfo.currentPrice : (latestValidDay.closePrice || 100000);
       realtimeForeignAmt = Math.round((estimateRes.foreignQty * basePrice) / 1000000);
       realtimeOrganAmt = Math.round((estimateRes.organQty * basePrice) / 1000000);
-      estimateDateLabel = isMarketOpen
-        ? `당일 잠정 (${estimateRes.timeStr} 추정)`
-        : `당일 최종잠정 (${estimateRes.timeStr} 기준)`;
+      const krxSlot = getKrxEstimateSlotInfo();
+      estimateDateLabel = krxSlot.formattedEstimateLabel;
     }
   }
 
@@ -829,12 +975,10 @@ async function executeKisInvestorTrendFetch(
     if (estimateDateLabel && isRealtimeData) {
       return estimateDateLabel;
     }
+    const krxSlot = getKrxEstimateSlotInfo();
     if (isMarketOpen) {
-      if (isRealtimeData) {
-        return `당일 잠정 (${timeStr} 추정)`;
-      }
-      if (!isFallback) {
-        return `당일 잠정 (${timeStr} 추정)`;
+      if (isRealtimeData || !isFallback) {
+        return krxSlot.formattedEstimateLabel;
       }
     }
     if (dateStr) {
@@ -895,7 +1039,37 @@ async function executeKisInvestorTrendFetch(
 
   const programTrade = await fetchKisProgramTrade(symbol, token, baseUrl, appKey, appSecret, stockInfo.currentPrice).catch(() => null);
 
-  return {
+  // 과거 일봉 트렌드에 실제 KIS 프로그램 일별 TR 데이터(fetchKisProgramTradeDaily) 100% 실데이터 매핑
+  const dailyProgPoints = await fetchKisProgramTradeDaily(symbol, token, baseUrl, appKey, appSecret).catch(() => []);
+  if (dailyProgPoints && dailyProgPoints.length > 0) {
+    trend.forEach((d) => {
+      const dt = d.stck_bsop_date || d.date || '';
+      const matched = dailyProgPoints.find((p) => p.date === dt);
+      if (matched) {
+        (d as any).programNetBuyAmt = matched.totalNetBuyAmt;
+      }
+    });
+  }
+
+  // 오늘 장중인 경우, trend 배열의 마지막 날짜에 실시간 외인/기관/프로그램 수급 주입 (일봉 수급 막대 차트 및 연속일수 실시간 동기화)
+  if (trend.length > 0 && (isMarketOpen || isWeekdayPostMarket)) {
+    const lastTrendDay = trend[trend.length - 1];
+    const todayDateStr = `${kstDate.getFullYear()}${String(kstDate.getMonth() + 1).padStart(2, '0')}${String(kstDate.getDate()).padStart(2, '0')}`;
+    const lastDate = lastTrendDay.stck_bsop_date || lastTrendDay.date || '';
+    if (lastDate === todayDateStr || lastDate === '') {
+      if (finalForeignAmt !== null && finalForeignAmt !== undefined) {
+        lastTrendDay.foreignNetBuyAmt = finalForeignAmt;
+      }
+      if (finalOrganAmt !== null && finalOrganAmt !== undefined) {
+        lastTrendDay.organNetBuyAmt = finalOrganAmt;
+      }
+      if (programTrade && programTrade.totalNetBuyAmt !== undefined) {
+        (lastTrendDay as any).programNetBuyAmt = programTrade.totalNetBuyAmt;
+      }
+    }
+  }
+
+  const res: InvestorTrendResponse = {
     stockInfo,
     period,
     trend,
@@ -904,6 +1078,13 @@ async function executeKisInvestorTrendFetch(
     isMock: false,
     updatedAt: new Date().toISOString(),
   };
+
+  try {
+    const { setCached5dTrend } = require('./batchCollector');
+    setCached5dTrend(symbol, res);
+  } catch { }
+
+  return res;
 }
 
 export async function fetchKisProgramTrade(
@@ -1037,7 +1218,7 @@ export async function fetchKisProgramTrade(
         fallbackQty = latestDaily.totalNetBuyQty;
       }
     }
-  } catch {}
+  } catch { }
 
   // 랭킹 캐시에서도 확인
   for (const [key, cached] of rankingCacheStore.entries()) {
@@ -1526,8 +1707,14 @@ async function executeKisForeignInstitutionRankingFetch(
     }
 
     const json = await res.json();
-    if (json.rt_cd !== '0' || !Array.isArray(json.output) || json.output.length === 0) {
+    // rt_cd(응답코드) 자체가 실패이거나 output이 배열이 아닌 경우만 진짜 오류로 재시도 유도.
+    // rt_cd='0'(정상처리)인데 output만 0건인 경우는 KIS 측 순간 공백 응답일 뿐 API 장애가 아니므로,
+    // market==='ALL' 분기와 동일하게 에러로 던지지 않고 TOP_300 실데이터 보강으로 자연스럽게 대체한다.
+    if (json.rt_cd !== '0' || !Array.isArray(json.output)) {
       throw new Error(`[KIS API 매매순위 응답 오류] ${json.msg1 || json.msg_cd || '응답 데이터 없음'}`);
+    }
+    if (json.output.length === 0) {
+      console.warn(`[KIS Ranking Empty Output] ${type}-${direction}-${market}: rt_cd=0 정상이나 output 0건 - TOP_300 실데이터 보강으로 대체`);
     }
 
     const baseOutputs = json.output || [];
@@ -1766,7 +1953,7 @@ async function enrichRankingWithRawInvestorData(
                 const dWeekObj = kstObj.getDay();
                 const isMarketOpenNow = dWeekObj >= 1 && dWeekObj <= 5 && tNumObj >= 900 && tNumObj < 1530;
 
-                if (!isMarketOpenNow || todayAmt === 0) {
+                if (!isMarketOpenNow || rawPbmn === 0) {
                   item.asOfDateLabel = getSettledAsOfDateLabel();
                 } else {
                   item.asOfDateLabel = `당일 가집계 (${String(hObj).padStart(2, '0')}:${String(mObj).padStart(2, '0')} 기준)`;
@@ -1820,7 +2007,11 @@ async function enrichRankingWithRawInvestorData(
 
 
 export function computeStatusBadgeFromTrend(trend: InvestorTrendDay[]): { shortBadge: string; badgeStyle: string } {
-  const closes = (trend || []).map((d) => d.closePrice).filter((c) => c && c > 0);
+  const rawItems = (trend || []).filter((d) => d.closePrice && d.closePrice > 0);
+  const rawCloses = rawItems.map((d) => d.closePrice);
+  // 액면분할/감자 등으로 옛 가격 스케일이 섞인 구간은 이동평균 계산에서 제외 (수칙 1-3: 가짜 보정 금지, 오염 구간 제외 방식)
+  const items = rawItems.slice(findSplitSafeStartIndex(rawCloses));
+  const closes = items.map((d) => d.closePrice);
   if (closes.length === 0) {
     return {
       shortBadge: '⚪ 이평선 수렴',
@@ -1832,8 +2023,9 @@ export function computeStatusBadgeFromTrend(trend: InvestorTrendDay[]): { shortB
   const ma5 = closes.length >= 5 ? closes.slice(-5).reduce((a, b) => a + b, 0) / 5 : null;
   const ma20 = closes.length >= 20 ? closes.slice(-20).reduce((a, b) => a + b, 0) / 20 : null;
   const ma60 = closes.length >= 60 ? closes.slice(-60).reduce((a, b) => a + b, 0) / 60 : null;
+  const volumeRatio = computeRecentVolumeRatio(items.map((d) => d.volume));
 
-  return computeUnifiedStatusBadge(currentP, ma5, ma20, ma60);
+  return computeUnifiedStatusBadge(currentP, ma5, ma20, ma60, volumeRatio);
 }
 
 const overlapMemoryCache = new Map<string, { data: InvestorRankingResponse; timestamp: number }>();
@@ -1883,6 +2075,63 @@ export async function fetchOverlapRankingData(
 }
 
 /**
+ * 수급교집합(당일/2일연속/3일연속) 탭 공통 "별표 추천(AI Pick)" 추세 배수 산출 함수 (Single Source of Truth)
+ * 단타 트레이더 관점 반영: 다일 추세 구조(정배열/바닥반등)의 지배력은 소폭 낮추고,
+ * 단기과열을 세력매집(모멘텀 지속 기대)과 설거지주의(상투 리스크)로 명확히 차등 배점한다.
+ *
+ * ⚠️ 과거 버전은 '단기 과열'(공백 포함)로 매칭해 실제 배지 텍스트 '단기과열'(공백 없음)과
+ *    끝내 일치하지 않아 이 분기가 단 한 번도 발동하지 않는 버그가 있었다(항상 기본값 1.0 적용).
+ */
+function getOverlapTrendMultiplier(statusBadge?: string): number {
+  if (statusBadge?.includes('정배열')) return 1.3;                                    // 정배열 상승 추세
+  if (statusBadge?.includes('바닥 반등')) return 1.3;                                  // 바닥 반등 타점
+  if (statusBadge?.includes('단기과열') && statusBadge?.includes('세력매집')) return 1.1;  // 단기과열이나 구조 유지 - 모멘텀 지속 기대
+  if (statusBadge?.includes('이평선 수렴')) return 1.0;                                 // 에너지 축적/관망
+  if (statusBadge?.includes('역배열')) return 0.7;                                    // 하락 추세
+  if (statusBadge?.includes('단기과열') && statusBadge?.includes('설거지주의')) return 0.5;  // 구조 붕괴 + 거래량 폭증 - 상투/매물출회 리스크
+  return 1.0;
+}
+
+/**
+ * 수급교집합 탭 공통 "별표 추천(AI Pick)" 점수 산출 함수 (Single Source of Truth)
+ * 단타 트레이더 관점으로 튜닝: 당일 거래회전율(ratioScore) 비중을 확대하고,
+ * 등락률 페널티(candleScore)를 하락폭에 비례하도록 대칭화했다(기존: 하락이면 등락폭 무관 -15 고정).
+ */
+function computeOverlapAiPickScore(item: {
+  overlapCount?: number;
+  netBuyAmtEok?: number;
+  ratioVsVolume?: number;
+  changeRate: number;
+  statusBadge?: string;
+}): number {
+  const overlapScore = (item.overlapCount || 2) * 100;
+  const logAmtScore = Math.log(Math.max(0, item.netBuyAmtEok || 0) + 1) * 20;
+  // 단타는 유동성/회전율이 핵심이라 상한을 30→40으로 확대(계수 1.5→1.8)
+  const ratioScore = Math.min((item.ratioVsVolume || 0) * 1.8, 40);
+  // 상승/하락 대칭 처리: 등락폭에 비례해 ±25점 캡 (기존 하락 고정 -15 페널티 제거)
+  const candleScore = Math.max(-25, Math.min((item.changeRate || 0) * 2.5, 25));
+
+  const rawScore = overlapScore + logAmtScore + ratioScore + candleScore;
+  const trendMult = getOverlapTrendMultiplier(item.statusBadge);
+  return rawScore * trendMult;
+}
+
+/**
+ * 프론트엔드 "진입가능만" 필터와 동일한 기준: 이격도 배지가 단기과열(세력매집/설거지주의 불문) 또는
+ * 역배열이면 false를 반환한다. AI픽(별표) 후보군 선정에서 재사용해 "별표=진입가능 종목 중 최우선"이
+ * 실제로 성립하도록 한다.
+ * - 단기과열: 추세는 우호적이지만 원본 수급강도(overlapScore 등)가 커서 배율 가산(1.1배)을 받아도
+ *   여전히 1위까지 올라갈 수 있었기 때문에, 배율 조정이 아니라 후보군 자체에서 배제한다.
+ * - 역배열: 이평선 배열 자체가 하락 추세라 "N일 연속 매수"가 바닥 매집인지 단순 반등인지 구분이 안 되고,
+ *   실측 사례(HD현대 267250, 당일 -4.34% 하락 중에도 2일연속 매수라는 이유로 5위 별표)로 확인된
+ *   근본적으로 다른 리스크라 단기과열과 같은 기준으로 후보군에서 제외한다.
+ */
+function isEntryReadyBadge(statusBadge?: string): boolean {
+  const badge = statusBadge || '';
+  return !badge.includes('단기과열') && !badge.includes('역배열');
+}
+
+/**
  * 비동기 백그라운드 수급 교집합 데이터 계산 헬퍼
  */
 async function executeAsyncOverlapCalculation(
@@ -1892,17 +2141,8 @@ async function executeAsyncOverlapCalculation(
   market: MarketType,
   masterCacheKey: string
 ): Promise<InvestorRankingResponse> {
-  function getTrendMultiplier(statusBadge?: string) {
-    if (statusBadge?.includes('정배열')) return 1.5;   // 1위: 정배열 상승 추세
-    if (statusBadge?.includes('바닥 반등')) return 1.4; // 2위: 바닥 반등 타점
-    if (statusBadge?.includes('이평선 수렴')) return 1.0; // 3위: 이평선 수렴/관망
-    if (statusBadge?.includes('단기 과열')) return 0.9; // 4위: 단기 과열
-    if (statusBadge?.includes('역배열')) return 0.7;   // 5위: 역배열 하락 (오픈)
-    return 1.0;
-  }
-
   try {
-    const { getBatchRankingData, getBatchRankingDataAsync, getCached5dTrend } = await import('./batchCollector');
+    const { getBatchRankingData, getBatchRankingDataAsync, getCached5dTrend, getBatchTrend5d } = await import('./batchCollector');
     const candidateLimit = 50;
 
     const reqPeriod = (period === 'consecutive2d' || period === 'consecutive3d') ? '1d' : (period as '1d' | '1w' | '1m');
@@ -1977,37 +2217,36 @@ async function executeAsyncOverlapCalculation(
     const entries = Array.from(map.values());
 
     for (const value of entries) {
-      // 1. 트렌드 실데이터 조회 (0ms)
-      const { getBatchTrend5d } = require('./batchCollector');
-      const trendRes = getBatchTrend5d(value.symbol);
+      // 0ms 순수 메모리 캐시 조회 (실시간 네트워크 TR 난사 원천 차단)
+      const trendRes = trendDetailCache.get(value.symbol)?.data || getCached5dTrend(value.symbol) || getBatchTrend5d(value.symbol);
       const latestDay = trendRes?.trend && trendRes.trend.length > 0 ? trendRes.trend[trendRes.trend.length - 1] : null;
 
       // 랭킹 50위 밖이라도 당일 실제 순매수한 주체를 ranksByType에 보강
-      if (latestDay) {
+      if (latestDay || trendRes?.summary) {
         // 외국인
-        if (!value.ranksByType.some((r) => r.type === 'foreign') && (latestDay.foreignNetBuyAmt || 0) > 0) {
-          const amt = latestDay.foreignNetBuyAmt || 0;
+        const foreignAmt = (latestDay?.foreignNetBuyAmt || 0) > 0 ? latestDay.foreignNetBuyAmt : (trendRes?.summary?.foreign?.todayEstimateAmt || 0);
+        if (!value.ranksByType.some((r) => r.type === 'foreign') && foreignAmt > 0) {
           value.ranksByType.push({
             type: 'foreign',
             label: '외국인',
             rank: 0,
             isRanked: false,
-            netBuyAmt: amt,
-            netBuyAmtEok: Number((amt / 100).toFixed(1)),
-            asOfDateLabel: latestDay.date ? `(${latestDay.date.slice(4, 6)}/${latestDay.date.slice(6, 8)} 기준)` : '(당일)',
+            netBuyAmt: foreignAmt,
+            netBuyAmtEok: Number((foreignAmt / 100).toFixed(1)),
+            asOfDateLabel: latestDay?.date ? `(${latestDay.date.slice(4, 6)}/${latestDay.date.slice(6, 8)} 기준)` : '(당일)',
           });
         }
         // 기관
-        if (!value.ranksByType.some((r) => r.type === 'organ') && (latestDay.organNetBuyAmt || 0) > 0) {
-          const amt = latestDay.organNetBuyAmt || 0;
+        const organAmt = (latestDay?.organNetBuyAmt || 0) > 0 ? latestDay.organNetBuyAmt : (trendRes?.summary?.organ?.todayEstimateAmt || 0);
+        if (!value.ranksByType.some((r) => r.type === 'organ') && organAmt > 0) {
           value.ranksByType.push({
             type: 'organ',
             label: '기관',
             rank: 0,
             isRanked: false,
-            netBuyAmt: amt,
-            netBuyAmtEok: Number((amt / 100).toFixed(1)),
-            asOfDateLabel: latestDay.date ? `(${latestDay.date.slice(4, 6)}/${latestDay.date.slice(6, 8)} 기준)` : '(당일)',
+            netBuyAmt: organAmt,
+            netBuyAmtEok: Number((organAmt / 100).toFixed(1)),
+            asOfDateLabel: latestDay?.date ? `(${latestDay.date.slice(4, 6)}/${latestDay.date.slice(6, 8)} 기준)` : '(당일)',
           });
         }
       }
@@ -2073,28 +2312,12 @@ async function executeAsyncOverlapCalculation(
       return (b.overlapCount || 0) - (a.overlapCount || 0);
     });
 
-    // 상위 교집합 종목들의 60일 일봉 트렌드를 병렬 확보하여 차트와 100% 동일한 5대 상태 뱃지 산출
-    const topOverlapCandidates = overlapItems.slice(0, 20);
-    const trendResults = await Promise.all(
-      topOverlapCandidates.map(async (item) => {
-        const fullCacheKey = `${item.symbol}-60d-v60d-full`;
-        let fullCached: InvestorTrendResponse | null | undefined = trendDetailCache.get(fullCacheKey)?.data;
-        if (!fullCached || !fullCached.trend || fullCached.trend.length < 20) {
-          fullCached = await fetchKisInvestorTrend(item.symbol, '60d', 'NORMAL').catch(() => null);
-        }
-        return { symbol: item.symbol, trendData: fullCached?.trend || [] };
-      })
-    );
-
-    const trendMap = new Map<string, InvestorTrendDay[]>();
-    trendResults.forEach((t) => trendMap.set(t.symbol, t.trendData));
-
+    // 상위 교집합 종목들의 일봉 트렌드를 메모리 캐시에서 0ms 즉시 확보하여 차트와 100% 동일한 5대 상태 뱃지 산출
     const finalOverlapItems = overlapItems.map((item, index) => {
-      let trendData = trendMap.get(item.symbol) || [];
-      let trendRes = getCached5dTrend(item.symbol);
-      if (trendData.length === 0) {
-        trendData = trendRes?.trend || [];
-      }
+      const fullCacheKey = `${item.symbol}-60d-v60d-full`;
+      const fullCached: InvestorTrendResponse | null | undefined = trendDetailCache.get(fullCacheKey)?.data;
+      const trendRes = getCached5dTrend(item.symbol);
+      const trendData = (fullCached && fullCached.trend && fullCached.trend.length > 0) ? fullCached.trend : (trendRes?.trend || []);
       const latestTrend = trendData.length > 0 ? trendData[trendData.length - 1] : null;
       const statusInfo = trendData.length > 0
         ? computeStatusBadgeFromTrend(trendData)
@@ -2191,21 +2414,11 @@ async function executeAsyncOverlapCalculation(
     });
 
     const aiPickCandidates = [...finalOverlapItems]
-      .map((item) => {
-        const overlapScore = (item.overlapCount || 2) * 100;
-        const logAmtScore = Math.log(Math.max(0, item.netBuyAmtEok || 0) + 1) * 20;
-        const ratioScore = Math.min((item.ratioVsVolume || 0) * 1.5, 30);
-        const candleScore = item.changeRate > 0
-          ? Math.min(item.changeRate * 2.5, 20)
-          : item.changeRate < 0 ? -15 : 0;
-
-        const rawScore = overlapScore + logAmtScore + ratioScore + candleScore;
-        const trendMult = getTrendMultiplier(item.statusBadge);
-        return {
-          symbol: item.symbol,
-          score: rawScore * trendMult,
-        };
-      })
+      .filter((item) => isEntryReadyBadge(item.statusBadge)) // 단기과열 종목은 별표(AI픽) 후보군에서 제외
+      .map((item) => ({
+        symbol: item.symbol,
+        score: computeOverlapAiPickScore(item),
+      }))
       .sort((a, b) => b.score - a.score);
 
     const top5Symbols = aiPickCandidates.slice(0, 5).map((c) => c.symbol);
@@ -2216,6 +2429,30 @@ async function executeAsyncOverlapCalculation(
     });
 
     const mergedList = await mergeCreditStatusToRanking(finalOverlapItems);
+
+    // 당일교집합(period === '1d')에 한해 "오늘 이 종목이 언제 처음 교집합 명단에 포착됐는지" 표시를 붙인다.
+    // Supabase에 기록이 없는(오늘 처음 보는) 종목만 INSERT하고(ignoreDuplicates), 이미 기록된 종목은
+    // 절대 덮어쓰지 않는다 - 그래야 장중 여러 번 재계산돼도 "최초" 시각이 유지된다.
+    if (period === '1d' && mergedList.length > 0) {
+      try {
+        const todayStr = getKstTodayStr();
+        const firstSeenMap = await fetchDailyOverlapFirstSeen(todayStr, direction);
+        const nowIso = new Date().toISOString();
+        mergedList.forEach((item) => {
+          const seenAt = firstSeenMap[item.symbol] || nowIso; // 오늘 처음 보는 종목은 지금 이 순간이 곧 최초 포착 시각
+          item.firstSeenAt = seenAt;
+          item.firstSeenLabel = formatKstFirstSeenLabel(seenAt);
+        });
+        // 응답 지연 없이 백그라운드로 신규 종목만 기록(await 하지 않음 - 실패해도 화면 표시엔 지장 없음)
+        insertDailyOverlapFirstSeenIfMissing(
+          todayStr,
+          direction,
+          mergedList.map((item) => ({ symbol: item.symbol, name: item.name }))
+        ).catch((e) => console.warn('[Daily Overlap First-Seen Insert Skip]', e?.message || e));
+      } catch (e: any) {
+        console.warn('[Daily Overlap First-Seen Enrich Skip]', e?.message || e);
+      }
+    }
 
     const masterData: InvestorRankingResponse = {
       type: 'overlap',
@@ -2281,56 +2518,59 @@ export async function fetchConsecutive3dOverlapRankingData(
   return fetchConsecutiveNDaysOverlapRankingData(direction, minOverlap, topLimit, market, 3);
 }
 
-export async function fetchConsecutiveNDaysOverlapRankingData(
-  direction: RankingDirection = 'buy',
-  minOverlap: number = 2,
-  topLimit: number = 50,
-  market: MarketType = 'ALL',
-  targetDays: number = 3
+/**
+ * 2일/3일연속 교집합 후보(stockTrends) 배열을 받아 실제 판정 계산부터 캐시 저장까지 마무리한다.
+ * 우선순위 30종목만으로 빠르게 응답할 때(writeDropouts=false)와, 백그라운드에서 전 후보를 다 채운 뒤
+ * 최종 확정할 때(writeDropouts=true) 양쪽에서 동일한 로직을 재사용해서 두 경로가 절대 어긋나지 않게 한다.
+ * writeDropouts=false일 때는 "이탈 종목" 추적 기록을 절대 하지 않는다 - 안 그러면 이번 회차에 아직
+ * 평가하지 않은(뒤에서 계속 계산 중인) 종목을 "이탈"로 오판하는, 예전에 고생해서 고친 것과 같은 버그가
+ * 재발하기 때문이다.
+ */
+async function finalizeConsecutiveOverlapResult(
+  stockTrends: Array<{ stock: any; trendRes: any; programDaily: ProgramTradeDailyPoint[] }>,
+  targetDays: number,
+  minOverlap: number,
+  direction: RankingDirection,
+  market: MarketType,
+  cacheKey: string,
+  todayStr: string,
+  prevActive: Array<any>,
+  writeDropouts: boolean,
+  isPartial: boolean
 ): Promise<InvestorRankingResponse> {
-  const cacheKey = `c_${direction}_${targetDays}d_${minOverlap}_${market}_${topLimit}`;
-  const cached = consecutiveOverlapMemoryCache.get(cacheKey);
-  if (cached && Date.now() - cached.timestamp < CONSECUTIVE_OVERLAP_CACHE_TTL_MS) {
-    return cached.data;
-  }
-
   const isBuy = direction === 'buy';
-  const { getCached5dTrend, setCached5dTrend } = await import('./batchCollector');
-
-  // Get candidate stocks from real-time market overlap ranking (no fixed stock list restriction!)
-  const dailyOverlapRes = await fetchOverlapRankingData(direction, '1d', 2, 50, market).catch(() => null);
-  const candidateStocks = dailyOverlapRes?.list || [];
-
   const ALL_ENTITIES: Array<{ type: 'foreign' | 'organ' | 'program'; label: string }> = [
     { type: 'foreign', label: '외국인' },
     { type: 'organ', label: '기관' },
     { type: 'program', label: '프로그램' },
   ];
 
-  const stockTrends: Array<{ stock: any; trendRes: any; programDaily: ProgramTradeDailyPoint[] }> = [];
-  const targetCandidates = candidateStocks.slice(0, 12);
-  const chunkResults = await Promise.all(
-    targetCandidates.map(async (stock) => {
-      let trendRes = getCached5dTrend(stock.symbol);
-      if (!trendRes || !trendRes.trend || trendRes.trend.length < targetDays) {
-        trendRes = await fetchKisInvestorTrend(stock.symbol, '5d').catch(() => null);
-        if (trendRes && Array.isArray(trendRes.trend) && trendRes.trend.length > 0) {
-          setCached5dTrend(stock.symbol, trendRes);
-        }
-      }
-      const programDaily = await fetchKisProgramTradeDaily(stock.symbol).catch(() => []);
-      return { stock, trendRes, programDaily };
-    })
-  );
-  stockTrends.push(...chunkResults);
-
   const results: RankingItem[] = [];
+  // "이탈 종목" 탭용: 이번 회차에 평가된(=당일 교집합 상위 후보군에 있었던) 종목별 사유 기록
+  const evaluatedMap = new Map<string, {
+    name: string;
+    reason: string;
+    reasonBadges?: Array<{ type: 'foreign' | 'organ' | 'program'; label: string; detail: string }>;
+    ranksByType?: OverlapInvestorRank[];
+    netBuyAmtEok?: number;
+    currentPrice?: number;
+    netBuyQty?: number;
+    netBuyAmt?: number;
+    changeRate?: number;
+    promoted?: boolean;
+  }>();
 
   for (const { stock, trendRes, programDaily } of stockTrends) {
-    if (!trendRes || !trendRes.trend || trendRes.trend.length === 0) continue;
+    if (!trendRes || !trendRes.trend || trendRes.trend.length === 0) {
+      evaluatedMap.set(stock.symbol, { name: stock.name, reason: '당일 수급 데이터 조회 실패' });
+      continue;
+    }
     const trend = trendRes.trend;
     const fullTrend = trend;
-    if (fullTrend.length < targetDays) continue;
+    if (fullTrend.length < targetDays) {
+      evaluatedMap.set(stock.symbol, { name: stock.name, reason: `거래 이력 부족(최근 ${targetDays}일치 데이터 없음)` });
+      continue;
+    }
 
     // Active trend days for Foreigner & Organ
     const activeFullDays = fullTrend.filter(
@@ -2338,7 +2578,10 @@ export async function fetchConsecutiveNDaysOverlapRankingData(
         Math.abs(d.foreignNetBuyAmt || 0) > 0 ||
         Math.abs(d.organNetBuyAmt || 0) > 0
     );
-    if (activeFullDays.length < targetDays) continue;
+    if (activeFullDays.length < targetDays) {
+      evaluatedMap.set(stock.symbol, { name: stock.name, reason: `최근 실제 매매일수 부족(${targetDays}일 미만)` });
+      continue;
+    }
     const lastNDays = activeFullDays.slice(-targetDays);
 
     // Strict Day-by-Day Check: EVERY day in the N-day period must have at least minOverlap (2+) entities buying
@@ -2352,7 +2595,15 @@ export async function fetchConsecutiveNDaysOverlapRankingData(
     });
 
     const isStrictConsecutiveOverlap = dayByDayCounts.every((cnt: number) => cnt >= minOverlap);
-    if (!isStrictConsecutiveOverlap) continue;
+    if (!isStrictConsecutiveOverlap) {
+      const weakDayIdx = dayByDayCounts.findIndex((cnt: number) => cnt < minOverlap);
+      const weakDate = lastNDays[weakDayIdx]?.stck_bsop_date || lastNDays[weakDayIdx]?.date || '';
+      evaluatedMap.set(stock.symbol, {
+        name: stock.name,
+        reason: `최근 ${targetDays}일 중 ${weakDate ? `${weakDate.slice(4, 6)}/${weakDate.slice(6, 8)}` : '특정일'}에 동시매수 주체가 ${minOverlap}개 미만으로 하루라도 끊김`,
+      });
+      continue;
+    }
 
     // Calculate backward consecutive days for each investor entity over activeFullDays
     let foreignConsecutiveDays = 0;
@@ -2383,83 +2634,56 @@ export async function fetchConsecutiveNDaysOverlapRankingData(
 
     const ranksByType: OverlapInvestorRank[] = [];
 
-    if (isForeignConsecutive) {
-      const sumAmt = lastNDays.reduce((acc: number, d: InvestorTrendDay) => acc + d.foreignNetBuyAmt, 0);
+    // 1. 외국인 (실제 연속일수 100% 보존 단일화)
+    if (foreignConsecutiveDays > 0) {
+      const sumAmt = isForeignConsecutive
+        ? lastNDays.reduce((acc: number, d: InvestorTrendDay) => acc + d.foreignNetBuyAmt, 0)
+        : (activeFullDays[activeFullDays.length - 1]?.foreignNetBuyAmt || 0);
       ranksByType.push({
         type: 'foreign',
         label: '외국인',
-        rank: 1,
+        rank: isForeignConsecutive ? 1 : 0,
+        isRanked: isForeignConsecutive,
         netBuyAmt: sumAmt,
         netBuyAmtEok: Number((sumAmt / 100).toFixed(1)),
         consecutiveDays: foreignConsecutiveDays,
-        consecutiveText: `${foreignConsecutiveDays}일연속`,
-        asOfDateLabel: '당일 가집계',
-      });
-    } else if (foreignConsecutiveDays > 0) {
-      const todayAmt = activeFullDays[activeFullDays.length - 1]?.foreignNetBuyAmt || 0;
-      ranksByType.push({
-        type: 'foreign',
-        label: '외국인',
-        rank: 0,
-        isRanked: false,
-        netBuyAmt: todayAmt,
-        netBuyAmtEok: Number((todayAmt / 100).toFixed(1)),
-        consecutiveDays: foreignConsecutiveDays,
-        consecutiveText: '당일순매수',
+        consecutiveText: foreignConsecutiveDays >= 2 ? `${foreignConsecutiveDays}일연속` : '당일순매수',
         asOfDateLabel: '당일 가집계',
       });
     }
 
-    if (isOrganConsecutive) {
-      const sumAmt = lastNDays.reduce((acc: number, d: InvestorTrendDay) => acc + d.organNetBuyAmt, 0);
+    // 2. 기관 (실제 연속일수 100% 보존 단일화)
+    if (organConsecutiveDays > 0) {
+      const sumAmt = isOrganConsecutive
+        ? lastNDays.reduce((acc: number, d: InvestorTrendDay) => acc + d.organNetBuyAmt, 0)
+        : (activeFullDays[activeFullDays.length - 1]?.organNetBuyAmt || 0);
       ranksByType.push({
         type: 'organ',
         label: '기관',
-        rank: 1,
+        rank: isOrganConsecutive ? 1 : 0,
+        isRanked: isOrganConsecutive,
         netBuyAmt: sumAmt,
         netBuyAmtEok: Number((sumAmt / 100).toFixed(1)),
         consecutiveDays: organConsecutiveDays,
-        consecutiveText: `${organConsecutiveDays}일연속`,
-        asOfDateLabel: '당일 가집계',
-      });
-    } else if (organConsecutiveDays > 0) {
-      const todayAmt = activeFullDays[activeFullDays.length - 1]?.organNetBuyAmt || 0;
-      ranksByType.push({
-        type: 'organ',
-        label: '기관',
-        rank: 0,
-        isRanked: false,
-        netBuyAmt: todayAmt,
-        netBuyAmtEok: Number((todayAmt / 100).toFixed(1)),
-        consecutiveDays: organConsecutiveDays,
-        consecutiveText: '당일순매수',
+        consecutiveText: organConsecutiveDays >= 2 ? `${organConsecutiveDays}일연속` : '당일순매수',
         asOfDateLabel: '당일 가집계',
       });
     }
 
-    if (isProgramConsecutive) {
-      const sumAmt = programDaily.slice(0, targetDays).reduce((acc: number, p: ProgramTradeDailyPoint) => acc + p.totalNetBuyAmt, 0);
+    // 3. 프로그램 (실제 연속일수 100% 보존 단일화)
+    if (programConsecutiveDays > 0) {
+      const sumAmt = isProgramConsecutive
+        ? programDaily.slice(0, targetDays).reduce((acc: number, p: ProgramTradeDailyPoint) => acc + p.totalNetBuyAmt, 0)
+        : (programDaily[0]?.totalNetBuyAmt || 0);
       ranksByType.push({
         type: 'program',
         label: '프로그램',
-        rank: 1,
+        rank: isProgramConsecutive ? 1 : 0,
+        isRanked: isProgramConsecutive,
         netBuyAmt: sumAmt,
         netBuyAmtEok: Number((sumAmt / 100).toFixed(1)),
         consecutiveDays: programConsecutiveDays,
-        consecutiveText: `${programConsecutiveDays}일연속`,
-        asOfDateLabel: getSettledAsOfDateLabel(),
-      });
-    } else if (programConsecutiveDays > 0) {
-      const todayAmt = programDaily[0]?.totalNetBuyAmt || 0;
-      ranksByType.push({
-        type: 'program',
-        label: '프로그램',
-        rank: 0,
-        isRanked: false,
-        netBuyAmt: todayAmt,
-        netBuyAmtEok: Number((todayAmt / 100).toFixed(1)),
-        consecutiveDays: programConsecutiveDays,
-        consecutiveText: '당일순매수',
+        consecutiveText: programConsecutiveDays >= 2 ? `${programConsecutiveDays}일연속` : '당일순매수',
         asOfDateLabel: getSettledAsOfDateLabel(),
       });
     }
@@ -2467,8 +2691,13 @@ export async function fetchConsecutiveNDaysOverlapRankingData(
     const consecutiveEntities = ranksByType.filter((r) => (r.consecutiveDays || 0) >= targetDays);
     const consecutiveOverlapCount = consecutiveEntities.length;
 
+    // 2일연속 탭 전용 상위 등급(3일연속) 중복 제외: 이미 3일+ 연속으로 minOverlap 이상 주체가 매수 중인 종목은
+    // "2일연속 교집합" 탭이 아니라 "3일연속 교집합" 탭에만 노출되어야 하므로, 여기서 걸러낸다.
+    const qualifiesForNextTier =
+      targetDays === 2 && ranksByType.filter((r) => (r.consecutiveDays || 0) >= 3).length >= minOverlap;
+
     // 2일/3일 연속 교집합의 절대 요건: 실제 targetDays(2일/3일) 이상 연속 매수한 주체가 minOverlap(2개) 이상이어야 함!
-    if (consecutiveOverlapCount >= minOverlap) {
+    if (consecutiveOverlapCount >= minOverlap && !qualifiesForNextTier) {
       const ENTITY_ORDER: Record<string, number> = { foreign: 1, organ: 2, program: 3 };
       ranksByType.sort((a, b) => {
         const isConsecA = (a.consecutiveDays || 0) >= targetDays ? 1 : 0;
@@ -2512,6 +2741,38 @@ export async function fetchConsecutiveNDaysOverlapRankingData(
         ranksByType,
         missingEntities,
       });
+    } else if (qualifiesForNextTier) {
+      // 3일+ 연속으로 승격되어 다음 등급 탭에만 노출되는 경우 - "밀려남"이 아니라 "승격"이므로 이탈로 취급하지 않음
+      evaluatedMap.set(stock.symbol, { name: stock.name, reason: '', ranksByType, promoted: true });
+    } else {
+      const latest = trend[trend.length - 1];
+      const totalNetBuyAmt = ranksByType.reduce((sum, r) => sum + r.netBuyAmt, 0);
+      const netBuyAmtEok = Number((totalNetBuyAmt / 100).toFixed(1));
+      const price = latest?.closePrice || stock.currentPrice || 0;
+      const totalNetBuyQty = price > 0 ? Math.round((totalNetBuyAmt * 1000000) / price) : 0;
+      // 이미 계산해둔 ranksByType/ALL_ENTITIES에서 바로 뽑아내는 값이라 추가 조회나 추정 없이 정확하다.
+      const reasonBadges: Array<{ type: 'foreign' | 'organ' | 'program'; label: string; detail: string }> = [
+        ...ranksByType
+          .filter((r) => (r.consecutiveDays || 0) > 0 && (r.consecutiveDays || 0) < targetDays)
+          .map((r) => ({ type: r.type, label: r.label, detail: `${r.consecutiveDays}일로 하회` })),
+        ...ALL_ENTITIES
+          .filter((e) => !ranksByType.some((r) => r.type === e.type))
+          .map((e) => ({ type: e.type, label: e.label, detail: '매수 중단' })),
+      ];
+      const reason = reasonBadges.length > 0
+        ? reasonBadges.map((b) => `${b.label} ${b.detail}`).join(', ')
+        : `동시매수 주체 수 부족(기준 ${minOverlap}개 이상)`;
+      evaluatedMap.set(stock.symbol, {
+        name: stock.name,
+        reason,
+        reasonBadges,
+        ranksByType,
+        netBuyAmtEok,
+        currentPrice: price,
+        netBuyQty: totalNetBuyQty,
+        netBuyAmt: totalNetBuyAmt,
+        changeRate: latest?.changeRate || 0,
+      });
     }
   }
 
@@ -2529,32 +2790,82 @@ export async function fetchConsecutiveNDaysOverlapRankingData(
     item.rank = idx + 1;
   });
 
-  // Calculate Risk-Adjusted AI Pick Candidates (Matching 1st~6th Buy Timing Hierarchy)
-  function getTrendMultiplier(statusBadge?: string) {
-    if (statusBadge?.includes('정배열')) return 1.5;   // 1위 (정배열 상승 추세)
-    if (statusBadge?.includes('바닥 반등')) return 1.4; // 2위 (손익비 우수 반등 타점)
-    if (statusBadge?.includes('이평선 수렴')) return 1.0; // 3위 (에너지 축적/관망)
-    if (statusBadge?.includes('단기 과열')) return 0.9; // 4위 (돌파 모멘텀 인정/소폭 차감)
-    if (statusBadge?.includes('역배열')) return 0.7;   // 5위 (하락 추세/오픈)
-    return 1.0;
+  // "이탈 종목" 추적: 직전 활성 스냅샷과 이번 결과를 비교해 새로 밀려난 종목을 Supabase에 기록한다.
+  // writeDropouts=false(우선 30종목 미리보기)일 때는 절대 기록하지 않는다 - 뒤에서 계속 계산 중인 종목을
+  // "이탈"로 오판하는 걸 막기 위함. 전체 계산이 끝난 뒤(writeDropouts=true)에만 기록한다.
+  // 실패해도 본 기능(랭킹 조회)에는 영향이 없도록 무음 실패 처리한다.
+  if (writeDropouts) {
+    try {
+      const currentSymbols = new Set(results.map((r) => r.symbol));
+
+      // "당일 교집합"과 동일한 컬럼(현재가/순매수 수량/합산 순매수)을 이탈 종목 화면에도 그대로 보여주기 위해
+      // ranks_by_type(jsonb) 컬럼에 주체별 상세와 함께 마지막으로 확인된 숫자 스냅샷을 같이 담아 저장한다.
+      const buildSnapshotPayload = (
+        ranks: OverlapInvestorRank[] | undefined,
+        currentPrice?: number,
+        netBuyQty?: number,
+        netBuyAmt?: number,
+        changeRate?: number,
+        reasonBadges?: Array<{ type: string; label: string; detail: string }>
+      ) => ({
+        ranks: ranks || [],
+        currentPrice: currentPrice || 0,
+        netBuyQty: netBuyQty || 0,
+        netBuyAmt: netBuyAmt || 0,
+        changeRate: changeRate || 0,
+        reasonBadges: reasonBadges || [],
+      });
+
+      const watchRows: Array<{ symbol: string; name: string; status: 'active' | 'dropped'; ranksByType?: any; netBuyAmtEok?: number; dropReason?: string }> = [];
+
+      // 1. 직전엔 있었는데 이번엔 없는 종목 = 새로 밀려난 종목
+      prevActive.forEach((prev) => {
+        if (currentSymbols.has(prev.symbol)) return; // 여전히 명단에 있음 - 이탈 아님
+        const evaluated = evaluatedMap.get(prev.symbol);
+        if (evaluated?.promoted) return; // 다음 등급(3일연속)으로 승격된 것 - 이탈 아님
+        const prevSnapshot = prev.ranksByType as any; // 직전 저장분: buildSnapshotPayload 형태
+        // 이번 회차에 다시 평가된 경우(evaluated 존재)만 정확한 사유 배지를 계산한다.
+        // 당일 후보군(상위 8위) 밖으로 완전히 벗어나 재평가 자체가 안 된 경우는 정밀한 사유를
+        // 억지로 추정하지 않고 "이탈"이라는 단순 분류로만 표시한다.
+        const reason = evaluated ? evaluated.reason : '이탈';
+        watchRows.push({
+          symbol: prev.symbol,
+          name: prev.name,
+          status: 'dropped',
+          ranksByType: evaluated
+            ? buildSnapshotPayload(evaluated.ranksByType, evaluated.currentPrice, evaluated.netBuyQty, evaluated.netBuyAmt, evaluated.changeRate, evaluated.reasonBadges)
+            : buildSnapshotPayload(prevSnapshot?.ranks, prevSnapshot?.currentPrice, prevSnapshot?.netBuyQty, prevSnapshot?.netBuyAmt, prevSnapshot?.changeRate, []),
+          netBuyAmtEok: evaluated?.netBuyAmtEok ?? prev.netBuyAmtEok,
+          dropReason: reason,
+        });
+      });
+
+      // 2. 현재 명단은 active로 갱신 (다음 회차 비교의 기준이 됨)
+      results.forEach((r) => {
+        watchRows.push({
+          symbol: r.symbol,
+          name: r.name,
+          status: 'active',
+          ranksByType: buildSnapshotPayload(r.ranksByType, r.currentPrice, r.netBuyQty, r.netBuyAmt, r.changeRate),
+          netBuyAmtEok: r.netBuyAmtEok,
+        });
+      });
+
+      if (watchRows.length > 0) {
+        await upsertConsecutiveOverlapWatch(todayStr, targetDays, direction, market, watchRows);
+      }
+    } catch (e: any) {
+      console.warn('[Consecutive Overlap Dropout Tracking Failed]', e?.message || e);
+    }
   }
 
+  // Calculate Risk-Adjusted AI Pick Candidates (Matching 1st~6th Buy Timing Hierarchy)
   const aiPickCandidates = [...results]
-    .map((item) => {
-      const overlapScore = (item.overlapCount || 2) * 100;
-      const logAmtScore = Math.log(Math.max(0, item.netBuyAmtEok || 0) + 1) * 20;
-      const ratioScore = Math.min((item.ratioVsVolume || 0) * 1.5, 30);
-      const candleScore = item.changeRate > 0
-        ? Math.min(item.changeRate * 2.5, 20)
-        : item.changeRate < 0 ? -15 : 0;
-
-      const rawScore = overlapScore + logAmtScore + ratioScore + candleScore;
-      const trendMult = getTrendMultiplier(item.statusBadge);
-      return {
-        symbol: item.symbol,
-        score: rawScore * trendMult,
-      };
-    })
+    .filter((item) => isEntryReadyBadge(item.statusBadge)) // 단기과열 종목은 별표(AI픽) 후보군에서 제외
+    .map((item) => ({
+      symbol: item.symbol,
+      score: computeOverlapAiPickScore(item),
+    }))
     .sort((a, b) => b.score - a.score);
 
   const top5Symbols = aiPickCandidates.slice(0, 5).map((c) => c.symbol);
@@ -2572,6 +2883,7 @@ export async function fetchConsecutiveNDaysOverlapRankingData(
     period: `consecutive${targetDays}d` as any,
     list: mergedList,
     updatedAt: new Date().toISOString(),
+    isPartial,
   };
 
   if (masterData.list && masterData.list.length > 0) {
@@ -2579,6 +2891,284 @@ export async function fetchConsecutiveNDaysOverlapRankingData(
   }
 
   return masterData;
+}
+
+export async function fetchConsecutiveNDaysOverlapRankingData(
+  direction: RankingDirection = 'buy',
+  minOverlap: number = 2,
+  topLimit: number = 50,
+  market: MarketType = 'ALL',
+  targetDays: number = 3
+): Promise<InvestorRankingResponse> {
+  const cacheKey = `c_${direction}_${targetDays}d_${minOverlap}_${market}_${topLimit}`;
+  const cached = consecutiveOverlapMemoryCache.get(cacheKey);
+  if (cached && Date.now() - cached.timestamp < CONSECUTIVE_OVERLAP_CACHE_TTL_MS) {
+    return cached.data;
+  }
+
+  const isBuy = direction === 'buy';
+  const { getCached5dTrend, setCached5dTrend } = await import('./batchCollector');
+
+  const now = new Date();
+  const utcNow = now.getTime() + now.getTimezoneOffset() * 60000;
+  const kstNow = new Date(utcNow + 9 * 60 * 60000);
+  const todayStr = `${kstNow.getFullYear()}${String(kstNow.getMonth() + 1).padStart(2, '0')}${String(kstNow.getDate()).padStart(2, '0')}`;
+
+  // Get candidate stocks from real-time market overlap ranking (no fixed stock list restriction!)
+  const dailyOverlapRes = await fetchOverlapRankingData(direction, '1d', 2, 50, market).catch(() => null);
+  const candidateStocks = dailyOverlapRes?.list || [];
+
+  // 직전에 이미 이 등급(2일/3일연속)에서 활성 상태였던 종목 스냅샷을 먼저 가져온다.
+  let prevActive = await fetchConsecutiveOverlapWatch(todayStr, targetDays, direction, market, 'active').catch(() => []);
+  // 오늘 첫 계산이라 당일 스냅샷이 아직 없으면(장 시작 직후 등), "어제 마감 대비 오늘 이탈"을 그 즉시
+  // 잡아낼 수 있도록 직전 영업일의 마감 active 스냅샷으로 시작한다 - 히스토리 페이지("직전 영업일 대비
+  // 비교")와 라이브 탭의 이탈 판정 기준을 동일하게 맞추기 위함(하루 안의 미세 변화만 보던 기존 한계 보완).
+  if (prevActive.length === 0) {
+    prevActive = await fetchLatestActiveBeforeDate(todayStr, targetDays, direction, market).catch(() => []);
+  }
+
+  // 2일/3일연속 여부는 "오늘 상위 몇 위"가 아니라 당일 2개 이상 주체가 동시매수 중인 전 종목(candidateStocks,
+  // 최대 50개) 전부를 대상으로 판정해야 한다 - 오늘 순매수 금액 순위가 낮더라도 여러 날 연속 매수가 이어지는
+  // 종목을 놓치면 안 되기 때문. 과거에는 상위 8위만 봐서, 오늘 특정 주체가 매도해 당일 순위가 밀린 종목의
+  // 실제 연속매수 여부를 아예 재평가하지 못하고 "이탈"로 잘못 분류하는 문제가 있었다.
+  const top50Symbols = new Set(candidateStocks.map((s) => s.symbol));
+  // 혹시 당일 상위 50위 명단에서도 완전히 빠졌지만 직전엔 활성이었던 종목까지 안전망으로 포함(드문 경우 대비).
+  // candidateStocks에 없으므로 직전 스냅샷(prevActive)에 남아있는 최소 정보(symbol/name)로 재구성한다.
+  const carriedOver = prevActive
+    .filter((p) => !top50Symbols.has(p.symbol))
+    // 예전에 잘못 저장된 이름(예: "319660" 숫자 코드 그대로)이 계속 이월되며 자가 재생산되는 걸 막기 위해
+    // getStockName으로 매번 다시 보정한다 - fallback인 p.name이 symbol과 같으면(=이름 해석 실패였던 경우)
+    // TOP_300_STOCKS 등 마스터 카탈로그에서 정식 이름을 다시 찾는다.
+    .map((p) => ({ symbol: p.symbol, name: getStockName(p.symbol, p.name), currentPrice: 0 } as any));
+  const targetCandidates = [...candidateStocks, ...carriedOver];
+
+  // 콜드스타트 응답이 30초를 넘기지 않도록, 후보가 많을 때는 상위 PRIORITY_LIMIT개만 먼저 계산해서
+  // 즉시 응답(isPartial:true)하고, 나머지는 응답을 보낸 뒤 백그라운드에서 이어서 계산해 캐시를 완전판으로
+  // 갱신한다. candidateStocks(당일교집합 순매수금액 순)가 앞쪽에 오므로 "가장 유력한 후보부터" 먼저 보여준다.
+  const PRIORITY_LIMIT = 30;
+  const priorityCandidates = targetCandidates.slice(0, PRIORITY_LIMIT);
+  const restCandidates = targetCandidates.slice(PRIORITY_LIMIT);
+
+  const fetchTrendPair = async (stock: any) => {
+    // 오래된 캐시(getCached5dTrend)를 타지 않고, 장중 실시간 가집계가 주입된 최신 트렌드를 직접 조회 (trendDetailCache에 의해 60초간 0ms 캐싱)
+    const trendRes = await fetchKisInvestorTrend(stock.symbol, '5d').catch(() => null);
+    const programDaily = await fetchKisProgramTradeDaily(stock.symbol).catch(() => []);
+    return { stock, trendRes, programDaily };
+  };
+
+  const priorityResults = await Promise.all(priorityCandidates.map(fetchTrendPair));
+
+  // 당일 상위 50위 교집합 후보에 없는 종목도 2일/3일연속 여부를 봐야 한다(당일 순매수 "금액 순위"가
+  // 낮아도 여러 날 연속으로 계속 사고 있을 수 있음). 다만 TOP_300 전 종목을 매번 실시간 조회하면
+  // 요청이 지나치게 느려지고 타임아웃 위험이 커서, 배치 컬렉터가 이미 채워둔 캐시(getCached5dTrend,
+  // 0ms)가 있는 종목만 보강한다 - 캐시가 없는 종목은 억지로 조회하지 않고 건너뛴다(가짜 데이터 금지).
+  // 이 목록은 캐시 기반이라 실시간 조회 비용이 없으므로 우선/전체 계산 양쪽 모두에 그대로 포함시킨다.
+  const coveredSymbols = new Set(targetCandidates.map((s) => s.symbol));
+  const universeExtra = TOP_300_STOCKS.filter(
+    (s) => !coveredSymbols.has(s.symbol) && (market === 'ALL' || s.market === market)
+  );
+
+  // [DB 사전필터] 예전에는 universeExtra 전부가 batchCollector의 인메모리 예열 캐시(getCached5dTrend)에만
+  // 의존했다 - 서버리스 재시작/HMR로 그 캐시가 비면, 예열 로테이션 커서가 해당 종목을 다시 돌 때까지
+  // (최악 4시간) 후보에서 통째로 누락되는 문제가 있었다(실제로 사용자가 지적한 문제). 이제 raw_daily_data
+  // (장마감 후 자동 수집 - api/cron/collect-raw-daily-data, 서버 재시작에도 사라지지 않는 DB 영구 저장소)로
+  // "과거 targetDays-1일" 게이트를 먼저 통과한 종목만 걸러 라이브 조회 대상을 좁힌다. DB 기록이 없거나
+  // 부족한 종목은 배제하지 않고 안전하게 통과시킨다(fail-open - "데이터 없음"을 "조건 미달"로 오판 금지).
+  // 당일치는 raw_daily_data에 아직 없으므로(장마감 후에만 적재) 생존 종목은 반드시 라이브로 당일을 확인한다
+  // - "당일치를 포함해서 2/3일연속이 되어야 한다"는 요구사항을 그대로 지킨다.
+  const { fetchRawDailyTrailingDays } = await import('./supabase');
+  const { dates: trailingDates, bySymbol: trailingBySymbol } = await fetchRawDailyTrailingDays(todayStr, targetDays - 1).catch(() => ({ dates: [] as string[], bySymbol: new Map() }));
+  const passesDirectionAmt = (amt: number) => (isBuy ? amt > 0 : amt < 0);
+
+  const dbFilteredUniverse = trailingDates.length < targetDays - 1
+    ? universeExtra // DB 축적이 아직 부족(부트스트랩 초반) - 사전필터를 건너뛰고 전부 통과시킨다
+    : universeExtra.filter((stock) => {
+        const symbolDates = trailingBySymbol.get(stock.symbol);
+        if (!symbolDates) return true; // 이 종목의 DB 기록 없음 - 배제하지 않고 라이브로 직접 확인
+        for (const d of trailingDates) {
+          const row = symbolDates.get(d);
+          if (!row) return true; // 특정 일자 기록 누락 - 안전하게 통과(배제 금지)
+          let cnt = 0;
+          if (passesDirectionAmt(row.foreign_net_buy_amt || 0)) cnt++;
+          if (passesDirectionAmt(row.organ_net_buy_amt || 0)) cnt++;
+          if (passesDirectionAmt(row.program_net_buy_amt || 0)) cnt++;
+          if (cnt < minOverlap) return false; // 과거 특정일에 이미 조건 미달 확인됨 - 오늘 봐도 소용없어 스킵
+        }
+        return true; // 과거 N-1일 전부 조건 통과 - 오늘 라이브로 마저 확인해야 할 유력 후보
+      });
+
+  console.log(`[Consecutive Overlap DB Pre-filter] targetDays=${targetDays} universeExtra=${universeExtra.length}개 → DB 사전필터 통과 ${dbFilteredUniverse.length}개 (트레일링 날짜: ${trailingDates.join(',') || '없음(부트스트랩)'})`);
+
+  // DB 사전필터를 통과한 종목 중, 이미 인메모리 예열 캐시(getCached5dTrend)에 있으면 비용 0으로 그대로
+  // 쓰고, 없으면(예열이 아직 못 돈 종목) 라이브로 새로 조회할 대상으로 분류한다.
+  const universeExtraStockTrends: Array<{ stock: any; trendRes: any; programDaily: ProgramTradeDailyPoint[] }> = [];
+  const universeExtraNeedsLiveFetch: any[] = [];
+  for (const stock of dbFilteredUniverse) {
+    const cachedTrend = getCached5dTrend(stock.symbol);
+    if (!cachedTrend || !cachedTrend.trend || cachedTrend.trend.length === 0) {
+      universeExtraNeedsLiveFetch.push(stock);
+      continue;
+    }
+    // programDaily는 프로그램 순매수를 최신순(내림차순)으로 담은 배열이어야 하는데, 캐시된 trend에는
+    // 이미 각 일자별 programNetBuyAmt가 병합되어 있으므로(executeKisInvestorTrendFetch 참고) 그대로 재구성한다.
+    const programDailyFromCache: ProgramTradeDailyPoint[] = [...cachedTrend.trend]
+      .reverse()
+      .map((d: any) => ({
+        date: d.stck_bsop_date || d.date || '',
+        totalNetBuyAmt: d.programNetBuyAmt || 0,
+        totalNetBuyQty: 0,
+      }));
+    universeExtraStockTrends.push({ stock, trendRes: cachedTrend, programDaily: programDailyFromCache });
+  }
+
+  if (restCandidates.length === 0 && universeExtraNeedsLiveFetch.length === 0) {
+    // 후보가 PRIORITY_LIMIT 이하고 DB 사전필터 생존 종목도 전부 캐시로 커버됨 - 기존과 동일하게
+    // 한 번에 완전 계산하고 이탈도 즉시 기록
+    return finalizeConsecutiveOverlapResult(
+      [...priorityResults, ...universeExtraStockTrends],
+      targetDays, minOverlap, direction, market, cacheKey, todayStr, prevActive,
+      true, false
+    );
+  }
+
+  // 1단계: 우선순위 후보(+캐시로 이미 확보된 universeExtra)만으로 빠르게 응답 - 이탈 추적 기록은
+  // 하지 않는다(아직 못 본 나머지 후보를 "이탈"로 오판하는 걸 막기 위함, writeDropouts=false).
+  const partialMasterData = await finalizeConsecutiveOverlapResult(
+    [...priorityResults, ...universeExtraStockTrends],
+    targetDays, minOverlap, direction, market, cacheKey, todayStr, prevActive,
+    false, true
+  );
+
+  // 2단계: 응답을 이미 보낸 뒤(await 하지 않음) 나머지 후보 + DB 사전필터로 좁혀진 universeExtra
+  // 생존종목(캐시 미보유분)을 이어서 라이브로 조회해 캐시를 완전판으로 덮어쓰고, 이때만 이탈을 기록한다.
+  // 실패해도 이번 요청 응답에는 영향 없음(다음 요청이 다시 시도).
+  (async () => {
+    try {
+      const restResults = await Promise.all(restCandidates.map(fetchTrendPair));
+      const universeExtraLiveResults = await Promise.all(universeExtraNeedsLiveFetch.map(fetchTrendPair));
+      const fullStockTrends = [...priorityResults, ...restResults, ...universeExtraStockTrends, ...universeExtraLiveResults];
+      await finalizeConsecutiveOverlapResult(
+        fullStockTrends,
+        targetDays, minOverlap, direction, market, cacheKey, todayStr, prevActive,
+        true, false
+      );
+    } catch (e: any) {
+      console.warn('[Consecutive Overlap Background Completion Failed]', e?.message || e);
+    }
+  })();
+
+  return partialMasterData;
+}
+
+/**
+ * "이탈 종목" 탭 전용: 오늘 하루 동안 2일연속/3일연속 교집합 명단에서 밀려난 종목과 그 사유를 조회한다.
+ */
+export async function fetchConsecutiveOverlapDropouts(
+  direction: RankingDirection = 'buy',
+  market: MarketType = 'ALL',
+  targetDays: number = 2
+): Promise<Array<{
+  symbol: string;
+  name: string;
+  reason: string;
+  reasonBadges: Array<{ type: string; label: string; detail: string }>;
+  netBuyAmtEok?: number;
+  ranksByType?: OverlapInvestorRank[];
+  currentPrice?: number;
+  netBuyQty?: number;
+  netBuyAmt?: number;
+  changeRate?: number;
+  droppedAt?: string;
+}>> {
+  const now = new Date();
+  const utc = now.getTime() + now.getTimezoneOffset() * 60000;
+  const kstDate = new Date(utc + 9 * 60 * 60000);
+  const todayStr = `${kstDate.getFullYear()}${String(kstDate.getMonth() + 1).padStart(2, '0')}${String(kstDate.getDate()).padStart(2, '0')}`;
+
+  // date=todayStr로 조회하므로 오늘 이탈한(=오늘 저장된) 종목만 반환된다.
+  const rows = await fetchConsecutiveOverlapWatch(todayStr, targetDays, direction, market, 'dropped');
+  return rows
+    .map((r) => {
+      // ranks_by_type(jsonb)에는 { ranks, currentPrice, netBuyQty, netBuyAmt, changeRate, reasonBadges } 형태로 저장돼 있다.
+      const snapshot = (r.ranksByType as any) || {};
+      return {
+        symbol: r.symbol,
+        name: r.name,
+        reason: r.dropReason || '이탈',
+        reasonBadges: (snapshot.reasonBadges as Array<{ type: string; label: string; detail: string }>) || [],
+        netBuyAmtEok: r.netBuyAmtEok,
+        ranksByType: snapshot.ranks as OverlapInvestorRank[] | undefined,
+        currentPrice: snapshot.currentPrice,
+        netBuyQty: snapshot.netBuyQty,
+        netBuyAmt: snapshot.netBuyAmt,
+        changeRate: snapshot.changeRate,
+        droppedAt: r.droppedAt,
+      };
+    })
+    .sort((a, b) => new Date(b.droppedAt || 0).getTime() - new Date(a.droppedAt || 0).getTime());
+}
+
+/**
+ * "이탈 종목" 탭 전용(어제의 이탈): 직전 영업일 마감 시점의 2일연속/3일연속 활성 명단과 "지금 이 순간"의
+ * 활성 명단을 직접 비교한다. "당일 이탈"(fetchConsecutiveOverlapDropouts)이 오늘 하루 안의 변화만 보는
+ * 것과 달리, 히스토리 페이지(calculateOverlapDropoutsFromHistory)와 동일한 "직전 영업일 대비" 기준이라
+ * 로컬과 히스토리가 같은 개념을 보여준다.
+ */
+export async function fetchYesterdayOverlapDropouts(
+  direction: RankingDirection = 'buy',
+  market: MarketType = 'ALL',
+  targetDays: number = 2
+): Promise<Array<{
+  symbol: string;
+  name: string;
+  reason: string;
+  netBuyAmtEok?: number;
+  netBuyAmt?: number;
+  currentPrice?: number;
+  changeRate?: number;
+  comparedDate: string;
+}>> {
+  const todayStr = getKstTodayStr();
+  const yesterdayActive = await fetchLatestActiveBeforeDate(todayStr, targetDays, direction, market).catch(() => []);
+  if (yesterdayActive.length === 0) return [];
+
+  const comparedDate = (yesterdayActive[0] as any).date || '';
+  const todayActive = await fetchConsecutiveOverlapWatch(todayStr, targetDays, direction, market, 'active').catch(() => []);
+  const todaySymbols = new Set(todayActive.map((r) => r.symbol));
+  const dropped = yesterdayActive.filter((r) => !todaySymbols.has(r.symbol));
+  if (dropped.length === 0) return [];
+
+  const isBuy = direction === 'buy';
+  const passesDirection = (amt: number) => (isBuy ? amt > 0 : amt < 0);
+
+  const results = await Promise.all(
+    dropped.map(async (item) => {
+      const trendRes = await fetchKisInvestorTrend(item.symbol, '5d').catch(() => null);
+      const programDaily = await fetchKisProgramTradeDaily(item.symbol).catch(() => []);
+      const latestTrend = trendRes?.trend && trendRes.trend.length > 0 ? trendRes.trend[trendRes.trend.length - 1] : null;
+
+      const broken: string[] = [];
+      if (!latestTrend || !passesDirection(latestTrend.foreignNetBuyAmt || 0)) broken.push('외국인');
+      if (!latestTrend || !passesDirection(latestTrend.organNetBuyAmt || 0)) broken.push('기관');
+      if (!passesDirection(programDaily[0]?.totalNetBuyAmt || 0)) broken.push('프로그램');
+      const reason = broken.length > 0 ? `${broken.join('·')} 동시매수 조건 이탈` : '동시매수 주체 수 부족';
+
+      const priceInfo = resolveStockPriceAndChange(item.symbol, latestTrend?.closePrice || 0, 0, 0);
+
+      return {
+        symbol: item.symbol,
+        name: item.name,
+        reason,
+        netBuyAmtEok: item.netBuyAmtEok,
+        netBuyAmt: Math.round((item.netBuyAmtEok || 0) * 100),
+        currentPrice: priceInfo.currentPrice,
+        changeRate: priceInfo.changeRate,
+        comparedDate,
+      };
+    })
+  );
+
+  return results;
 }
 
 import { registerRuntimeStockName } from './mockData';
@@ -2616,7 +3206,7 @@ export async function fetchKisSurgingStocks(
 
   try {
     const res = await kisQueue.enqueue(
-      () => fetchWithRetry(() => executeKisSurgingStocksFetch(mode, market), 1, 300),
+      () => fetchWithRetry(() => executeKisSurgingStocksFetch(mode, market), 3, 300),
       'NORMAL',
       cacheKey
     );
@@ -3190,6 +3780,467 @@ export async function fetchKisComprehensiveScoreRanking(
     return result;
   } catch (err) {
     console.error('[KIS Comprehensive Ranking Exception]', err);
+    throw err;
+  }
+}
+
+// ============================================================================
+// 📊 [신규 독립 모듈] 당일 3분봉 캔들 + 피봇 포인트 + 피보나치 지표 연산 엔진
+// ============================================================================
+const intraday3mMemoryCache = new Map<string, { data: IntradayChartResponse; timestamp: number }>();
+
+/**
+ * 특정 날짜에 로컬 디스크에 실시간 부분저장(save3mCandlesToDiskAsync)이 한 번이라도 찍힌 심볼과
+ * 그 시점 봉 개수를 스캔해서 반환한다. TOP_300_STOCKS 큐레이션 목록 밖(검색으로 연 임의 종목 등)이라도
+ * 그날 실제로 조회된 적이 있으면 파일명(3m_{date}_{symbol}.json)에 흔적이 남으므로, EOD 아카이빙
+ * 크론이 "완전체(130개)로 다시 채워야 할 추가 대상"을 찾는 데 Supabase 조회와 함께 병행 사용한다.
+ */
+export function listLocalTodayViewed3mSymbols(date: string): Array<{ symbol: string; count: number }> {
+  if (!date) return [];
+  try {
+    const dir = path.join(process.cwd(), 'scratch', 'raw_daily_data');
+    if (!fs.existsSync(dir)) return [];
+    const prefix = `3m_${date}_`;
+    return fs
+      .readdirSync(dir)
+      .filter((f) => f.startsWith(prefix) && f.endsWith('.json'))
+      .map((f) => {
+        const symbol = f.slice(prefix.length, -'.json'.length);
+        let count = 0;
+        try {
+          const parsed = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
+          count = Array.isArray(parsed) ? parsed.length : 0;
+        } catch (_) {}
+        return { symbol, count };
+      });
+  } catch (e) {
+    console.warn('[listLocalTodayViewed3mSymbols Failed]', e);
+    return [];
+  }
+}
+
+export async function fetchKis3mCandlesFullDay(
+  symbol: string,
+  timeUnit: '3m' = '3m'
+): Promise<IntradayChartResponse> {
+  const matchedUniverseStock = TOP_300_STOCKS.find((s) => s.symbol === symbol);
+  const stockName = matchedUniverseStock?.name || getStockName(symbol);
+  const cacheKey = `3m-candles-${symbol}-${timeUnit}`;
+  const dynamicTtl = getDynamicRankingTtl();
+
+  // 1. In-Memory Cache Check (0ms latency)
+  if (intraday3mMemoryCache.has(cacheKey)) {
+    const cached = intraday3mMemoryCache.get(cacheKey)!;
+    if (Date.now() - cached.timestamp < dynamicTtl) {
+      return cached.data;
+    }
+  }
+
+  const appKey = process.env.KIS_APPKEY;
+  const appSecret = process.env.KIS_APPSECRET;
+  if (!appKey || !appSecret || appKey.trim() === '' || appSecret.trim() === '') {
+    throw new Error('[KIS API 인증 오류] .env.local에 KIS_APPKEY 또는 KIS_APPSECRET이 설정되지 않았습니다.');
+  }
+
+  const token = await getKisAccessToken();
+  if (!token) {
+    throw new Error('[KIS 인증 토큰 발급 실패]');
+  }
+
+  const isVirtual = process.env.KIS_VIRTUAL === 'true';
+  const defaultBaseUrl = isVirtual
+    ? 'https://openapivts.koreainvestment.com:29443'
+    : 'https://openapi.koreainvestment.com:9443';
+  const baseUrl = process.env.KIS_BASE_URL || defaultBaseUrl;
+
+  try {
+    // 현재 KST 시각 계산 (장중 미래 시간대 더미 틱 방지)
+    const now = new Date();
+    const utc = now.getTime() + now.getTimezoneOffset() * 60000;
+    const kstDate = new Date(utc + 9 * 60 * 60000);
+    const kstHour = kstDate.getHours();
+    const kstMinute = kstDate.getMinutes();
+    const kstTimeNum = kstHour * 100 + kstMinute;
+    const isTodayMarketOpen = kstDate.getDay() >= 1 && kstDate.getDay() <= 5 && kstTimeNum >= 900 && kstTimeNum < 1530;
+
+    // 09:00 장시작 전일 데이터 및 09:00~15:30 시간대 슬롯 병렬 초고속 수집
+    const allSlots = [
+      '090000', '093000', '100000', '103000', '110000', '113000', '120000',
+      '123000', '130000', '133000', '140000', '143000', '150000', '153000'
+    ];
+
+    // 장중에는 현재 시각 이후의 먼 미래 슬롯을 호출하지 않아 KIS API의 고착 더미 데이터 원천 차단
+    // (HHMM 문자열을 그대로 정수로 취급해 덧셈하면 분이 60을 넘어갈 때 시(hour) 경계를 넘지 못하는 연산 버그가 있어,
+    //  분(minute) 단위 선형값으로 환산하여 비교 - 예: 09:58 + 30분 = 10:28이 되어야 정상)
+    const nowTotalMinutes = kstHour * 60 + kstMinute;
+    const timeSlots = allSlots.filter((slotStr) => {
+      if (!isTodayMarketOpen) return true;
+      const sHour = parseInt(slotStr.slice(0, 2), 10);
+      const sMin = parseInt(slotStr.slice(2, 4), 10);
+      const slotTotalMinutes = sHour * 60 + sMin;
+      return slotTotalMinutes < nowTotalMinutes + 30; // 현재 진행 중인 30분 슬롯까지만 요청 (분 단위 선형 비교)
+    });
+
+    const responses = await Promise.all(
+      timeSlots.map(async (slotHour) => {
+        try {
+          const url = `${baseUrl}/uapi/domestic-stock/v1/quotations/inquire-time-itemchartprice?FID_COND_MRKT_DIV_CODE=J&FID_INPUT_ISCD=${symbol}&FID_INPUT_HOUR_1=${slotHour}&FID_PW_DATA_INCU_YN=Y&FID_ETC_CLS_CODE=`;
+          const res = await fetch(url, {
+            method: 'GET',
+            headers: {
+              'content-type': 'application/json; charset=utf-8',
+              authorization: `Bearer ${token}`,
+              appkey: appKey,
+              appsecret: appSecret,
+              tr_id: 'FHKST03010200',
+              custtype: 'P',
+            },
+            cache: 'no-store',
+          });
+          if (!res.ok) return [];
+          const json = await res.json();
+          return Array.isArray(json.output2) ? json.output2 : [];
+        } catch (e) {
+          return [];
+        }
+      })
+    );
+
+    const allRawCandles = responses.flat();
+
+    // 날짜 + 시간 기준 중복 제거 및 오름차순 정렬
+    const uniqueMap = new Map<string, any>();
+    allRawCandles.forEach((row) => {
+      const k = `${row.stck_bsop_date || ''}_${row.stck_cntg_hour || ''}`;
+      if (!uniqueMap.has(k)) uniqueMap.set(k, row);
+    });
+
+    const sortedRaw = Array.from(uniqueMap.values()).sort((a, b) => {
+      const dDiff = parseInt(a.stck_bsop_date || '0', 10) - parseInt(b.stck_bsop_date || '0', 10);
+      if (dDiff !== 0) return dDiff;
+      return parseInt(a.stck_cntg_hour || '0', 10) - parseInt(b.stck_cntg_hour || '0', 10);
+    });
+
+    // 1분 틱 데이터를 날짜별/3분 단위(3-Minute OHLCV)로 묶기
+    const slotMap = new Map<string, { date: string; time: string; ticks: any[] }>();
+    sortedRaw.forEach((row) => {
+      const dateStr = row.stck_bsop_date || '99999999';
+      const hStr = row.stck_cntg_hour || '090000';
+      const hour = parseInt(hStr.slice(0, 2), 10);
+      const min = parseInt(hStr.slice(2, 4), 10);
+      const slotMin = Math.floor(min / 3) * 3;
+      const timeKey = `${String(hour).padStart(2, '0')}:${String(slotMin).padStart(2, '0')}`;
+      const compositeKey = `${dateStr}_${timeKey}`;
+
+      if (!slotMap.has(compositeKey)) {
+        slotMap.set(compositeKey, { date: dateStr, time: timeKey, ticks: [] });
+      }
+      slotMap.get(compositeKey)!.ticks.push(row);
+    });
+
+    const aggregatedAll: Array<{
+      date: string;
+      time: string;
+      rawTime: string;
+      openPrice: number;
+      highPrice: number;
+      lowPrice: number;
+      closePrice: number;
+      volume: number;
+    }> = [];
+
+    slotMap.forEach(({ date, time, ticks }) => {
+      if (ticks.length === 0) return;
+      const firstTick = ticks[0];
+      const lastTick = ticks[ticks.length - 1];
+
+      const openPrice = parseInt(firstTick.stck_oprc || firstTick.stck_prpr || '0', 10);
+      const closePrice = parseInt(lastTick.stck_prpr || lastTick.stck_oprc || '0', 10);
+
+      let highPrice = -Infinity;
+      let lowPrice = Infinity;
+      let totalVolume = 0;
+
+      ticks.forEach((t) => {
+        const h = parseInt(t.stck_hgpr || t.stck_prpr || '0', 10);
+        const l = parseInt(t.stck_lwpr || t.stck_prpr || '0', 10);
+        const p = parseInt(t.stck_prpr || '0', 10);
+        const v = parseInt(t.cntg_vol || '0', 10);
+
+        if (h > 0 && h > highPrice) highPrice = h;
+        if (p > 0 && p > highPrice) highPrice = p;
+
+        if (l > 0 && l < lowPrice) lowPrice = l;
+        if (p > 0 && p < lowPrice) lowPrice = p;
+
+        totalVolume += v;
+      });
+
+      if (highPrice === -Infinity) highPrice = Math.max(openPrice, closePrice);
+      if (lowPrice === Infinity) lowPrice = Math.min(openPrice, closePrice);
+
+      aggregatedAll.push({
+        date,
+        time,
+        rawTime: lastTick.stck_cntg_hour || '090000',
+        openPrice,
+        highPrice,
+        lowPrice,
+        closePrice,
+        volume: totalVolume,
+      });
+    });
+
+    const allDates = Array.from(new Set(aggregatedAll.map((c) => c.date))).sort();
+    const todayYmd = `${kstDate.getFullYear()}${String(kstDate.getMonth() + 1).padStart(2, '0')}${String(kstDate.getDate()).padStart(2, '0')}`;
+    const latestDate = allDates[allDates.length - 1] || todayYmd;
+
+    // ========================================================================
+    // 1. 직전 거래일(어제) 확정 일봉(High, Low, Close, Open) 조회 (피봇 및 130개 롤링용)
+    // ========================================================================
+    let refHigh = 0;
+    let refLow = Infinity;
+    let refClose = 0;
+    let refOpen = 0;
+    let refVolume = 10000000;
+    let prevTradeDateStr = 'PREV';
+
+    try {
+      // executeKisInvestorTrendFetch(raw)를 직접 호출하면 kisQueue 레이트리밋 보호와 재시도가 전혀 없어
+      // 순간 실패 시 곧장 아래 폴백(당일 장중 데이터 기준 재계산)으로 떨어져 "전일 고정" 원칙이 깨진다.
+      // fetchKisInvestorTrend(공개 래퍼)를 사용해 캐시 + kisQueue + 3회 재시도 보호를 동일하게 적용한다.
+      const dailyTrend = await fetchKisInvestorTrend(symbol, '20d');
+      if (dailyTrend && dailyTrend.trend && dailyTrend.trend.length > 0) {
+        // 당일(오늘 장중 일봉)을 명시적으로 제외한 확정 과거 거래일 목록 필터링
+        const pastDailies = dailyTrend.trend
+          .map((item: any) => {
+            const rawD = String(item.stck_bsop_date || item.date || item.formattedDate || '').replace(/[^0-9]/g, '');
+            return { ...item, _numericDate: rawD ? parseInt(rawD, 10) : 0, _strDate: rawD };
+          })
+          .filter((item: any) => {
+            const dStr = item._strDate;
+            const isToday = (dStr && dStr === todayYmd) || (latestDate && dStr === latestDate);
+            return !isToday && item._numericDate > 0 && item.highPrice && item.lowPrice && item.closePrice;
+          })
+          .sort((a: any, b: any) => a._numericDate - b._numericDate);
+
+        if (pastDailies.length > 0) {
+          const targetDaily = pastDailies[pastDailies.length - 1];
+          refHigh = Number(targetDaily.highPrice || 0);
+          refLow = Number(targetDaily.lowPrice || 0);
+          refClose = Number(targetDaily.closePrice || 0);
+          refOpen = Number(targetDaily.openPrice || refClose);
+          refVolume = Number(targetDaily.volume || 10000000);
+          prevTradeDateStr = targetDaily._strDate || 'PREV';
+        }
+      }
+    } catch (e: any) {
+      // 무음 실패 금지: 전일 확정 일봉 조회가 실패하면 피봇/피보나치가 "전일 고정" 원칙을 벗어나
+      // 당일 장중 데이터 기준(아래 폴백)으로 대체되므로, 원인 추적이 가능하도록 반드시 로그를 남긴다.
+      console.warn(`[3분봉 피봇 전일 일봉 조회 실패] ${symbol}: ${e?.message || e} → 당일 장중 데이터 기준 폴백으로 대체 (전일 고정 원칙 이탈)`);
+    }
+
+    if (refHigh === 0 || refLow === Infinity || refClose === 0) {
+      const closes = aggregatedAll.map((c: any) => c.closePrice || 0).filter((p: number) => p > 0);
+      const highs = aggregatedAll.map((c: any) => c.highPrice || 0).filter((p: number) => p > 0);
+      const lows = aggregatedAll.map((c: any) => c.lowPrice || 0).filter((p: number) => p > 0);
+      refClose = closes.length > 0 ? closes[closes.length - 1] : (aggregatedAll[0]?.closePrice || 0);
+      refHigh = highs.length > 0 ? Math.max(...highs) : refClose;
+      refLow = lows.length > 0 ? Math.min(...lows) : refClose;
+      refOpen = aggregatedAll[0]?.openPrice || refClose;
+    }
+    if (refLow === Infinity) refLow = refClose;
+
+    // ========================================================================
+    // 2. 디스크 영구 아카이브 헬퍼 함수 (비동기 논블로킹 & 중복 I/O 방지)
+    // ========================================================================
+    const get3mArchiveDir = (): string => {
+      const dir = path.join(process.cwd(), 'scratch', 'raw_daily_data');
+      if (!fs.existsSync(dir)) {
+        try { fs.mkdirSync(dir, { recursive: true }); } catch (_) { }
+      }
+      return dir;
+    };
+
+    const save3mCandlesToDiskAsync = (sym: string, dt: string, cList: any[]): void => {
+      if (!sym || !dt || !cList || cList.length === 0) return;
+      // 이벤트 루프를 전혀 블로킹하지 않도록 setImmediate로 백그라운드 큐에 위임
+      setImmediate(async () => {
+        // 1. 로컬 디스크 저장 (로컬 개발 중 즉시 눈으로 확인 가능한 보조 저장소)
+        try {
+          const dir = get3mArchiveDir();
+          const filePath = path.join(dir, `3m_${dt}_${sym}.json`);
+          await fs.promises.writeFile(filePath, JSON.stringify(cList, null, 2), 'utf8');
+        } catch (err) {
+          console.warn(`[save3mCandlesToDiskAsync Failed] ${sym} (${dt}):`, err);
+        }
+        // 2. Supabase 저장 (Vercel 서버리스 인스턴스 재생성/콜드스타트에도 유실되지 않는 영구 저장소)
+        try {
+          const saved = await saveIntraday3mCandlesToSupabase(dt, sym, cList);
+          if (!saved) {
+            console.warn(`[3m Candles Supabase Save Skipped] ${sym} (${dt})`);
+          }
+        } catch (err) {
+          console.warn(`[3m Candles Supabase Save Exception] ${sym} (${dt}):`, err);
+        }
+      });
+    };
+
+    const load3mCandlesFromDisk = async (sym: string, dt: string): Promise<any[] | null> => {
+      if (!sym || !dt) return null;
+
+      // 1. Supabase 우선 조회 (서버리스 인스턴스 간에도 항상 동일하게 보이는 정본 저장소)
+      try {
+        const fromSupabase = await fetchIntraday3mCandlesFromSupabase(dt, sym);
+        if (fromSupabase && fromSupabase.length > 0) return fromSupabase;
+      } catch (err) {
+        console.warn(`[3m Candles Supabase Read Exception] ${sym} (${dt}):`, err);
+      }
+
+      // 2. 로컬 디스크 폴백 (Supabase 미설정/장애 시에도 로컬 개발이 끊기지 않도록)
+      try {
+        const dir = get3mArchiveDir();
+        const filePath = path.join(dir, `3m_${dt}_${sym}.json`);
+        if (fs.existsSync(filePath)) {
+          const raw = fs.readFileSync(filePath, 'utf8');
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        }
+      } catch (err) {
+        console.warn(`[load3mCandlesFromDisk Failed] ${sym} (${dt}):`, err);
+      }
+      return null;
+    };
+
+    // ========================================================================
+    // 3. 당일(오늘) KIS 실시간 3분봉 추출 및 디스크 영구 저장 (유실 방지)
+    // ========================================================================
+    const todayCandles = aggregatedAll
+      .filter((c) => {
+        if (c.date !== latestDate) return false;
+        if (isTodayMarketOpen) {
+          const [ch, cm] = c.time.split(':').map(Number);
+          const cTimeNum = ch * 100 + cm;
+          if (cTimeNum > kstTimeNum) return false;
+        }
+        return true;
+      })
+      .map((c) => ({
+        ...c,
+        formattedDate: c.date.length === 8 ? `${c.date.slice(4, 6)}/${c.date.slice(6, 8)}` : '오늘',
+      }));
+
+    // 당일 수집된 실시간 3분봉을 비동기 논블로킹 방식으로 디스크에 영구 저장 (이벤트 루프 지연 0ms)
+    if (todayCandles.length > 0) {
+      save3mCandlesToDiskAsync(symbol, latestDate, todayCandles);
+    }
+
+    // ========================================================================
+    // 4. 직전 거래일(어제) 실제 3분봉 데이터 확보 (가짜 보간 전면 폐기)
+    // ========================================================================
+    let prevDayRealCandles: any[] = [];
+    const archivedPrev = await load3mCandlesFromDisk(symbol, prevTradeDateStr);
+    if (archivedPrev && archivedPrev.length > 0) {
+      // 어제 아카이브(Supabase 우선, 로컬 디스크 폴백)가 존재하는 경우 (130개 실제 분봉 완전체)
+      prevDayRealCandles = archivedPrev;
+    } else {
+      // 아카이브가 없는 경우 KIS 실시간 API에서 수신된 어제 실제 틱 분봉만 사용 (가짜 보간 일체 금지)
+      prevDayRealCandles = aggregatedAll
+        .filter((c) => c.date !== latestDate)
+        .map((c) => ({
+          ...c,
+          formattedDate: c.date.length === 8 ? `${c.date.slice(4, 6)}/${c.date.slice(6, 8)}` : '어제',
+        }));
+    }
+
+    // ========================================================================
+    // 5. 100% 실제 데이터 결합 (어제 실제 봉 + 오늘 실제 실시간 봉, 최대 130개)
+    // ========================================================================
+    const neededPrev = Math.max(0, 130 - todayCandles.length);
+    const slicedPrev = neededPrev > 0 ? prevDayRealCandles.slice(-neededPrev) : [];
+    const combinedReal = [...slicedPrev, ...todayCandles].slice(-130);
+
+    // ========================================================================
+    // 6. 실제 봉 배열 대상 연속 이동평균선(MA5, MA20, MA60) 정석 연산
+    // ========================================================================
+    const candles: IntradayCandlePoint[] = combinedReal.map((c, idx, arr) => {
+      // MA5
+      const slice5 = arr.slice(Math.max(0, idx - 4), idx + 1);
+      const ma5 = Math.round(slice5.reduce((acc, x) => acc + x.closePrice, 0) / slice5.length);
+
+      // MA20
+      const slice20 = arr.slice(Math.max(0, idx - 19), idx + 1);
+      const ma20 = Math.round(slice20.reduce((acc, x) => acc + x.closePrice, 0) / slice20.length);
+
+      // MA60
+      const slice60 = arr.slice(Math.max(0, idx - 59), idx + 1);
+      const ma60 = Math.round(slice60.reduce((acc, x) => acc + x.closePrice, 0) / slice60.length);
+
+      return {
+        date: c.date,
+        formattedDate: (c as any).formattedDate || (c.date.length === 8 ? `${c.date.slice(4, 6)}/${c.date.slice(6, 8)}` : ''),
+        time: c.time,
+        rawTime: c.rawTime,
+        openPrice: c.openPrice,
+        highPrice: c.highPrice,
+        lowPrice: c.lowPrice,
+        closePrice: c.closePrice,
+        volume: c.volume,
+        ma5,
+        ma20,
+        ma60,
+      };
+    });
+
+    const totalCount = candles.length;
+    const todayCount = todayCandles.length;
+    const prevCount = totalCount - todayCount;
+    let statusNotice = '';
+    if (totalCount < 130) {
+      statusNotice = `총 ${totalCount}/130개 봉 표시 중 (어제 실제 틱 ${prevCount}개 + 오늘 ${todayCount}개)`;
+    } else {
+      statusNotice = `최근 130개 3분봉 롤링 완료 (어제 ${prevCount}개 + 오늘 ${todayCount}개)`;
+    }
+
+    // 1. 클래식 피봇 포인트 (Pivot Points - 전일 일봉 기준 불변 고정선)
+    // 계산값을 실제 KRX 호가단위에 맞춰 반올림 (실제로 존재하지 않는 호가가 화면에 뜨는 것 방지)
+    const P = roundToKrxTick((refHigh + refLow + refClose) / 3);
+    const R1 = roundToKrxTick(2 * P - refLow);
+    const R2 = roundToKrxTick(P + (refHigh - refLow));
+    const S1 = roundToKrxTick(2 * P - refHigh);
+    const S2 = roundToKrxTick(P - (refHigh - refLow));
+
+    // 2. 피보나치 되돌림 라인 (전일 일봉 파동 기준 불변 고정선)
+    const range = refHigh - refLow;
+    const fibo236 = roundToKrxTick(refHigh - range * 0.236);
+    const fibo382 = roundToKrxTick(refHigh - range * 0.382);
+    const fibo500 = roundToKrxTick(refHigh - range * 0.500);
+    const fibo618 = roundToKrxTick(refHigh - range * 0.618);
+
+    const levels: IntradayPivotFibonacciLevels = {
+      pivot: { r2: R2, r1: R1, p: P, s1: S1, s2: S2 },
+      fibonacci: { fibo236, fibo382, fibo500, fibo618 },
+      daySummary: { high: refHigh, low: refLow, close: refClose, range },
+    };
+
+    const response: IntradayChartResponse = {
+      symbol,
+      name: stockName,
+      timeUnit,
+      candles,
+      levels,
+      totalCount,
+      todayCount,
+      prevCount,
+      statusNotice,
+      isMock: false,
+      updatedAt: new Date().toISOString(),
+    };
+
+    intraday3mMemoryCache.set(cacheKey, { data: response, timestamp: Date.now() });
+    return response;
+  } catch (err) {
+    console.error(`[KIS Intraday 3m Candles Exception] ${symbol}:`, err);
     throw err;
   }
 }

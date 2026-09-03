@@ -8,6 +8,8 @@ import StockSearch from '@/components/StockSearch';
 import SupplySummaryCards from '@/components/SupplySummaryCards';
 import InvestorRankingTable from '@/components/InvestorRankingTable';
 import RankingStockDetailChart from '@/components/RankingStockDetailChart';
+import IndexCards from '@/components/IndexCards';
+import IndexDetailChart from '@/components/IndexDetailChart';
 import { InvestorTrendResponse, RankingItem, TrendPeriod } from '@/lib/types';
 import { AlertCircle, RefreshCw, X } from 'lucide-react';
 
@@ -25,6 +27,7 @@ export default function DashboardPage() {
   const [period, setPeriod] = useState<TrendPeriod>('60d');
   const [selectedStockItem, setSelectedStockItem] = useState<RankingItem | undefined>();
   const [isSearchedStockOpen, setIsSearchedStockOpen] = useState<boolean>(false);
+  const [selectedIndex, setSelectedIndex] = useState<'KOSPI' | 'KOSDAQ' | null>(null);
 
   const {
     data,
@@ -46,6 +49,14 @@ export default function DashboardPage() {
 
       {/* Main Container */}
       <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 space-y-6">
+        {/* KOSPI/KOSDAQ 지수 카드 - 클릭하면 아래 종목 검색과 동일하게 상세 차트가 열린다 */}
+        <IndexCards
+          selected={selectedIndex}
+          onSelect={(market) => {
+            setSelectedIndex((prev) => (prev === market ? null : market));
+          }}
+        />
+
         {/* Stock Search & Preset Selector */}
         <StockSearch
           currentSymbol={symbol}
@@ -54,10 +65,16 @@ export default function DashboardPage() {
             setSymbol(newSym);
             setSelectedStockItem(undefined);
             setIsSearchedStockOpen(true);
+            setSelectedIndex(null);
           }}
           onRefresh={() => refetch()}
           isFetching={isFetching}
         />
+
+        {/* 지수 상세 차트 패널 (지수 카드 클릭 시에만 노출) */}
+        {selectedIndex && (
+          <IndexDetailChart market={selectedIndex} onClose={() => setSelectedIndex(null)} />
+        )}
 
         {/* Error Alert Box */}
         {isError && (
@@ -107,6 +124,7 @@ export default function DashboardPage() {
             setSymbol(sym);
             setSelectedStockItem(item);
             setIsSearchedStockOpen(false);
+            setSelectedIndex(null);
           }}
         />
       </main>

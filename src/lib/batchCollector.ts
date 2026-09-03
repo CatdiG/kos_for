@@ -24,6 +24,13 @@ interface CacheEntry {
 const batchCacheStore = new Map<string, CacheEntry>();
 const trend5dBatchStore = new Map<string, any>();
 
+// 투자자별(외국인/기관) 트렌드 캐시 사전예열 순환 커서: 한 번의 실행(cron 1회)에 100종목을 전부
+// fetchKisInvestorTrend(kisQueue 직렬 300ms) 하면 실측 92초가 걸려 maxDuration=60을 초과한다(2026-09-02 로컬 실측).
+// 그래서 매 실행마다 일부(TREND_WARM_SIZE)씩만 순환 예열하여 60초 제한 안에서 안전하게 끝내고,
+// 여러 번의 cron 실행에 걸쳐 전체 종목을 골고루 예열한다.
+let trendWarmCursor = 0;
+const TREND_WARM_SIZE = 25;
+
 export function getBatchTrend5d(symbol: string): any {
   return trend5dBatchStore.get(symbol) || null;
 }
@@ -76,7 +83,15 @@ function sleep(ms: number): Promise<void> {
 /**
  * 프로그램매매 시가총액 상위 종목 병렬 수집 배치 수행
  */
-export async function runTop50BatchCollector(force: boolean = false, taskKey: string = 'batch_top50'): Promise<boolean> {
+export async function runTop50BatchCollector(
+  force: boolean = false,
+  taskKey: string = 'batch_top50',
+  // 트렌드 캐시 예열(295종목, kisQueue 직렬 300ms라 25종목만 예열해도 ~20~25초 소요)을 이번 실행에서도 할지 여부.
+  // 사용자가 "프로그램" 탭을 열어서 콜드스타트로 이 함수가 동기 대기(await)되는 경로에서는 false로 꺼야
+  // 프로그램 순매수 응답이 예열 때문에 20초 넘게 걸리는 일이 없다. 크론(cron/collect-program)이나
+  // 응답을 이미 보낸 뒤 백그라운드로 도는 경로(after())에서만 true로 둬서 예열이 계속 진행되게 한다.
+  warmTrend: boolean = true
+): Promise<boolean> {
   const lock = getTypeLock(taskKey);
   if (lock.isRunning && lock.promise) {
     console.log(`[Type Lock: ${taskKey}] 해당 타입 배치가 이미 실행 중입니다. 완료 시까지 대기.`);
@@ -99,11 +114,16 @@ export async function runTop50BatchCollector(force: boolean = false, taskKey: st
     console.log(`📌 [TRACE 1-START] runTop50BatchCollector 시작: taskKey=${taskKey}, force=${force}`);
 
     try {
-      // [300종목 후보군 온디맨드 공식 프로그램 수집]: 코스피 200 + 코스닥 100 대형주 전수
+      // [TOP_300_STOCKS 전 종목 프로그램 수집]: 예전엔 코스피/코스닥 시총 상위 50씩(100종목)만 대상이라
+      // 2일/3일연속 교집합 예열(트렌드 캐시)도 그만큼만 커버돼서, 히스토리(raw_daily_data 전 종목 기반)
+      // 보다 훨씬 적은 종목만 후보로 잡히는 격차가 있었다(예: 샘씨엔에스 252990처럼 시총 하위권이지만
+      // 실제로 2일 연속 매수 중인 종목이 아예 후보에 안 들어가서 로컬에 안 뜨던 문제). 전 종목으로 확장해서
+      // 히스토리와 같은 커버리지를 맞춘다 - 트렌드 예열은 TREND_WARM_SIZE만큼 순환 커서로 도니 크기가
+      // 커져도 60초 제한 문제는 없고, 전체 한 바퀴 도는 데 걸리는 시간만 늘어난다(허용 가능한 트레이드오프).
       const targetList = TOP_300_STOCKS;
       const programBuyList: RankingItem[] = [];
-      const chunkSize = 8;
-      const delayMs = 60;
+      const chunkSize = 20;
+      const delayMs = 50;
 
       for (let i = 0; i < targetList.length; i += chunkSize) {
         const chunk = targetList.slice(i, i + chunkSize);
@@ -139,8 +159,8 @@ export async function runTop50BatchCollector(force: boolean = false, taskKey: st
           }
         }
 
-        // 상위 60개 수집 완료 시 즉시 1차 캐시 빌드 (초기 응답 600ms 보장)
-        if (i + chunkSize >= 60 && !batchCacheStore.has(`program_buy_1d`)) {
+        // 상위 40개 수집 완료 시 즉시 1차 캐시 빌드 (초기 응답 500ms 보장)
+        if (i + chunkSize >= 40 && !batchCacheStore.has(`program_buy_1d`)) {
           await buildAndCacheRankings('program', programBuyList, now);
         }
 
@@ -151,6 +171,32 @@ export async function runTop50BatchCollector(force: boolean = false, taskKey: st
 
       await buildAndCacheRankings('program', programBuyList, now);
       console.log(`[Program Batch Completed] 프로그램 랭킹 수집 완료: count=${programBuyList.length}`);
+
+      // 투자자별(외국인/기관) 트렌드 캐시 순환 예열: 당일교집합 상위 50위 밖 종목이라도
+      // 시총 상위 100종목(코스피50+코스닥50)에 포함되면 2일/3일연속 교집합 판정에 쓸 수 있도록
+      // fetchKisInvestorTrend 성공 시 자동으로 채워지는 trend5dBatchStore(getCached5dTrend)에 미리 적재한다.
+      // targetList 전체(100종목)를 한 번에 예열하면 kisQueue 직렬 처리(300ms 간격 + 실제 응답지연) 때문에
+      // 92초가 걸려 maxDuration=60을 초과하므로(실측), TREND_WARM_SIZE만큼만 순환 커서 방식으로 예열한다.
+      if (warmTrend && targetList.length > 0) {
+        const start = trendWarmCursor % targetList.length;
+        let warmSlice = targetList.slice(start, start + TREND_WARM_SIZE);
+        if (warmSlice.length < TREND_WARM_SIZE) {
+          warmSlice = warmSlice.concat(targetList.slice(0, TREND_WARM_SIZE - warmSlice.length));
+        }
+        trendWarmCursor = (start + TREND_WARM_SIZE) % targetList.length;
+
+        const warmStart = Date.now();
+        await Promise.all(
+          warmSlice.map((stock) =>
+            fetchKisInvestorTrend(stock.symbol, '5d', 'LOW').catch((e) => {
+              console.warn(`[Batch Trend Pre-warm Skip] ${stock.symbol} 트렌드 캐시 예열 실패:`, e?.message || e);
+            })
+          )
+        );
+        console.log(`[Batch Trend Pre-warm Completed] ${warmSlice.length}종목 예열 완료 (${Date.now() - warmStart}ms, 다음 커서=${trendWarmCursor})`);
+      } else if (!warmTrend) {
+        console.log('[Batch Trend Pre-warm Skipped] warmTrend=false로 호출됨 (사용자 응답 지연 방지 - 크론에서 별도로 예열됨)');
+      }
 
       return true;
     } catch (err) {
@@ -269,7 +315,9 @@ export async function getBatchRankingDataAsync(
   // 1. 콜드스타트 시 배치 수집 실행 및 캐시 빌드 (가짜 seedList 반환 절대 금지)
   if (!cached || !cached.data || !Array.isArray(cached.data.list) || cached.data.list.length === 0) {
     console.log(`[Batch Async Collector] Cold-start empty cache for ${type}. Executing runTop50BatchCollector...`);
-    await runTop50BatchCollector(true, `batch_${type}`).catch((err) => console.error('[Background Batch Collector Error]', err));
+    // warmTrend=false: 사용자가 지금 이 응답을 기다리고 있으므로(동기 await) 여기서는 프로그램 매매만 빠르게
+    // 수집하고, 2일/3일연속용 트렌드 예열(20~25초)은 생략한다. 예열은 크론(collect-program)이 담당한다.
+    await runTop50BatchCollector(true, `batch_${type}`, false).catch((err) => console.error('[Background Batch Collector Error]', err));
     cached = batchCacheStore.get(cacheKey);
   }
 

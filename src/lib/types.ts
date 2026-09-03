@@ -81,6 +81,94 @@ export interface ProgramTradeSummary {
   asOfDateLabel?: string;
 }
 
+export interface IntradayCandlePoint {
+  time: string; // "15:30", "15:27" ...
+  rawTime: string; // "153000"
+  openPrice: number;
+  highPrice: number;
+  lowPrice: number;
+  closePrice: number;
+  volume: number;
+  ma5?: number | null;
+  ma20?: number | null;
+  ma60?: number | null;
+}
+
+export interface IntradayPivotFibonacciLevels {
+  pivot: {
+    r2: number; // 피봇 2차 저항 (신고가 영역)
+    r1: number; // 피봇 1차 저항 (2차 익절선)
+    p: number;  // 피봇 중심선 (강세/약세 기준선)
+    s1: number; // 피봇 1차 지지 (과매도 지지선)
+    s2: number; // 피봇 2차 지지
+  };
+  fibonacci: {
+    fibo236: number; // 23.6% 초강세 지지선
+    fibo382: number; // 38.2% 최적 단타 매수 타점
+    fibo500: number; // 50.0% 손절 마지노선
+    fibo618: number; // 61.8% 추세 경계선
+  };
+  daySummary: {
+    high: number;
+    low: number;
+    close: number;
+    range: number;
+  };
+}
+
+export interface IntradayChartResponse {
+  symbol: string;
+  name: string;
+  timeUnit: '3m' | '1m' | '5m';
+  candles: IntradayCandlePoint[];
+  levels: IntradayPivotFibonacciLevels;
+  totalCount?: number;
+  todayCount?: number;
+  prevCount?: number;
+  statusNotice?: string;
+  isMock?: boolean;
+  updatedAt: string;
+}
+
+// ============================================================================
+// KOSPI/KOSDAQ 지수 일봉 차트 전용 타입
+// - 지수는 개별 종목과 달리 "외국인/기관/프로그램 순매수" 개념이 KIS API에 존재하지 않아
+//   InvestorTrendDay/InvestorTrendResponse를 그대로 재사용하지 않고 필요한 필드만 별도 정의한다
+//   (수칙 1-3: 없는 데이터를 0으로 채워 있는 것처럼 꾸미지 않는다).
+// ============================================================================
+export interface IndexTrendDay {
+  date: string;          // YYYYMMDD
+  formattedDate: string; // MM.DD
+  openPrice: number;
+  highPrice: number;
+  lowPrice: number;
+  closePrice: number;
+  volume: number;
+  tradingValueEok?: number; // 거래대금(억원)
+}
+
+export interface IndexInfo {
+  code: '0001' | '1001';
+  name: string; // '코스피' | '코스닥'
+  currentPrice: number;
+  change: number;
+  changeRate: number;
+  volume: number;
+  tradingValueEok?: number;
+  advancingCount?: number;
+  decliningCount?: number;
+  unchangedCount?: number;
+}
+
+export interface IndexTrendResponse {
+  indexInfo: IndexInfo;
+  period: TrendPeriod;
+  trend: IndexTrendDay[];
+  isMock?: boolean;
+  message?: string;
+  updatedAt: string;
+}
+
 export interface InvestorTrendResponse {
   stockInfo: StockInfo;
   period: TrendPeriod;
@@ -159,6 +247,8 @@ export interface RankingItem {
   missingEntities?: Array<{ type: 'foreign' | 'organ' | 'program'; label: string }>;
   asOfDateLabel?: string;
   aiPickRank?: number;        // AI 추천 순위 배지 (1, 2, 3, 4, 5)
+  firstSeenAt?: string;       // 당일 교집합 탭 전용: 이 종목이 오늘 처음 교집합 명단에 포착된 시각(ISO)
+  firstSeenLabel?: string;    // firstSeenAt을 "HH:MM 최초포착" 형태로 가공한 표시용 문구
 }
 
 export interface SurgingRankItem {
@@ -202,6 +292,7 @@ export interface InvestorRankingResponse {
   error?: string;
   updatedAt: string;
   auditLog?: any;
+  isPartial?: boolean; // 2일/3일연속 교집합 전용: 상위 후보 우선 계산 결과라 백그라운드에서 전체 계산이 이어지고 있음을 표시
 }
 
 export interface KisTokenResponse {

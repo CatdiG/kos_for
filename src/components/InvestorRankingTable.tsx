@@ -12,7 +12,7 @@ import {
   RankingType,
   SurgingMode,
 } from '@/lib/types';
-import { getStockName, registerRuntimeStockName, resolveStockPriceAndChange, updateRuntimeStockPrice, TOP_50_STOCKS, resolveMarketType, getSettledAsOfDateLabel } from '@/lib/mockData';
+import { getStockName, registerRuntimeStockName, resolveStockPriceAndChange, updateRuntimeStockPrice, TOP_50_STOCKS, resolveMarketType, getSettledAsOfDateLabel, getKrxEstimateSlotInfo } from '@/lib/mockData';
 import RankingStockDetailChart from './RankingStockDetailChart';
 import {
   Globe2,
@@ -98,7 +98,13 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
   const [sortAsc, setSortAsc] = useState<boolean>(false);
   const [overlapMode, setOverlapMode] = useState<'daily' | 'consecutive2d' | 'consecutive3d'>('daily');
   const [overlapLimit, setOverlapLimit] = useState<number>(50);
+  const [showDropouts, setShowDropouts] = useState<boolean>(false);
+  // 이탈 종목 비교 기준: 'today'=오늘 하루 안의 변화, 'yesterday'=직전 영업일 마감 대비(히스토리 페이지와 동일 기준)
+  const [dropoutScope, setDropoutScope] = useState<'today' | 'yesterday'>('today');
   const [creditOnly, setCreditOnly] = useState<boolean>(false);
+  // 교집합 탭 전용: 이격도 배지가 "단기과열"인 종목(세력매집/설거지주의 모두 포함)을 목록에서 제외해서
+  // "지금 바로 진입 검토 가능한" 종목만 골라 보는 필터. 실제 매매 신호가 아니라 이격도 상태 기반 화면 필터일 뿐이다.
+  const [entryReadyOnly, setEntryReadyOnly] = useState<boolean>(false);
   const [surgingMode, setSurgingMode] = useState<SurgingMode>('fluctuation');
 
   // Selected Stock for Right Chart (Single Source of Truth)
@@ -136,6 +142,53 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
     },
     staleTime: 30 * 1000, // 30s cache staleTime for 0ms instant tab switching
     gcTime: 10 * 60 * 1000,
+    // 2일/3일연속 교집합은 콜드스타트 시 상위 30종목만 우선 계산해 isPartial:true로 먼저 응답하고
+    // 나머지는 백그라운드에서 이어서 계산한다. isPartial이 true인 동안만 짧게 재조회해서, 완전판이
+    // 준비되는 대로 화면이 자동으로 갱신되게 한다(계속 폴링하면 낭비라 완전판이 되면 멈춘다).
+    refetchInterval: (query) => {
+      const d = query.state.data as InvestorRankingResponse | undefined;
+      return d?.isPartial ? 4 * 1000 : false;
+    },
+  });
+
+  // 2일연속/3일연속 교집합에서 밀려난 "이탈 종목" 조회 - 두 등급을 합쳐서 종목마다 어느 쪽에서 밀려났는지 표시
+  type DropoutItem = {
+    symbol: string;
+    name: string;
+    reason: string;
+    reasonBadges?: Array<{ type: string; label: string; detail: string }>;
+    netBuyAmtEok?: number;
+    currentPrice?: number;
+    netBuyQty?: number;
+    netBuyAmt?: number;
+    changeRate?: number;
+    droppedAt?: string;
+    comparedDate?: string;
+    targetDays: 2 | 3;
+  };
+  const {
+    data: dropoutData,
+    isLoading: isDropoutLoading,
+    isError: isDropoutError,
+  } = useQuery<{ list: DropoutItem[] }>({
+    queryKey: ['consecutiveOverlapDropouts', direction, market, dropoutScope],
+    queryFn: async () => {
+      const [res2, res3] = await Promise.all([
+        fetch(`/api/stock/consecutive-overlap-dropouts?direction=${direction}&market=${market}&targetDays=2&scope=${dropoutScope}`),
+        fetch(`/api/stock/consecutive-overlap-dropouts?direction=${direction}&market=${market}&targetDays=3&scope=${dropoutScope}`),
+      ]);
+      if (!res2.ok || !res3.ok) throw new Error('이탈 종목 데이터를 가져오는 중 오류가 발생했습니다.');
+      const [json2, json3] = await Promise.all([res2.json(), res3.json()]);
+      const list2: DropoutItem[] = (json2.list || []).map((d: any) => ({ ...d, targetDays: 2 as const }));
+      const list3: DropoutItem[] = (json3.list || []).map((d: any) => ({ ...d, targetDays: 3 as const }));
+      const merged = [...list2, ...list3].sort(
+        (a, b) => new Date(b.droppedAt || 0).getTime() - new Date(a.droppedAt || 0).getTime()
+      );
+      return { list: merged };
+    },
+    enabled: showDropouts && activeTab === 'overlap',
+    staleTime: 30 * 1000,
+    refetchInterval: showDropouts ? 30 * 1000 : false,
   });
 
   // Smart hover-based prefetching: Only prefetches the target tab when the user hovers over its button
@@ -425,13 +478,28 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
       }));
   }
 
+  // 5-1. 교집합 탭 "진입가능만" 필터: 이격도 배지가 단기과열(세력매집/설거지주의 불문) 또는 역배열인
+  // 종목을 제외한다. 역배열은 추세 자체가 하락이라 연속매수가 바닥매집인지 단순반등인지 구분이 안 되는
+  // 별개의 리스크라, 백엔드 AI픽 후보군 배제 기준(kisApi.ts의 isEntryReadyBadge)과 동일하게 맞춘다.
+  if (activeTab === 'overlap' && entryReadyOnly) {
+    displayList = displayList
+      .filter((item) => {
+        const badge = item.statusBadge || '';
+        return !badge.includes('단기과열') && !badge.includes('역배열');
+      })
+      .map((item, idx) => ({
+        ...item,
+        rank: idx + 1, // 필터링 후 순위 재정렬(1, 2, 3...)
+      }));
+  }
+
   const hasRealData = useMemo(() => {
     if (!displayList || displayList.length === 0) return false;
     return displayList.some((item) => (item.netBuyAmt || 0) !== 0 || (item.netBuyQty || 0) !== 0);
   }, [displayList]);
 
-  // Track context key (activeTab, direction, period, overlapMode, overlapLimit, market, creditOnly)
-  const contextKey = `${activeTab}-${direction}-${period}-${overlapMode}-${overlapLimit}-${market}-${creditOnly}`;
+  // Track context key (activeTab, direction, period, overlapMode, overlapLimit, market, creditOnly, entryReadyOnly)
+  const contextKey = `${activeTab}-${direction}-${period}-${overlapMode}-${overlapLimit}-${market}-${creditOnly}-${entryReadyOnly}`;
   const prevContextKey = useRef('');
 
   useEffect(() => {
@@ -453,6 +521,7 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
       setActiveTab(newTab);
       setExpandedSymbols({}); // Reset open accordion stock detail charts
       setCreditOnly(false); // Reset credit filter OFF when switching tabs
+      setEntryReadyOnly(false); // 진입가능 필터도 탭 전환 시 초기화
       if (newTab !== 'overlap') {
         setOverlapMode('daily');
         setOverlapLimit(50);
@@ -473,6 +542,7 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
       setMarket(newMarket);
       setExpandedSymbols({});
       setCreditOnly(false);
+      setEntryReadyOnly(false);
     }
   };
 
@@ -481,6 +551,7 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
       setDirection(newDir);
       setExpandedSymbols({});
       setCreditOnly(false);
+      setEntryReadyOnly(false);
     }
   };
 
@@ -489,13 +560,14 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
       setPeriod(newPeriod);
       setExpandedSymbols({});
       setCreditOnly(false);
+      setEntryReadyOnly(false);
     }
   };
 
   // Reset expanded accordion charts whenever ANY tab, sub-mode, badge, filter, or sorting condition changes
   useEffect(() => {
     setExpandedSymbols({});
-  }, [activeTab, surgingMode, market, direction, period, overlapMode, overlapLimit, weights, creditOnly, sortField, sortAsc]);
+  }, [activeTab, surgingMode, market, direction, period, overlapMode, overlapLimit, weights, creditOnly, entryReadyOnly, sortField, sortAsc]);
 
   const tabs: { id: RankingType; label: string; icon: any; isRealtime: boolean; badge?: string }[] = [
     { id: 'surging', label: '급등주', icon: Rocket, isRealtime: true, badge: 'LIVE' },
@@ -543,39 +615,18 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
     return `(${clean})`;
   };
 
-  // KRX 공식 잠정 가집계 공표 차수 (KRX 규정: 09:30, 10:00, 11:30, 13:20, 14:30, 15:35)
-  const now = new Date();
-  const utc = now.getTime() + now.getTimezoneOffset() * 60000;
-  const kst = new Date(utc + 9 * 60 * 60000);
-  const currentKstTimeNum = kst.getHours() * 100 + kst.getMinutes();
-
-  const krxSchedule = [
-    { step: '1차(외인)', time: '09:30', timeNum: 930 },
-    { step: '1차(종합)', time: '10:00', timeNum: 1000 },
-    { step: '2차', time: '11:30', timeNum: 1130 },
-    { step: '3차', time: '13:20', timeNum: 1320 },
-    { step: '4차', time: '14:30', timeNum: 1430 },
-    { step: '장마감', time: '15:35', timeNum: 1535 },
-  ];
-
-  const getLatestKrxSlotTime = () => {
-    const passed = [...krxSchedule].reverse().find((s) => currentKstTimeNum >= s.timeNum);
-    return passed ? passed.time : '장 개장 전';
-  };
-
-  const getNextKrxSlotTime = () => {
-    const next = krxSchedule.find((s) => currentKstTimeNum < s.timeNum);
-    return next ? next.time : '내일 09:30';
-  };
-
-  const isMarketOpenNow = kst.getDay() >= 1 && kst.getDay() <= 5 && currentKstTimeNum >= 900 && currentKstTimeNum < 1530;
+  // KRX 공식 잠정 가집계 공표 차수 (단일 공통 함수 getKrxEstimateSlotInfo 활용)
+  const krxSlotInfo = getKrxEstimateSlotInfo();
+  const isMarketOpenNow = krxSlotInfo.isMarketOpen;
+  const latestKrxSlotTime = krxSlotInfo.currentSlot.time;
+  const nextKrxSlotTime = krxSlotInfo.nextSlotTime;
 
   const isAllSettled = (rawForeignAsOf.includes('마감') || (/^\([0-9]+\/[0-9]+.*기준\)$/.test(rawForeignAsOf))) &&
     (rawOrganAsOf.includes('마감') || (/^\([0-9]+\/[0-9]+.*기준\)$/.test(rawOrganAsOf))) &&
     (rawProgramAsOf.includes('마감') || (/^\([0-9]+\/[0-9]+.*기준\)$/.test(rawProgramAsOf)));
 
   const foreignOrganPart = rawForeignAsOf === rawOrganAsOf
-    ? (isMarketOpenNow && rawForeignAsOf.includes('가집계') ? `외·기 (${getLatestKrxSlotTime()} 기준 갱신, 다음 갱신 ${getNextKrxSlotTime()})` : `외·기 ${formatParenLabel(rawForeignAsOf)}`)
+    ? (isMarketOpenNow && rawForeignAsOf.includes('가집계') ? `외·기 (${latestKrxSlotTime} 기준 갱신, 다음 갱신 ${nextKrxSlotTime})` : `외·기 ${formatParenLabel(rawForeignAsOf)}`)
     : `외 ${formatParenLabel(rawForeignAsOf)} · 기 ${formatParenLabel(rawOrganAsOf)}`;
 
   let dynamicNoticeText = '';
@@ -607,6 +658,15 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
                   {overlapMode === 'consecutive3d'
                     ? '3일연속 수급교집합'
                     : (overlapMode === 'consecutive2d' ? '2일연속 수급교집합' : '당일 수급교집합')}
+                </span>
+              )}
+              {activeTab === 'overlap' && overlapMode !== 'daily' && data?.isPartial && (
+                <span
+                  className="text-[11px] px-2.5 py-0.5 rounded-full font-bold bg-slate-600 text-white flex items-center gap-1 shadow-xs whitespace-nowrap shrink-0"
+                  title="상위 후보부터 먼저 계산해서 우선 보여드리고 있습니다. 나머지 종목도 몇 초 안에 이어서 채워집니다."
+                >
+                  <RefreshCw className="w-3 h-3 shrink-0 animate-spin" />
+                  상위 종목 우선 표시 중 (전체 계산 중...)
                 </span>
               )}
               {activeTab === 'surging' && (
@@ -774,16 +834,16 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
                 <span className="font-bold text-slate-500 dark:text-slate-400 shrink-0 flex items-center gap-1">
                   🏛️ KRX 잠정 공표 일정:
                 </span>
-                {krxSchedule.map((slot, sIdx) => {
-                  const isPassed = currentKstTimeNum >= slot.timeNum;
-                  const nextSlot = krxSchedule[sIdx + 1];
-                  const isCurrent = isPassed && (!nextSlot || currentKstTimeNum < nextSlot.timeNum);
+                {(krxSlotInfo.schedule || []).map((slot, sIdx) => {
+                  const isPassed = krxSlotInfo.timeNum >= slot.timeNum;
+                  const nextSlot = krxSlotInfo.schedule?.[sIdx + 1];
+                  const isCurrent = isPassed && (!nextSlot || krxSlotInfo.timeNum < nextSlot.timeNum);
                   return (
                     <span
                       key={slot.time}
                       className={`px-2 py-0.5 rounded-md font-mono text-[10px] shrink-0 border transition flex items-center gap-1 ${
                         isCurrent
-                          ? 'bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-300 dark:border-emerald-700 font-bold shadow-xs'
+                           ? 'bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-300 dark:border-emerald-700 font-bold shadow-xs'
                           : isPassed
                           ? 'bg-slate-100 dark:bg-[#1e222d] text-slate-700 dark:text-slate-300 border-slate-200 dark:border-[#2a2e39]'
                           : 'bg-transparent text-slate-400 dark:text-slate-600 border-dashed border-slate-200 dark:border-[#2a2e39]'
@@ -797,7 +857,7 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
                 })}
               </div>
               <span className="text-[11px] text-slate-400 dark:text-slate-500 font-mono shrink-0">
-                * 다음 갱신 예정: <strong className="text-slate-700 dark:text-slate-300">{getNextKrxSlotTime()}</strong>
+                * 다음 갱신 예정: <strong className="text-slate-700 dark:text-slate-300">{krxSlotInfo.nextSlotTime}</strong>
               </span>
             </div>
           )}
@@ -1064,14 +1124,14 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
 
           {/* Dedicated Sub-Controls Bar for Overlap Tab Only (Placed cleanly below main tabs) */}
           {activeTab === 'overlap' && (
-            <div className="flex flex-wrap items-center justify-between gap-2 pt-2.5 border-t border-purple-100 dark:border-purple-950/40">
-              {/* Overlap Mode Toggle (Left) */}
+            <div className="flex flex-wrap items-center gap-2 pt-2.5 border-t border-purple-100 dark:border-purple-950/40">
+              {/* Overlap Mode Toggle + 이탈 종목 버튼을 같은 줄에 바로 붙여서 배치(justify-between으로 멀어지지 않게) */}
               <div className="bg-purple-50 dark:bg-purple-950/40 p-1 rounded-xl flex items-center text-xs font-medium border border-purple-200 dark:border-purple-800/40 max-w-full overflow-hidden gap-0.5 shrink-0">
                 <button
                   type="button"
-                  onClick={() => setOverlapMode('daily')}
+                  onClick={() => { setOverlapMode('daily'); setShowDropouts(false); }}
                   className={`px-2.5 py-1 rounded-lg transition whitespace-nowrap cursor-pointer text-xs font-bold flex items-center gap-1 shrink-0 ${
-                    overlapMode === 'daily'
+                    overlapMode === 'daily' && !showDropouts
                       ? 'bg-purple-600 text-white shadow-xs'
                       : 'text-purple-700 dark:text-purple-300 hover:text-purple-900'
                   }`}
@@ -1081,9 +1141,9 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
                 </button>
                 <button
                   type="button"
-                  onClick={() => setOverlapMode('consecutive2d')}
+                  onClick={() => { setOverlapMode('consecutive2d'); setShowDropouts(false); }}
                   className={`px-2.5 py-1 rounded-lg transition whitespace-nowrap cursor-pointer text-xs font-bold flex items-center gap-1 shrink-0 ${
-                    overlapMode === 'consecutive2d'
+                    overlapMode === 'consecutive2d' && !showDropouts
                       ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-xs'
                       : 'text-purple-700 dark:text-purple-300 hover:text-purple-900'
                   }`}
@@ -1093,9 +1153,9 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
                 </button>
                 <button
                   type="button"
-                  onClick={() => setOverlapMode('consecutive3d')}
+                  onClick={() => { setOverlapMode('consecutive3d'); setShowDropouts(false); }}
                   className={`px-2.5 py-1 rounded-lg transition whitespace-nowrap cursor-pointer text-xs font-bold flex items-center gap-1 shrink-0 ${
-                    overlapMode === 'consecutive3d'
+                    overlapMode === 'consecutive3d' && !showDropouts
                       ? 'bg-gradient-to-r from-red-600 to-amber-600 text-white shadow-xs animate-pulse'
                       : 'text-purple-700 dark:text-purple-300 hover:text-purple-900'
                   }`}
@@ -1103,23 +1163,250 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
                   <Rocket className="w-3 h-3 shrink-0" />
                   <span>3일연속 교집합</span>
                 </button>
+                {/* 이탈 종목 - 3일연속 교집합 버튼 바로 옆, 같은 pill 안에 붙여서 배치 */}
+                <button
+                  type="button"
+                  onClick={() => setShowDropouts(true)}
+                  className={`px-2.5 py-1 rounded-lg transition whitespace-nowrap cursor-pointer text-xs font-bold flex items-center gap-1 shrink-0 ${
+                    showDropouts
+                      ? 'bg-gradient-to-r from-slate-600 to-slate-700 text-white shadow-xs'
+                      : 'text-purple-700 dark:text-purple-300 hover:text-purple-900'
+                  }`}
+                  title="2일연속/3일연속 명단에서 오늘 밀려난 종목과 사유를 봅니다"
+                >
+                  <TrendingDown className="w-3 h-3 shrink-0" />
+                  <span>이탈 종목</span>
+                </button>
               </div>
 
-              {/* Dynamic Overlap Total Count Badge */}
-              <div className="bg-purple-100/80 dark:bg-purple-950/40 text-purple-700 dark:text-purple-300 px-3 py-1 rounded-xl flex items-center text-xs font-bold border border-purple-200 dark:border-purple-800/50 gap-1.5 shrink-0 shadow-2xs">
-                <Flame className="w-3.5 h-3.5 text-purple-600 dark:text-purple-400 shrink-0" />
-                <span>
-                  {overlapMode === 'consecutive3d'
-                    ? '3일연속 교집합: '
-                    : (overlapMode === 'consecutive2d' ? '2일연속 교집합: ' : '당일 교집합: ')}
-                  <strong className="text-purple-900 dark:text-purple-100 font-black">{displayList.length}개 종목</strong> 포착
-                </span>
-              </div>
+              {/* 이탈 비교 기준 토글 - 이탈 종목 패널이 켜져 있을 때만 노출 */}
+              {showDropouts && (
+                <div className="bg-slate-100 dark:bg-[#1e222d] p-1 rounded-xl flex items-center border border-slate-200/60 dark:border-[#2a2e39] text-xs shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setDropoutScope('today')}
+                    className={`px-2.5 py-1 rounded-lg font-bold transition whitespace-nowrap cursor-pointer ${
+                      dropoutScope === 'today'
+                        ? 'bg-slate-700 text-white shadow-xs'
+                        : 'text-slate-600 dark:text-gray-400 hover:text-slate-900 dark:hover:text-white'
+                    }`}
+                    title="오늘 하루 안에서 밀려난 종목만 봅니다"
+                  >
+                    당일 이탈
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setDropoutScope('yesterday')}
+                    className={`px-2.5 py-1 rounded-lg font-bold transition whitespace-nowrap cursor-pointer ${
+                      dropoutScope === 'yesterday'
+                        ? 'bg-slate-700 text-white shadow-xs'
+                        : 'text-slate-600 dark:text-gray-400 hover:text-slate-900 dark:hover:text-white'
+                    }`}
+                    title="직전 영업일 마감 대비 밀려난 종목을 봅니다 (히스토리 페이지와 동일 기준)"
+                  >
+                    어제의 이탈
+                  </button>
+                </div>
+              )}
+
+              {/* 진입가능만 필터 - 이격도 배지가 단기과열 또는 역배열인 종목은 화면에서 숨긴다(신용가능 필터와 동일 배치 방식) */}
+              {!showDropouts && (
+                <button
+                  type="button"
+                  onClick={() => setEntryReadyOnly(!entryReadyOnly)}
+                  className={`px-2.5 py-1 rounded-xl text-xs font-bold transition flex items-center gap-1 whitespace-nowrap cursor-pointer border shrink-0 ${
+                    entryReadyOnly
+                      ? 'bg-emerald-600 text-white border-transparent shadow-xs font-black'
+                      : 'bg-slate-100 dark:bg-[#1e222d] text-slate-600 dark:text-gray-400 border-slate-200/60 dark:border-[#2a2e39] hover:border-slate-300 dark:hover:border-slate-700'
+                  }`}
+                  title="이격도 배지가 '단기과열' 또는 '역배열'인 종목을 목록에서 제외합니다 (매매 신호가 아니라 화면 필터입니다)"
+                >
+                  <Filter className={`w-3.5 h-3.5 ${entryReadyOnly ? 'text-emerald-200' : 'text-emerald-500'}`} />
+                  <span>진입가능만</span>
+                </button>
+              )}
             </div>
           )}
 
+          {/* 이탈 종목(밀려난 종목) 패널 - "이탈 종목" 버튼을 켜면 아래 순위표 대신 이것만 단독으로 보임.
+              "당일 교집합" 순위표와 동일한 스타일(순위/종목명/현재가/순매수 수량/합산 순매수)을 그대로 쓰고,
+              "주체별 상세 순위" 칸만 "이탈 이유"로 바꿔서 보여준다. */}
+          {activeTab === 'overlap' && showDropouts && (
+            isDropoutLoading ? (
+              <div className="py-8 text-center text-[11px] text-slate-400 flex items-center justify-center gap-1.5">
+                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                이탈 종목 확인 중...
+              </div>
+            ) : isDropoutError ? (
+              <div className="p-6 text-center text-xs text-red-500 bg-red-50 dark:bg-red-950/20 rounded-xl border border-red-200 dark:border-red-900">
+                이탈 종목 데이터를 불러오지 못했습니다. 다시 시도해 주세요.
+              </div>
+            ) : !dropoutData?.list || dropoutData.list.length === 0 ? (
+              <div className="p-8 text-center text-xs text-slate-400 dark:text-slate-500 bg-slate-50/50 dark:bg-[#1e222d]/30 rounded-xl border border-dashed border-slate-200 dark:border-[#2a2e39]">
+                {dropoutScope === 'yesterday'
+                  ? '직전 영업일 마감 대비 이탈한 종목이 없습니다.'
+                  : '아직 오늘 이탈한 종목이 없습니다 (직전 조회 대비 명단이 그대로 유지되고 있습니다).'}
+              </div>
+            ) : (
+              <div className="overflow-y-auto max-h-[740px] rounded-xl border border-slate-200 dark:border-[#2a2e39] scrollbar-thin scrollbar-thumb-slate-300 dark:scrollbar-thumb-slate-700">
+                <table className="w-full text-left border-collapse text-xs">
+                  <thead className="sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29] shadow-xs">
+                    <tr className="border-b border-slate-200 dark:border-[#2a2e39] text-slate-500 dark:text-[#787b86] font-semibold bg-slate-100 dark:bg-[#1a1e29]">
+                      <th className="p-2.5 text-center min-w-[50px] whitespace-nowrap shrink-0 sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]">순위</th>
+                      <th className="p-2.5 whitespace-nowrap min-w-[110px] sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]">종목명</th>
+                      <th className="p-2.5 whitespace-nowrap min-w-[200px] sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]">이탈 이유</th>
+                      <th className="p-2.5 text-right whitespace-nowrap sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]">현재가</th>
+                      <th className="p-2.5 text-right whitespace-nowrap sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]">{isBuy ? '순매수 수량' : '순매도 수량'}</th>
+                      <th className="p-2.5 text-right whitespace-nowrap sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]">{isBuy ? '합산 순매수' : '합산 순매도'}</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 dark:divide-[#2a2e39]/60 font-mono">
+                  {dropoutData.list.map((d, idx) => {
+                    const rank = idx + 1;
+                    // 다른 탭과 동일하게 handleStockSelect가 item.symbol 기준으로 펼침 상태를 관리한다
+                    const isExpanded = Boolean(expandedSymbols[d.symbol]);
+                    const changeRate = d.changeRate || 0;
+                    const isPriceUp = changeRate > 0;
+                    const isPriceDown = changeRate < 0;
+                    return (
+                      <React.Fragment key={`${d.symbol}-${d.targetDays}`}>
+                        <tr
+                          className="transition-colors cursor-pointer hover:bg-slate-50 dark:hover:bg-[#1e222d]"
+                          onClick={(e) => handleStockSelect(e, { symbol: d.symbol, name: d.name, rank, type: 'overlap' } as RankingItem)}
+                        >
+                          {/* 순위 */}
+                          <td className="p-2.5 text-center font-bold whitespace-nowrap">
+                            <span
+                              className={`inline-flex items-center justify-center w-5 h-5 rounded-md text-[10px] shrink-0 ${
+                                rank === 1
+                                  ? 'bg-amber-500 text-white font-black shadow-xs'
+                                  : rank === 2
+                                  ? 'bg-slate-400 text-white font-bold'
+                                  : rank === 3
+                                  ? 'bg-amber-700 text-white font-bold'
+                                  : 'text-slate-500 dark:text-slate-400'
+                              }`}
+                            >
+                              {rank}
+                            </span>
+                          </td>
+
+                          {/* 종목명 */}
+                          <td className="p-2.5 font-sans font-bold whitespace-nowrap min-w-[110px]">
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-slate-900 dark:text-white hover:text-blue-600 dark:hover:text-blue-400 transition whitespace-nowrap text-xs">
+                                {getStockName(d.symbol, d.name)}
+                              </span>
+                              <span className="text-[10px] text-slate-400 font-mono shrink-0">{d.symbol}</span>
+                              {(() => {
+                                const mkt = resolveMarketType(d.symbol, d.name);
+                                const isKosdaq = mkt === 'KOSDAQ';
+                                return (
+                                  <span
+                                    className={`text-[9px] px-1 py-0.2 rounded font-sans font-bold shrink-0 border ${
+                                      isKosdaq
+                                        ? 'bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60'
+                                        : 'bg-blue-50 dark:bg-blue-950/60 text-blue-600 dark:text-blue-400 border-blue-200 dark:border-blue-800/60'
+                                    }`}
+                                  >
+                                    {isKosdaq ? '코스닥' : '코스피'}
+                                  </span>
+                                );
+                              })()}
+                            </div>
+                          </td>
+
+                          {/* 이탈 이유 (당일 교집합의 "주체별 상세 순위" 자리) - 2/3일연속 탭과 동일한 배지 형식 */}
+                          <td className="p-2.5 font-sans min-w-[200px]">
+                            <div className="flex items-center gap-1 flex-wrap py-0.5">
+                              <span
+                                className={`inline-flex items-center gap-1 text-[9px] px-1.5 py-0.5 rounded font-bold border whitespace-nowrap shrink-0 text-white ${
+                                  d.targetDays === 3
+                                    ? 'bg-gradient-to-r from-red-600 to-amber-600 border-transparent'
+                                    : 'bg-gradient-to-r from-blue-600 to-indigo-600 border-transparent'
+                                }`}
+                              >
+                                {d.targetDays}일연속
+                              </span>
+                              {d.reasonBadges && d.reasonBadges.length > 0 ? (
+                                d.reasonBadges.map((b, i) => (
+                                  <span
+                                    key={`${b.type}-${i}`}
+                                    className={`inline-flex items-center gap-1 text-[9px] px-1.5 py-0.5 rounded font-semibold border whitespace-nowrap shrink-0 ${getInvestorRankBadge(b.type)}`}
+                                  >
+                                    <span>{b.label}</span>
+                                    <strong className="font-mono text-[10px]">{b.detail}</strong>
+                                  </span>
+                                ))
+                              ) : d.reason && d.reason !== '이탈' ? (
+                                <span className="inline-flex items-center text-[9px] px-1.5 py-0.5 rounded font-semibold border border-dashed border-slate-300 dark:border-slate-700 text-slate-500 dark:text-slate-400 bg-slate-50/50 dark:bg-slate-900/40 whitespace-nowrap shrink-0">
+                                  {d.reason}
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center text-[9px] px-1.5 py-0.5 rounded font-semibold border border-dashed border-slate-300 dark:border-slate-700 text-slate-400 dark:text-slate-500 bg-slate-50/50 dark:bg-slate-900/40 whitespace-nowrap shrink-0">
+                                  이탈
+                                </span>
+                              )}
+                            </div>
+                          </td>
+
+                          {/* 현재가 */}
+                          <td className="p-2.5 text-right font-medium text-slate-800 dark:text-slate-200 whitespace-nowrap">
+                            {(d.currentPrice || 0) > 0 ? (
+                              <>
+                                <div>{(d.currentPrice || 0).toLocaleString()}원</div>
+                                <div className={`text-[9px] ${isPriceUp ? 'text-red-500 font-bold' : isPriceDown ? 'text-blue-500 font-bold' : 'text-slate-400'}`}>
+                                  ({isPriceUp ? '+' : ''}{changeRate.toFixed(2)}%)
+                                </div>
+                              </>
+                            ) : (
+                              <span className="text-slate-400 text-[10px]">-</span>
+                            )}
+                          </td>
+
+                          {/* 순매수/순매도 수량 (주) */}
+                          <td className="p-2.5 text-right font-medium font-mono whitespace-nowrap text-slate-700 dark:text-slate-300">
+                            {d.netBuyQty === undefined || d.netBuyQty === null ? (
+                              <span className="text-slate-400 text-[10px]">-</span>
+                            ) : (
+                              <span className={`${isBuy ? (d.netBuyQty >= 0 ? 'text-red-600/90 dark:text-red-400/90' : 'text-blue-600/90 dark:text-blue-400/90') : (d.netBuyQty <= 0 ? 'text-blue-600/90 dark:text-blue-400/90' : 'text-red-600/90 dark:text-red-400/90')}`}>
+                                {d.netBuyQty > 0 ? '+' : ''}
+                                {d.netBuyQty.toLocaleString()}주
+                              </span>
+                            )}
+                          </td>
+
+                          {/* 합산 순매수 대금 */}
+                          <td className="p-2.5 text-right font-bold font-mono whitespace-nowrap">
+                            <span className={`${isBuy ? ((d.netBuyAmt || 0) >= 0 ? 'text-red-600 dark:text-red-400' : 'text-blue-600 dark:text-blue-400') : ((d.netBuyAmt || 0) <= 0 ? 'text-blue-600 dark:text-blue-400' : 'text-red-600 dark:text-red-400')}`}>
+                              {(d.netBuyAmt || 0) > 0 ? '+' : ''}
+                              {d.netBuyAmtEok ?? 0} 억원
+                            </span>
+                          </td>
+                        </tr>
+
+                        {/* 다른 탭들과 동일하게: 행을 누르면 그 자리에 종목 상세 차트가 펼쳐짐 */}
+                        {isExpanded && (
+                          <tr className="bg-slate-50/90 dark:bg-[#181c27]/90 border-b border-purple-200/60 dark:border-purple-900/40">
+                            <td colSpan={6} className="p-3.5">
+                              <div className="bg-white dark:bg-[#131722] border border-purple-100 dark:border-purple-900/40 rounded-2xl p-4 shadow-inner">
+                                <RankingStockDetailChart symbol={d.symbol} rank={rank} rankingTypeLabel="이탈 종목" />
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </React.Fragment>
+                    );
+                  })}
+                  </tbody>
+                </table>
+              </div>
+            )
+          )}
+
           {/* Ranking Table Content with Fixed Height & Internal Vertical Scroll */}
-          {isLoading ? (
+          {/* 이탈 종목 패널이 켜져 있으면(showDropouts) 아래 순위표 전체를 렌더링하지 않고 위 패널만 단독 표시 */}
+          {showDropouts ? null : isLoading ? (
             <div className="h-64 flex flex-col items-center justify-center gap-2 text-slate-400 dark:text-slate-500 text-xs animate-pulse">
               <RefreshCw className="w-6 h-6 animate-spin" />
               <span>
@@ -1258,7 +1545,10 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
                           <div className="flex flex-row items-center justify-center gap-1 whitespace-nowrap">
                             <div className="relative inline-flex items-center justify-center shrink-0">
                               {/* 게임 티어 표준 5색 및 1위(30px)~5위(10px) 5px 단위 차등 단일 별(Star) 엠블럼 */}
-                              {activeTab === 'overlap' && (overlapMode === 'daily' || !overlapMode) && item.aiPickRank && item.aiPickRank <= 5 && (
+                              {/* 당일 교집합뿐 아니라 2일/3일연속 교집합도 백엔드에서 이미 동일한 computeOverlapAiPickScore로
+                                  aiPickRank를 계산해두고 있으므로(kisApi.ts의 fetchConsecutiveNDaysOverlapRankingData),
+                                  overlapMode 종류와 무관하게 항상 별 뱃지를 노출한다 */}
+                              {activeTab === 'overlap' && item.aiPickRank && item.aiPickRank <= 5 && (
                                 <div
                                   className={`absolute z-[2] pointer-events-none transform -rotate-45 origin-center shrink-0 filter drop-shadow-[0_1px_2px_rgba(0,0,0,0.4)] ${
                                     item.aiPickRank === 1
@@ -1396,39 +1686,31 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
                               </span>
                               {[...(item.ranksByType || [])]
                                 .sort((a, b) => {
-                                  const targetDays = overlapMode === 'consecutive3d' ? 3 : 2;
-                                  const isConsecA = overlapMode !== 'daily' && a.consecutiveText !== '당일순매수' && (a.consecutiveDays || 0) >= targetDays ? 1 : 0;
-                                  const isConsecB = overlapMode !== 'daily' && b.consecutiveText !== '당일순매수' && (b.consecutiveDays || 0) >= targetDays ? 1 : 0;
+                                  const isConsecA = overlapMode !== 'daily' && (a.consecutiveDays || 0) >= 2 ? 1 : 0;
+                                  const isConsecB = overlapMode !== 'daily' && (b.consecutiveDays || 0) >= 2 ? 1 : 0;
                                   if (isConsecB !== isConsecA) return isConsecB - isConsecA;
                                   const order: Record<string, number> = { foreign: 1, organ: 2, program: 3 };
                                   return (order[a.type] || 99) - (order[b.type] || 99);
                                 })
                                 .map((r) => {
-                                  const targetDays = overlapMode === 'consecutive3d' ? 3 : 2;
-                                  const isDailyOnly = overlapMode !== 'daily' && (r.consecutiveText === '당일순매수' || (r.consecutiveDays || 0) < targetDays);
+                                  const isSubTarget = overlapMode !== 'daily' && r.isRanked === false;
                                   return (
                                     <span
                                       key={r.type}
                                       className={`inline-flex items-center gap-1 text-[9px] px-1.5 py-0.5 rounded font-semibold border whitespace-nowrap shrink-0 ${
-                                        isDailyOnly
-                                          ? 'border-slate-300 dark:border-slate-600 bg-slate-100/70 dark:bg-slate-800/60 text-slate-500 dark:text-slate-400 opacity-80'
+                                        isSubTarget
+                                          ? 'border-slate-300 dark:border-slate-600 bg-slate-100/70 dark:bg-slate-800/60 text-slate-600 dark:text-slate-300 opacity-90'
                                           : getInvestorRankBadge(r.type)
                                       }`}
                                     >
-                                      {isDailyOnly ? (
-                                        <span>{r.label} 당일순매수</span>
-                                      ) : (
-                                        <>
-                                          <span>{r.label}</span>
-                                          <strong className="font-mono text-[10px]">
-                                            {overlapMode !== 'daily'
-                                              ? (r.consecutiveText || `${r.consecutiveDays || 2}일연속`)
-                                              : (r.isRanked === false || !r.rank || r.rank <= 0
-                                                  ? '순위밖'
-                                                  : `${r.rank}위`)}
-                                          </strong>
-                                        </>
-                                      )}
+                                      <span>{r.label}</span>
+                                      <strong className="font-mono text-[10px]">
+                                        {overlapMode !== 'daily'
+                                          ? (r.consecutiveText || (r.consecutiveDays && r.consecutiveDays >= 2 ? `${r.consecutiveDays}일연속` : '당일순매수'))
+                                          : (r.isRanked === false || !r.rank || r.rank <= 0
+                                              ? '순위밖'
+                                              : `${r.rank}위`)}
+                                      </strong>
                                     </span>
                                   );
                                 })}
@@ -1441,6 +1723,16 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
                                   <span>{m.label}: 미달</span>
                                 </span>
                               ))}
+                              {/* 당일 최초 진입 시각 - 뱃지 열의 제일 뒤에 배치("당일 교집합" 모드에서만 의미가 있다) */}
+                              {overlapMode === 'daily' && item.firstSeenLabel && (
+                                <span
+                                  className="inline-flex items-center gap-1 text-[9px] px-1.5 py-0.5 rounded font-semibold border whitespace-nowrap shrink-0 bg-cyan-50 dark:bg-cyan-950/40 text-cyan-700 dark:text-cyan-400 border-cyan-200 dark:border-cyan-800/60"
+                                  title="오늘 이 종목이 당일 교집합 명단에 처음 포착된 시각"
+                                >
+                                  <Clock className="w-2.5 h-2.5 shrink-0" />
+                                  {item.firstSeenLabel}
+                                </span>
+                              )}
                               </div>
                             </td>
                           )}
