@@ -282,6 +282,20 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
     }
   };
 
+  // 급등주 교집합(surgingMode==='overlap') 전용 - "거래대금" 헤더를 누르면 거래대금 높은 순으로,
+  // 한 번 더 누르면(오름차순이 아니라) 원래의 정상 순서(백엔드 rank 기준)로 되돌아간다. 다른 정보(현재가/
+  // 등락률/거래량/급등 상세 순위 등)는 그대로 두고 행 순서만 바뀐다 - handleSort의 "같은 필드 재클릭 시
+  // 오름차순으로 토글"과는 다른, 이 버튼 전용의 2단계(거래대금 내림차순 ↔ 정상) 토글이 필요해서 분리했다.
+  const handleOverlapAmountSortToggle = () => {
+    if (sortField === 'amountEok') {
+      setSortField('netBuyAmt');
+      setSortAsc(false);
+    } else {
+      setSortField('amountEok');
+      setSortAsc(false);
+    }
+  };
+
   const handleStockSelect = (e: React.MouseEvent, item: RankingItem) => {
     if (e) {
       e.preventDefault();
@@ -437,6 +451,11 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
           return b.volume - a.volume;
         } else if (surgingMode === 'amount') {
           return (b.amountEok || 0) - (a.amountEok || 0);
+        } else if (surgingMode === 'overlap') {
+          // 급등주 교집합의 "정상" 순서 - 백엔드가 이미 계산해서 내려준 원래 rank(등락률/거래량/거래대금
+          // 3중 교집합 기준) 그대로. 아래 464번째 줄에서 정렬 후 rank를 1,2,3...으로 재할당하기 전이라
+          // 이 시점의 a.rank/b.rank는 API가 원래 내려준 순위값이다.
+          return (a.rank || 0) - (b.rank || 0);
         }
       }
       if (activeTab === 'overlap') {
@@ -526,6 +545,12 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
         setOverlapMode('daily');
         setOverlapLimit(50);
       }
+      // 급등주 교집합 "거래대금" 정렬을 켜둔 채로 다른 탭으로 넘어가면 그 탭엔 amountEok가 없거나
+      // 의미가 달라서 정렬이 이상하게 보일 수 있어 정상 순서로 되돌린다.
+      if (sortField === 'amountEok') {
+        setSortField('netBuyAmt');
+        setSortAsc(false);
+      }
     }
   };
 
@@ -534,6 +559,12 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
       setSurgingMode(mode);
       setExpandedSymbols({}); // Reset open accordion stock detail charts
       setCreditOnly(false); // Reset credit filter OFF when switching surging sub-tabs
+      // 급등주 교집합에서 "거래대금" 정렬을 켜둔 채로 다른 서브탭(등락률/거래량 등)으로 넘어가면, 거기엔
+      // amountEok가 없거나 의미가 달라서 정렬이 이상하게 보일 수 있어 정상 순서로 되돌린다.
+      if (sortField === 'amountEok') {
+        setSortField('netBuyAmt');
+        setSortAsc(false);
+      }
     }
   };
 
@@ -1458,7 +1489,17 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
                           <th className="p-2.5 text-right whitespace-nowrap sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]">현재가</th>
                           <th className="p-2.5 text-right whitespace-nowrap sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]">등락률</th>
                           <th className="p-2.5 text-right whitespace-nowrap sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]">거래량</th>
-                          <th className="p-2.5 text-right whitespace-nowrap sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]">거래대금</th>
+                          <th className="p-2.5 text-right whitespace-nowrap sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]">
+                            <button
+                              type="button"
+                              onClick={handleOverlapAmountSortToggle}
+                              className="inline-flex items-center gap-1 hover:text-slate-900 dark:hover:text-white cursor-pointer"
+                              title={sortField === 'amountEok' ? '다시 누르면 정상 순서로 되돌아갑니다' : '누르면 거래대금 높은 순으로 정렬합니다'}
+                            >
+                              거래대금
+                              <ArrowUpDown className={`w-3 h-3 shrink-0 ${sortField === 'amountEok' ? 'opacity-100 text-amber-500' : 'opacity-60'}`} />
+                            </button>
+                          </th>
                           <th className="p-2.5 whitespace-nowrap min-w-[180px] sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]">급등 상세 순위</th>
                           <th className="p-2.5 whitespace-nowrap sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]">외국인 수급</th>
                           <th className="p-2.5 whitespace-nowrap sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]">기관 수급</th>
