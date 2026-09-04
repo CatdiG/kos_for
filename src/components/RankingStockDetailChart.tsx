@@ -1032,11 +1032,10 @@ function findActiveSwingLow(candles: any[]): SwingLowPoint | null {
             <button
               type="button"
               onClick={() => {
-                if (showMA5) setShowMA5(false);
-                else {
-                  setShowMA5(true);
-                  if (showDisparate) setShowDisparate(false);
-                }
+                // 🚨 [요청 반영] 이격도가 켜진 상태에서 이 선을 따로 누르면 예전엔 이격도까지 같이
+                // 꺼졌는데, "누른 선만 추가로 유지하고 이격도는 그대로 두고 싶다"는 요청을 받아 이격도를
+                // 강제로 끄는 동작을 제거했다 - 이격도 버튼 자체의 "켜면 이평선 다 끄기" 동작은 그대로다.
+                setShowMA5(!showMA5);
               }}
               className={`px-1.5 py-0.5 rounded font-bold border transition cursor-pointer ${
                 showMA5 ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/30' : 'bg-slate-50 text-slate-400 border-slate-200 opacity-50'
@@ -1046,13 +1045,7 @@ function findActiveSwingLow(candles: any[]): SwingLowPoint | null {
             </button>
             <button
               type="button"
-              onClick={() => {
-                if (showMA20) setShowMA20(false);
-                else {
-                  setShowMA20(true);
-                  if (showDisparate) setShowDisparate(false);
-                }
-              }}
+              onClick={() => setShowMA20(!showMA20)}
               className={`px-1.5 py-0.5 rounded font-bold border transition cursor-pointer ${
                 showMA20 ? 'bg-purple-500/10 text-purple-600 dark:text-purple-400 border-purple-200/30' : 'bg-slate-50 text-slate-400 border-slate-200 opacity-50'
               }`}
@@ -1061,13 +1054,7 @@ function findActiveSwingLow(candles: any[]): SwingLowPoint | null {
             </button>
             <button
               type="button"
-              onClick={() => {
-                if (showMA60) setShowMA60(false);
-                else {
-                  setShowMA60(true);
-                  if (showDisparate) setShowDisparate(false);
-                }
-              }}
+              onClick={() => setShowMA60(!showMA60)}
               className={`px-1.5 py-0.5 rounded font-bold border transition cursor-pointer ${
                 showMA60 ? 'bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 border-cyan-500/30' : 'bg-slate-50 text-slate-400 border-slate-200 opacity-50'
               }`}
