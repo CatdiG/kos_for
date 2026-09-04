@@ -790,45 +790,40 @@ function findActiveSwingLow(candles: any[]): SwingLowPoint | null {
               </div>
             </div>
 
-            {/* 60D·120D 통합 카드 (사용자 요청: 120일선 이격도 추가, 우측에 "60,120일선" 기준 명시) */}
+            {/* 60D·120D 통합 카드 - 20D 카드와 동일하게 헤더 1행 + 통계 1행 구조로 맞춰 높이/정렬을 통일했다 */}
             <div className="xl:col-span-6 flex flex-col gap-1.5 bg-white/90 dark:bg-[#1c202c]/90 p-2.5 rounded-lg border border-slate-200/80 dark:border-[#2a2e39] shadow-2xs">
               <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] font-sans pb-1 border-b border-slate-100 dark:border-slate-800/80">
-                <div className="flex items-center gap-x-2.5 gap-y-0.5 flex-wrap shrink-0 font-mono">
+                <div className="flex items-center gap-1.5 shrink-0 font-mono flex-wrap">
                   <span className="font-bold text-slate-500 dark:text-slate-400 text-xs font-sans">📈 이격도:</span>
-                  <span className="flex items-center gap-1">
-                    <span className="text-[10px] font-bold text-cyan-600 dark:text-cyan-400 font-sans">60일선</span>
-                    <strong className={`font-black text-[14px] ${disparateInfo.disparate60 <= 90 ? 'text-blue-600 dark:text-blue-400' : disparateInfo.disparate60 >= 110 ? 'text-rose-600 dark:text-rose-400' : 'text-slate-800 dark:text-slate-100'}`}>
-                      {disparateInfo.disparate60}%
-                    </strong>
-                  </span>
-                  <span className="flex items-center gap-1">
-                    <span className="text-[10px] font-bold text-fuchsia-600 dark:text-fuchsia-400 font-sans">120일선</span>
-                    <strong className={`font-black text-[14px] ${disparateInfo.disparate120 <= 90 ? 'text-blue-600 dark:text-blue-400' : disparateInfo.disparate120 >= 110 ? 'text-rose-600 dark:text-rose-400' : 'text-slate-800 dark:text-slate-100'}`}>
-                      {disparateInfo.disparate120}%
-                    </strong>
-                  </span>
+                  <span className="text-[10px] font-bold text-cyan-600 dark:text-cyan-400 font-sans">60일</span>
+                  <strong className={`font-black text-[14px] ${disparateInfo.disparate60 <= 90 ? 'text-blue-600 dark:text-blue-400' : disparateInfo.disparate60 >= 110 ? 'text-rose-600 dark:text-rose-400' : 'text-slate-800 dark:text-slate-100'}`}>
+                    {disparateInfo.disparate60}%
+                  </strong>
+                  <span className="text-[10px] font-bold text-fuchsia-600 dark:text-fuchsia-400 font-sans">120일</span>
+                  <strong className={`font-black text-[14px] ${disparateInfo.disparate120 <= 90 ? 'text-blue-600 dark:text-blue-400' : disparateInfo.disparate120 >= 110 ? 'text-rose-600 dark:text-rose-400' : 'text-slate-800 dark:text-slate-100'}`}>
+                    {disparateInfo.disparate120}%
+                  </strong>
                 </div>
-                <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 font-sans bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-1.5 py-0.5 rounded shrink-0 ml-auto">
+                <span
+                  className="text-[10px] font-bold text-slate-500 dark:text-slate-400 font-sans bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-1.5 py-0.5 rounded shrink-0 ml-auto"
+                  title="90% 이하: 반등 · 110% 이상: 과열 (60일선과 동일 기준)"
+                >
                   60,120일선
                 </span>
               </div>
-              <div className="text-[10px] text-slate-500 dark:text-slate-400 font-sans flex items-center gap-x-2.5 flex-wrap pb-0.5">
-                <span>• <strong>90% 이하</strong>: 반등</span>
-                <span>• <strong>110% 이상</strong>: 과열</span>
-              </div>
 
-              <div className="grid grid-cols-2 gap-0 text-xs font-sans pt-1 border-t border-slate-100 dark:border-slate-800/60 w-full whitespace-nowrap">
-                <div className="flex items-center justify-center text-center text-red-600 dark:text-red-400 border-r border-b border-slate-200/80 dark:border-slate-800/80 pr-2 pb-1 whitespace-nowrap">
-                  <span>🔴 60일 과열가: <strong className="font-bold font-mono text-xs sm:text-[13px]">{(disparateInfo?.overbought60Price || 0) > 0 ? `${(disparateInfo?.overbought60Price || 0).toLocaleString()}원` : '-'}</strong></span>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-0 text-xs font-sans pt-1 border-t border-slate-100 dark:border-slate-800/60 w-full whitespace-nowrap">
+                <div className="flex items-center justify-center text-center text-red-600 dark:text-red-400 border-r border-slate-200/80 dark:border-slate-800/80 pr-1 shrink-0 whitespace-nowrap">
+                  <span>🔴 <span className="hidden sm:inline">60일 </span>과열가: <strong className="font-bold font-mono text-[11px] sm:text-xs">{(disparateInfo?.overbought60Price || 0) > 0 ? `${(disparateInfo?.overbought60Price || 0).toLocaleString()}원` : '-'}</strong></span>
                 </div>
-                <div className="flex items-center justify-center text-center text-red-600 dark:text-red-400 border-b border-slate-200/80 dark:border-slate-800/80 pl-2 pb-1 whitespace-nowrap">
-                  <span>🔴 120일 과열가: <strong className="font-bold font-mono text-xs sm:text-[13px]">{(disparateInfo?.overbought120Price || 0) > 0 ? `${(disparateInfo?.overbought120Price || 0).toLocaleString()}원` : '-'}</strong></span>
+                <div className="flex items-center justify-center text-center text-red-600 dark:text-red-400 border-r border-slate-200/80 dark:border-slate-800/80 px-1 shrink-0 whitespace-nowrap">
+                  <span>🔴 <span className="hidden sm:inline">120일 </span>과열가: <strong className="font-bold font-mono text-[11px] sm:text-xs">{(disparateInfo?.overbought120Price || 0) > 0 ? `${(disparateInfo?.overbought120Price || 0).toLocaleString()}원` : '-'}</strong></span>
                 </div>
-                <div className="flex items-center justify-center text-center text-blue-600 dark:text-blue-400 border-r border-slate-200/80 dark:border-slate-800/80 pr-2 pt-1 whitespace-nowrap">
-                  <span>🔵 60일 침체가: <strong className="font-bold font-mono text-xs sm:text-[13px]">{(disparateInfo?.oversold60Price || 0) > 0 ? `${(disparateInfo?.oversold60Price || 0).toLocaleString()}원` : '-'}</strong></span>
+                <div className="flex items-center justify-center text-center text-blue-600 dark:text-blue-400 border-r border-slate-200/80 dark:border-slate-800/80 px-1 shrink-0 whitespace-nowrap">
+                  <span>🔵 <span className="hidden sm:inline">60일 </span>침체가: <strong className="font-bold font-mono text-[11px] sm:text-xs">{(disparateInfo?.oversold60Price || 0) > 0 ? `${(disparateInfo?.oversold60Price || 0).toLocaleString()}원` : '-'}</strong></span>
                 </div>
-                <div className="flex items-center justify-center text-center text-blue-600 dark:text-blue-400 pl-2 pt-1 whitespace-nowrap">
-                  <span>🔵 120일 침체가: <strong className="font-bold font-mono text-xs sm:text-[13px]">{(disparateInfo?.oversold120Price || 0) > 0 ? `${(disparateInfo?.oversold120Price || 0).toLocaleString()}원` : '-'}</strong></span>
+                <div className="flex items-center justify-center text-center text-blue-600 dark:text-blue-400 pl-1 shrink-0 whitespace-nowrap">
+                  <span>🔵 <span className="hidden sm:inline">120일 </span>침체가: <strong className="font-bold font-mono text-[11px] sm:text-xs">{(disparateInfo?.oversold120Price || 0) > 0 ? `${(disparateInfo?.oversold120Price || 0).toLocaleString()}원` : '-'}</strong></span>
                 </div>
               </div>
             </div>
@@ -1322,6 +1317,42 @@ function findActiveSwingLow(candles: any[]): SwingLowPoint | null {
                         strokeDasharray="4 4"
                       />
                     )}
+                    {/* 60일선·120일선 이격도 과열가/침체가 라인 (신규 추가) - 20일선(빨강/파랑)과 아예 겹치지 않는
+                        새 색상(60일=에메랄드, 120일=라임)을 기간별로 하나씩 배정해 20일선과 헷갈리지 않게 하고,
+                        같은 기간 내에서는 과열가(실선 계열)/침체가(성긴 점선)로 구분한다. 라인 이름표는 3분봉 탭과
+                        동일하게 차트 안이 아니라 차트 바깥의 범례 바에서 표시한다 (아래 "일간 이격선 범례 바" 참고) */}
+                    {showDisparate && (disparateInfo.overbought60Price || 0) > 0 && (
+                      <ReferenceLine
+                        y={disparateInfo.overbought60Price || 0}
+                        stroke="#10b981"
+                        strokeWidth={1.5}
+                        strokeDasharray="4 2"
+                      />
+                    )}
+                    {showDisparate && (disparateInfo.oversold60Price || 0) > 0 && (
+                      <ReferenceLine
+                        y={disparateInfo.oversold60Price || 0}
+                        stroke="#10b981"
+                        strokeWidth={1.5}
+                        strokeDasharray="1 3"
+                      />
+                    )}
+                    {showDisparate && (disparateInfo.overbought120Price || 0) > 0 && (
+                      <ReferenceLine
+                        y={disparateInfo.overbought120Price || 0}
+                        stroke="#84cc16"
+                        strokeWidth={1.5}
+                        strokeDasharray="4 2"
+                      />
+                    )}
+                    {showDisparate && (disparateInfo.oversold120Price || 0) > 0 && (
+                      <ReferenceLine
+                        y={disparateInfo.oversold120Price || 0}
+                        stroke="#84cc16"
+                        strokeWidth={1.5}
+                        strokeDasharray="1 3"
+                      />
+                    )}
                   </ComposedChart>
                 </ResponsiveContainer>
 
@@ -1376,6 +1407,36 @@ function findActiveSwingLow(candles: any[]): SwingLowPoint | null {
                   </div>
                 )}
               </div>
+
+              {/* 일간 이격선 범례 바 (3분봉 탭과 동일한 방식으로 차트 바깥에 색상/기간 명시) */}
+              {showDisparate && (
+                <div className="flex items-center justify-center gap-3 pt-1.5 border-t border-slate-200/60 dark:border-[#2a2e39]/60 text-[10px] font-semibold text-slate-600 dark:text-slate-300 shrink-0 flex-wrap">
+                  <div className="flex items-center gap-1">
+                    <svg width="18" height="6" className="inline-block shrink-0"><line x1="0" y1="3" x2="18" y2="3" stroke="#ef4444" strokeWidth="1.5" strokeDasharray="4 4" /></svg>
+                    <span>20일 과열가</span>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <svg width="18" height="6" className="inline-block shrink-0"><line x1="0" y1="3" x2="18" y2="3" stroke="#3b82f6" strokeWidth="1.5" strokeDasharray="4 4" /></svg>
+                    <span>20일 침체가</span>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <svg width="18" height="6" className="inline-block shrink-0"><line x1="0" y1="3" x2="18" y2="3" stroke="#10b981" strokeWidth="1.5" strokeDasharray="4 2" /></svg>
+                    <span className="font-bold" style={{ color: '#10b981' }}>60일 과열가</span>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <svg width="18" height="6" className="inline-block shrink-0"><line x1="0" y1="3" x2="18" y2="3" stroke="#10b981" strokeWidth="1.5" strokeDasharray="1 3" /></svg>
+                    <span className="font-bold" style={{ color: '#10b981' }}>60일 침체가</span>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <svg width="18" height="6" className="inline-block shrink-0"><line x1="0" y1="3" x2="18" y2="3" stroke="#84cc16" strokeWidth="1.5" strokeDasharray="4 2" /></svg>
+                    <span className="font-bold" style={{ color: '#84cc16' }}>120일 과열가</span>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <svg width="18" height="6" className="inline-block shrink-0"><line x1="0" y1="3" x2="18" y2="3" stroke="#84cc16" strokeWidth="1.5" strokeDasharray="1 3" /></svg>
+                    <span className="font-bold" style={{ color: '#84cc16' }}>120일 침체가</span>
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Bottom Subplot Panel 2: Daily Investor Supply Grouped Bar Chart (0-Baseline) - 거래량 서브플롯 추가를 위해 높이를 130px→96px로 축소 */}
