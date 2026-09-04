@@ -3,7 +3,11 @@ import { runTop50BatchCollector, getBatchRankingData } from '@/lib/batchCollecto
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
-export const maxDuration = 60; // 60s timeout for batch collection
+// 🚨 [버그 수정 - 근본 원인] 이 크론은 runTop50BatchCollector를 returnEarly 없이(기본 false) 호출해
+// 300종목 전체 스캔이 끝날 때까지 동기 대기한다. kisQueue 직렬화(batchCollector.ts의 근본 원인 수정)
+// 적용 후 이 전체 스캔이 ~103~110초 걸리는 것으로 실측됐다(scratch 진단) - 기존 60초로는 이미 타임아웃이
+// 난다. /api/stock/ranking과 동일한 안전 상한(280초, Vercel Hobby 플랜 실측 한도 300초 내 여유)으로 맞춘다.
+export const maxDuration = 280;
 
 export async function GET(request: NextRequest) {
   return handleCronBatch(request);

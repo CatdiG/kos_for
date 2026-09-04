@@ -326,6 +326,9 @@ export interface InvestorRankingResponse {
   updatedAt: string;
   auditLog?: any;
   isPartial?: boolean; // 2일/3일연속 교집합 전용: 상위 후보 우선 계산 결과라 백그라운드에서 전체 계산이 이어지고 있음을 표시
+  stillWarming?: boolean; // program 탭 전용: 콜드스타트 더미 시그니처(changeRate 0 + volume 1000000)가 응답 목록에 아직 남아있어
+  // trend5dBatchStore 백그라운드 예열(after() 25종목/사이클)이 계속 필요함을 표시. 프론트가 이 값이 true인 동안만
+  // 짧게 재조회해서(isPartial과 동일 패턴) 예열이 끝나는 대로 화면이 자동으로 정상화되게 한다.
 }
 
 export interface KisTokenResponse {

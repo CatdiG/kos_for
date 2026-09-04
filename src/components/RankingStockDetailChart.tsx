@@ -86,7 +86,10 @@ const CustomDailyVolumeTooltip = ({ active, payload, label }: any) => {
   if (!dataPoint) return null;
 
   const volume = dataPoint.volume || 0;
+  const volMa20 = dataPoint.volMa20 || 0;
   const isUp = (dataPoint.closePrice ?? 0) >= (dataPoint.openPrice ?? 0);
+  // 오늘 거래량이 20일 평균 대비 몇 %인지 - "기준선 위로 올라왔는지"를 숫자로도 바로 확인
+  const ratioVsAvg = volMa20 > 0 ? Math.round((volume / volMa20) * 100) : null;
 
   return (
     <div className="bg-white/95 dark:bg-[#1e222d]/95 backdrop-blur-md p-2.5 rounded-xl border border-slate-200 dark:border-[#2a2e39] shadow-xl text-xs space-y-1 z-50">
@@ -99,6 +102,20 @@ const CustomDailyVolumeTooltip = ({ active, payload, label }: any) => {
         </span>
         <span className="font-mono font-bold text-slate-900 dark:text-white">{volume.toLocaleString()}주</span>
       </div>
+      {volMa20 > 0 && (
+        <div className="flex justify-between items-center gap-3 pt-1 border-t border-slate-100 dark:border-slate-800">
+          <span className="font-semibold text-amber-600 dark:text-amber-400">20일 평균</span>
+          <span className="font-mono text-slate-600 dark:text-slate-300">{volMa20.toLocaleString()}주</span>
+        </div>
+      )}
+      {ratioVsAvg !== null && (
+        <div className="flex justify-between items-center gap-3">
+          <span className="font-semibold text-slate-500 dark:text-slate-400">평균 대비</span>
+          <span className={`font-mono font-bold ${ratioVsAvg >= 100 ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-500 dark:text-slate-400'}`}>
+            {ratioVsAvg}%{ratioVsAvg >= 100 ? ' (기준선 이상)' : ''}
+          </span>
+        </div>
+      )}
     </div>
   );
 };
@@ -138,6 +155,11 @@ export default function RankingStockDetailChart({
   const [showProgram, setShowProgram] = useState(true);
   const [showDisparate, setShowDisparate] = useState(false);
   const [showVolumeProfile, setShowVolumeProfile] = useState(false);
+  // 매물대(가격대별 누적 거래량)를 60일이 아니라 120일 기준으로도 볼 수 있게 해달라는 요청 반영.
+  // TrendPeriod(공유 타입, API 검증/다른 페이지에서도 재사용)는 건드리지 않고 이 차트의 표시 슬라이스만
+  // 120일로 넓힌다 - period='60d'로 조회하면 서버가 이미 120일치 이상을 캐시해두므로(minRequiredCount=120,
+  // kisApi.ts:609) 별도 API 변경 없이 클라이언트 슬라이스 한도만 늘리면 된다.
+  const [show120dView, setShow120dView] = useState(false);
 
   // 3m Candlestick Toggles
   const [show3mMA5, setShow3mMA5] = useState(true);
@@ -251,6 +273,13 @@ export default function RankingStockDetailChart({
       const sliceVol = arr.slice(Math.max(sliceFloor, idx - 20), idx + 1);
       const volumeRatio = computeRecentVolumeRatio(sliceVol.map((d) => d.volume));
 
+      // 20일 평균 거래량선 - "오늘 거래량이 평소보다 실렸는지" 눈으로 바로 판단하는 기준선.
+      // 가격 20일선(ma20)과 동일한 방식(당일 포함, 최대 20영업일 후행평균)으로 계산해 거래량 서브플롯에 겹쳐 그린다.
+      const slice20Vol = arr.slice(Math.max(sliceFloor, idx - 19), idx + 1);
+      const volMa20 = slice20Vol.length > 0
+        ? Math.round(slice20Vol.reduce((sum, d) => sum + (d.volume || 0), 0) / slice20Vol.length)
+        : null;
+
       const progAmt = item.programNetBuyAmt || 0;
       cumProg += progAmt;
 
@@ -295,6 +324,7 @@ export default function RankingStockDetailChart({
         ma20,
         ma60,
         ma120,
+        volMa20,
         recentLow,
         trendStatus,
         programNetBuyAmt: progAmt,
@@ -302,8 +332,8 @@ export default function RankingStockDetailChart({
       };
     });
 
-    // 2. Now slice to display period (5d, 20d, 60d)
-    const limit = period === '5d' ? 5 : period === '20d' ? 20 : 60;
+    // 2. Now slice to display period (5d, 20d, 60d, 120d)
+    const limit = show120dView ? 120 : period === '5d' ? 5 : period === '20d' ? 20 : 60;
     const sliced = fullTrendWithMA.slice(-limit);
 
     if (sliced.length === 0) return [];
@@ -321,7 +351,7 @@ export default function RankingStockDetailChart({
     }));
 
     return resList;
-  }, [trend, period, symbol]);
+  }, [trend, period, symbol, show120dView]);
 
 /**
  * KRX 가격대별 호가단위(aspr_unit) 판별
@@ -456,6 +486,60 @@ function calculateUltraTightKrxPriceAxis(minRaw: number, maxRaw: number, targetT
 
     return { ma5, ma20, ma60, ma120, disparate20, disparate60, disparate120, overbought20Price, oversold20Price, overbought60Price, oversold60Price, overbought120Price, oversold120Price, support1Price, recentLowPrice, badge, badgeStyle };
   }, [displayTrend]);
+
+  // 오늘 거래량이 "신뢰할 만한 수준"인지 판단하는 기준 - 20일 평균(일반 기준선)과는 별개로,
+  // "이번 무브에서 양봉 거래량이 평소 대비 처음으로 급증(돌파)한 날"의 거래량과 오늘을 직접 비교한다.
+  // 🚨 후보를 양봉(종가>=시가)인 날로만 한정한다 - 음봉(급락일) 거래량은 애초에 후보 자격이 없다
+  // (사용자 지시: "첫 거래량 터진 날을 양봉 거래량 터진 날로 잡으라니까" - SK이노베이션 8/26 같은
+  // -11% 급락일이 "최초 돌파일"로 잘못 뽑히는 걸 원천 차단).
+  // period 표시 슬라이스(displayTrend)가 아니라 원본 전체 trend를 스캔한다 - 5D/20D 같은 짧은
+  // 화면 기간에서도 돌파일 판별에 필요한 직전 평균(baseline)을 충분히 확보하기 위함.
+  const recentVolumeBenchmark = React.useMemo(() => {
+    if (!trend || trend.length < 2) return null;
+    const todayIdx = trend.length - 1;
+    const today = trend[todayIdx] as any;
+    if (!today || !today.volume) return null;
+    const isUpCandle = (d: any) => (d.closePrice ?? 0) >= (d.openPrice ?? 0);
+
+    // 오늘 이전 최대 40영업일을 스캔한다. 각 날짜의 거래량을 "그 직전 5영업일 평균" 대비 배율로 보고,
+    // 양봉이면서 배율이 3배 이상으로 처음(가장 이른 날짜) 튀는 날을 "돌파일"로 판정한다. baseline(직전
+    // 5일 평균)은 양봉/음봉 가리지 않고 전부 사용한다 - "평소 대비 얼마나 튀었나"를 보는 기준값이라
+    // 방향 제한이 필요 없고, 오직 "돌파일 자체"만 양봉으로 한정한다.
+    const scanStart = Math.max(0, todayIdx - 40);
+    const scanWindow = trend.slice(scanStart, todayIdx) as any[];
+    const BREAKOUT_MULTIPLIER = 3;
+    let breakoutDay: any = null;
+    for (let i = 5; i < scanWindow.length; i++) {
+      const day = scanWindow[i];
+      if (!day.volume || !isUpCandle(day)) continue;
+      const baseline = scanWindow.slice(i - 5, i);
+      const baselineAvg = baseline.reduce((sum, d) => sum + (d.volume || 0), 0) / baseline.length;
+      if (baselineAvg > 0 && day.volume / baselineAvg >= BREAKOUT_MULTIPLIER) {
+        breakoutDay = day;
+        break; // 가장 이른(첫) 돌파일만 채택 - 이후 더 큰 거래량이 나와도 무시
+      }
+    }
+
+    // 뚜렷한 돌파일이 없으면(최근 40일 내내 평소 대비 급증한 양봉일이 없으면) 최근 20영업일 중
+    // 양봉만 놓고 거래량 최댓값일로 대체한다 - 폴백도 음봉이 섞이지 않도록 동일하게 양봉으로 한정.
+    let peakDay = breakoutDay;
+    if (!peakDay) {
+      const fallbackWindow = (trend.slice(Math.max(0, todayIdx - 20), todayIdx) as any[]).filter(isUpCandle);
+      if (fallbackWindow.length > 0) {
+        peakDay = fallbackWindow.reduce((a, b) => ((b.volume || 0) > (a.volume || 0) ? b : a));
+      }
+    }
+    if (!peakDay || !peakDay.volume) return null;
+
+    const ratio = Math.round((today.volume / peakDay.volume) * 100);
+    return {
+      todayVolume: today.volume,
+      peakDate: peakDay.formattedDate || peakDay.stck_bsop_date || '',
+      peakVolume: peakDay.volume,
+      ratio,
+      isBreakoutDay: !!breakoutDay,
+    };
+  }, [trend]);
 
   const { minPrice, maxPrice, priceDomain, priceTicks } = React.useMemo(() => {
     if (!displayTrend || displayTrend.length === 0) {
@@ -803,17 +887,17 @@ function findActiveSwingLow(candles: any[]): SwingLowPoint | null {
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-0 text-xs font-sans pt-1 border-t border-slate-100 dark:border-slate-800/60 w-full whitespace-nowrap">
+              <div className="grid grid-cols-2 gap-x-0 gap-y-1.5 text-xs font-sans pt-1 border-t border-slate-100 dark:border-slate-800/60 w-full whitespace-nowrap">
                 <div className="flex items-center justify-center text-center text-red-600 dark:text-red-400 border-r border-slate-200/80 dark:border-slate-800/80 pr-1 shrink-0 whitespace-nowrap">
                   <span>🔴 과열가: <strong className="font-bold font-mono text-[11px] sm:text-xs">{(disparateInfo?.overbought20Price || 0) > 0 ? `${(disparateInfo?.overbought20Price || 0).toLocaleString()}원` : '-'}</strong></span>
                 </div>
-                <div className="flex items-center justify-center text-center text-orange-600 dark:text-orange-400 border-r border-slate-200/80 dark:border-slate-800/80 px-1 shrink-0 whitespace-nowrap">
+                <div className="flex items-center justify-center text-center text-orange-600 dark:text-orange-400 pl-1 shrink-0 whitespace-nowrap">
                   <span>🟠 <span className="hidden sm:inline">1차지지</span><span className="sm:hidden">1차</span>: <strong className="font-bold font-mono text-[11px] sm:text-xs">{(disparateInfo?.support1Price || 0) > 0 ? `${(disparateInfo?.support1Price || 0).toLocaleString()}원` : '-'}</strong></span>
                 </div>
-                <div className="flex items-center justify-center text-center text-purple-600 dark:text-purple-400 border-r border-slate-200/80 dark:border-slate-800/80 px-1 shrink-0 whitespace-nowrap">
+                <div className="flex items-center justify-center text-center text-purple-600 dark:text-purple-400 border-r border-t border-slate-200/80 dark:border-slate-800/80 pr-1 pt-1.5 shrink-0 whitespace-nowrap">
                   <span>🟣 <span className="hidden sm:inline">2차지지</span><span className="sm:hidden">2차</span>: <strong className="font-bold font-mono text-[11px] sm:text-xs">{(disparateInfo?.recentLowPrice || 0) > 0 ? `${(disparateInfo?.recentLowPrice || 0).toLocaleString()}원` : '-'}</strong></span>
                 </div>
-                <div className="flex items-center justify-center text-center text-blue-600 dark:text-blue-400 pl-1 shrink-0 whitespace-nowrap">
+                <div className="flex items-center justify-center text-center text-blue-600 dark:text-blue-400 border-t border-slate-200/80 dark:border-slate-800/80 pl-1 pt-1.5 shrink-0 whitespace-nowrap">
                   <span>🔵 침체가: <strong className="font-bold font-mono text-[11px] sm:text-xs">{(disparateInfo?.oversold20Price || 0) > 0 ? `${(disparateInfo?.oversold20Price || 0).toLocaleString()}원` : '-'}</strong></span>
                 </div>
               </div>
@@ -846,17 +930,17 @@ function findActiveSwingLow(candles: any[]): SwingLowPoint | null {
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-0 text-xs font-sans pt-1 border-t border-slate-100 dark:border-slate-800/60 w-full whitespace-nowrap">
+              <div className="grid grid-cols-2 gap-x-0 gap-y-1.5 text-xs font-sans pt-1 border-t border-slate-100 dark:border-slate-800/60 w-full whitespace-nowrap">
                 <div className="flex items-center justify-center text-center text-red-600 dark:text-red-400 border-r border-slate-200/80 dark:border-slate-800/80 pr-1 shrink-0 whitespace-nowrap">
                   <span>🔴 <span className="hidden sm:inline">60일 </span>과열가: <strong className="font-bold font-mono text-[11px] sm:text-xs">{(disparateInfo?.overbought60Price || 0) > 0 ? `${(disparateInfo?.overbought60Price || 0).toLocaleString()}원` : '-'}</strong></span>
                 </div>
-                <div className="flex items-center justify-center text-center text-red-600 dark:text-red-400 border-r border-slate-200/80 dark:border-slate-800/80 px-1 shrink-0 whitespace-nowrap">
+                <div className="flex items-center justify-center text-center text-red-600 dark:text-red-400 pl-1 shrink-0 whitespace-nowrap">
                   <span>🔴 <span className="hidden sm:inline">120일 </span>과열가: <strong className="font-bold font-mono text-[11px] sm:text-xs">{(disparateInfo?.overbought120Price || 0) > 0 ? `${(disparateInfo?.overbought120Price || 0).toLocaleString()}원` : '-'}</strong></span>
                 </div>
-                <div className="flex items-center justify-center text-center text-blue-600 dark:text-blue-400 border-r border-slate-200/80 dark:border-slate-800/80 px-1 shrink-0 whitespace-nowrap">
+                <div className="flex items-center justify-center text-center text-blue-600 dark:text-blue-400 border-r border-t border-slate-200/80 dark:border-slate-800/80 pr-1 pt-1.5 shrink-0 whitespace-nowrap">
                   <span>🔵 <span className="hidden sm:inline">60일 </span>침체가: <strong className="font-bold font-mono text-[11px] sm:text-xs">{(disparateInfo?.oversold60Price || 0) > 0 ? `${(disparateInfo?.oversold60Price || 0).toLocaleString()}원` : '-'}</strong></span>
                 </div>
-                <div className="flex items-center justify-center text-center text-blue-600 dark:text-blue-400 pl-1 shrink-0 whitespace-nowrap">
+                <div className="flex items-center justify-center text-center text-blue-600 dark:text-blue-400 border-t border-slate-200/80 dark:border-slate-800/80 pl-1 pt-1.5 shrink-0 whitespace-nowrap">
                   <span>🔵 <span className="hidden sm:inline">120일 </span>침체가: <strong className="font-bold font-mono text-[11px] sm:text-xs">{(disparateInfo?.oversold120Price || 0) > 0 ? `${(disparateInfo?.oversold120Price || 0).toLocaleString()}원` : '-'}</strong></span>
                 </div>
               </div>
@@ -963,10 +1047,11 @@ function findActiveSwingLow(candles: any[]): SwingLowPoint | null {
                 key={p}
                 onClick={() => {
                   handlePeriodChange(p);
+                  setShow120dView(false);
                   if (activeTab !== 'daily') setActiveTab('daily');
                 }}
                 className={`px-1.5 py-0.5 rounded text-[10px] font-bold transition cursor-pointer ${
-                  activeTab === 'daily' && period === p
+                  activeTab === 'daily' && !show120dView && period === p
                     ? 'bg-white dark:bg-[#2a2e39] text-slate-900 dark:text-white shadow-xs font-black'
                     : 'text-slate-500 dark:text-gray-400 hover:text-slate-900'
                 }`}
@@ -974,6 +1059,24 @@ function findActiveSwingLow(candles: any[]): SwingLowPoint | null {
                 {p.toUpperCase()}
               </button>
             ))}
+            {/* 120D: 매물대·이격도를 120일 기준으로 보고 싶다는 요청 반영. 클릭 시 period를 '60d'로 맞춰
+                서버가 이미 캐시해둔 120일치 원본 데이터를 그대로 재사용하고(신규 API 호출 없음),
+                표시 슬라이스만 120일로 넓힌다. */}
+            <button
+              type="button"
+              onClick={() => {
+                handlePeriodChange('60d');
+                setShow120dView(true);
+                if (activeTab !== 'daily') setActiveTab('daily');
+              }}
+              className={`px-1.5 py-0.5 rounded text-[10px] font-bold transition cursor-pointer ${
+                activeTab === 'daily' && show120dView
+                  ? 'bg-white dark:bg-[#2a2e39] text-slate-900 dark:text-white shadow-xs font-black'
+                  : 'text-slate-500 dark:text-gray-400 hover:text-slate-900'
+              }`}
+            >
+              120D
+            </button>
           </div>
 
           {/* 2. 3분봉 독립 버튼 (일간수급과 동일한 활성 테마 색상 적용) */}
@@ -1224,8 +1327,12 @@ function findActiveSwingLow(candles: any[]): SwingLowPoint | null {
             </button>
           </div>
         ) : activeTab === 'daily' ? (
-          /* TAB 1: [일간 누적 수급 (Daily)] - Ultra-Compact 2-Tier Combined Synchronized Chart */
-          <div className="bg-slate-50/60 dark:bg-[#161a25]/60 rounded-lg border border-slate-200/60 dark:border-[#2a2e39] overflow-hidden flex flex-col divide-y divide-slate-200/60 dark:divide-[#2a2e39]">
+          /* TAB 1: [일간 누적 수급 (Daily)] - Ultra-Compact 2-Tier Combined Synchronized Chart
+             🚨 overflow-hidden 제거: 맨 아래 "일별 거래량" 서브플롯 높이가 64px로 작은데, 그 안에서 뜨는
+             Recharts 툴팁(20일 평균·평균 대비 줄 추가로 키가 커짐)이 이 부모의 overflow-hidden 경계에
+             걸려 하단이 잘려 보이던 문제(사용자 스크린샷으로 확인) - rounded 모서리는 각 서브플롯에
+             개별로 라운드를 주지 않아도 배경색이 동일해 시각적 차이가 없어 그냥 제거해도 안전하다. */
+          <div className="bg-slate-50/60 dark:bg-[#161a25]/60 rounded-lg border border-slate-200/60 dark:border-[#2a2e39] flex flex-col divide-y divide-slate-200/60 dark:divide-[#2a2e39]">
             {/* Top Subplot Panel 1: Stock Price & Moving Averages */}
             <div className="p-2 flex flex-col justify-between">
               <div className="flex items-center justify-between text-[11px] font-bold text-slate-700 dark:text-slate-300 pb-0.5">
@@ -1479,14 +1586,15 @@ function findActiveSwingLow(candles: any[]): SwingLowPoint | null {
               )}
             </div>
 
-            {/* Bottom Subplot Panel 2: Daily Investor Supply Grouped Bar Chart (0-Baseline) - 거래량 서브플롯 추가를 위해 높이를 130px→96px로 축소 */}
+            {/* Bottom Subplot Panel 2: Daily Investor Supply Grouped Bar Chart (0-Baseline) - 거래량 서브플롯 추가를 위해 높이를 130px→96px로 축소,
+                이후 이격도/과열가·침체가 카드(6자리 가격 종목에서 찌그러짐) 공간 확보를 위해 96px→76px로 추가 축소 */}
             <div className="p-2 flex flex-col justify-between">
               <div className="flex items-center justify-between text-[11px] font-bold text-slate-700 dark:text-slate-300 pb-0.5">
                 <span>4대 주체 일별 순매수/순매도 수급</span>
                 <span className="text-[9px] text-slate-400 font-mono">0점 기준 (단위: 억원)</span>
               </div>
-              <div className="w-full h-[96px] min-h-[96px] shrink-0 relative">
-                <ResponsiveContainer width="100%" height={96}>
+              <div className="w-full h-[76px] min-h-[76px] shrink-0 relative">
+                <ResponsiveContainer width="100%" height={76}>
                   <ComposedChart syncId="stock-detail-chart" data={displayTrend} margin={{ top: 5, right: 15, left: -10, bottom: 0 }} barGap={0} barCategoryGap="18%">
                     <CartesianGrid strokeDasharray="3 3" stroke={gridColor} opacity={0.7} />
                     {/* 날짜축은 바로 아래 거래량 서브플롯에서 한 번만 표시 (중복 제거로 확보한 공간을 차트 높이에 재배분) */}
@@ -1534,9 +1642,28 @@ function findActiveSwingLow(candles: any[]): SwingLowPoint | null {
                   <span className="flex items-center gap-1 text-[9px] font-semibold text-blue-500">
                     <span className="w-2 h-2 rounded-xs bg-blue-500 inline-block" />음봉
                   </span>
+                  {/* "이 정도는 넘어야 거래량이 괜찮다"는 기준선(20일 평균 거래량선) 범례 - 사용자 요청 반영 */}
+                  <span className="flex items-center gap-1 text-[9px] font-semibold text-amber-500">
+                    <svg width="12" height="6" className="inline-block shrink-0"><line x1="0" y1="3" x2="12" y2="3" stroke="#f59e0b" strokeWidth="1.5" strokeDasharray="3 2" /></svg>
+                    20일 평균거래량
+                  </span>
                 </div>
                 <span className="text-[9px] text-slate-400 font-mono">단위: 주</span>
               </div>
+              {/* "20일 평균"과는 별개로, "이번 무브에서 거래량이 평소 대비 처음 급증(돌파)한 날"과 오늘
+                  거래량을 직접 비교한다 - 방향(양봉/음봉) 매칭은 쓰지 않는다(사용자 지시: "같은봉 찾지
+                  말고 첫 거래량 터진 날로"). 뚜렷한 돌파일이 없으면 최근 20일 거래량 최댓값일로 대체되며,
+                  이 경우 라벨을 "최근 거래량 고점"으로 다르게 표시해 어떤 기준이 적용됐는지 구분해준다.
+                  괄호 안은 등락률(%) 대신 그날의 실제 거래량 숫자를 그대로 넣는다. */}
+              {recentVolumeBenchmark && (
+                <div className={`flex items-center gap-1.5 text-[10px] font-bold px-0.5 pb-1 ${recentVolumeBenchmark.ratio >= 100 ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'}`}>
+                  <span>{recentVolumeBenchmark.ratio >= 100 ? '✅' : '⚠️'}</span>
+                  <span className="font-mono">
+                    {recentVolumeBenchmark.isBreakoutDay ? '최초 거래량 돌파일' : '최근 거래량 고점'} {recentVolumeBenchmark.peakDate}
+                    ({(recentVolumeBenchmark.peakVolume || 0).toLocaleString()}주) 대비 오늘 거래량 {recentVolumeBenchmark.ratio}%
+                  </span>
+                </div>
+              )}
               <div className="w-full h-[64px] min-h-[64px] shrink-0 relative">
                 <ResponsiveContainer width="100%" height={64}>
                   <ComposedChart syncId="stock-detail-chart" data={displayTrend} margin={{ top: 5, right: 15, left: -10, bottom: 0 }}>
@@ -1552,6 +1679,8 @@ function findActiveSwingLow(candles: any[]): SwingLowPoint | null {
                         />
                       ))}
                     </Bar>
+                    {/* 20일 평균 거래량 기준선 - 막대가 이 선 위로 올라오면 "평소보다 거래가 실린 날" */}
+                    <Line type="monotone" dataKey="volMa20" name="20일 평균거래량" stroke="#f59e0b" strokeWidth={1.5} strokeDasharray="3 2" dot={false} isAnimationActive={false} />
                   </ComposedChart>
                 </ResponsiveContainer>
               </div>

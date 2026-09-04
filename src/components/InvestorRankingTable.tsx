@@ -145,9 +145,14 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
     // 2일/3일연속 교집합은 콜드스타트 시 상위 30종목만 우선 계산해 isPartial:true로 먼저 응답하고
     // 나머지는 백그라운드에서 이어서 계산한다. isPartial이 true인 동안만 짧게 재조회해서, 완전판이
     // 준비되는 대로 화면이 자동으로 갱신되게 한다(계속 폴링하면 낭비라 완전판이 되면 멈춘다).
+    // program 탭도 동일 패턴: 콜드스타트 직후엔 트렌드 예열(after() 25종목/사이클, 사이클당 약 45초)이
+    // 덜 끝나 더미 시그니처가 남아있을 수 있다(stillWarming:true) - 그동안만 50초 간격으로 재조회해서
+    // 예열 사이클이 끝나는 대로 자동 반영되게 하고, 다 채워지면(stillWarming:false) 폴링을 멈춘다.
     refetchInterval: (query) => {
       const d = query.state.data as InvestorRankingResponse | undefined;
-      return d?.isPartial ? 4 * 1000 : false;
+      if (d?.isPartial) return 4 * 1000;
+      if (activeTab === 'program' && d?.stillWarming) return 50 * 1000;
+      return false;
     },
   });
 

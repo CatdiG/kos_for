@@ -395,6 +395,16 @@ export interface RawDailyTrailingRow {
   foreign_net_buy_amt: number;
   organ_net_buy_amt: number;
   program_net_buy_amt: number;
+  // 🚨 [버그 수정] 원래 이 select에 가격 컬럼이 빠져 있어서, 이 row를 쓰는 fetchTrendPair(kisApi.ts)가
+  // 과거 날짜의 closePrice를 항상 0으로 채울 수밖에 없었다. 그 결과 computeStatusBadgeFromTrend가
+  // closePrice>0 필터에서 과거 데이터를 전부 걸러내 ma5/ma20/ma60이 항상 null이 되고, 배지가 항상
+  // "이평선 수렴"으로 고정되는 구조적 버그로 이어졌다(랭킹 목록과 종목 상세 차트의 배지 불일치의 근본 원인).
+  close_price: number;
+  open_price?: number;
+  high_price?: number;
+  low_price?: number;
+  volume?: number;
+  change_rate?: number;
 }
 
 /**
@@ -411,16 +421,45 @@ export async function fetchRawDailyTrailingDays(
   const client = getSupabaseAdmin() || getSupabasePublic();
   if (!client || tradingDaysBack <= 0) return empty;
 
+  // 🚨 [버그 수정] Supabase(PostgREST)는 .limit()을 아무리 크게 줘도 프로젝트 기본 응답 상한(보통
+  // 1000행)을 넘길 수 없다 - 실측: 295종목 × 20일 = 5,900행이 필요한데 1,000행에서 잘려 최근
+  // 3~4일치만 조회됐고, 그 결과 2/3일연속 계산의 trend가 ma20을 계산할 20일치를 못 채워 배지가
+  // 항상 "이평선 수렴"으로 나오는 문제로 이어졌다(사용자 실측: 차트 상세 "단기과열" vs 랭킹 목록
+  // "이평선 수렴" 불일치, raw_daily_data 백필을 20일치로 넉넉히 늘려도 재현됨 - Supabase 직접
+  // 쿼리로 원인 확정). .range()로 페이지를 나눠 필요한 만큼 전부 끌어온다.
+  // 🚨 [2차 재발 - 버그 수정] 90일치로 늘린 뒤에도 여전히 일부 종목(리노공업 등)만 "이평선 수렴"에
+  // 갇혀있었다 - 원인은 maxPages=20(=20,000행 상한)이었다. 90일 × 295종목 ≈ 26,550행이 필요한데
+  // 20,000행에서 잘렸고, 이 쿼리엔 order()도 없어 어떤 종목/날짜가 잘릴지 예측조차 불가능했다
+  // (Supabase 프로젝트 콘솔에서 raw_daily_data 실제 행을 직접 대조해 확정: 리노공업은 DB에 90행이
+  // 전부 있는데도 API 응답만 틀렸던 게 이 페이지네이션 절단 때문이었다). 여유있게 60으로 늘린다
+  // (60,000행 - 300종목 × 120일까지 커버 가능한 상한이라 향후 lookback을 더 늘려도 안전).
+  const fetchAllPages = async (
+    build: (from: number, to: number) => any,
+    pageSize: number = 1000,
+    maxPages: number = 60
+  ): Promise<any[]> => {
+    const all: any[] = [];
+    for (let page = 0; page < maxPages; page++) {
+      const from = page * pageSize;
+      const { data, error } = await build(from, from + pageSize - 1);
+      if (error) throw error;
+      if (!data || data.length === 0) break;
+      all.push(...data);
+      if (data.length < pageSize) break;
+    }
+    return all;
+  };
+
   try {
     // 1. beforeDate 이전에 실제로 기록된 distinct 날짜 중 최근 tradingDaysBack개를 찾는다.
-    const { data: dateRows, error: dateErr } = await client
-      .from('raw_daily_data')
-      .select('date')
-      .lt('date', beforeDate)
-      .order('date', { ascending: false })
-      .limit(tradingDaysBack * 320); // 종목별로 여러 행이 섞여 오므로 넉넉히 조회 후 distinct 처리
-
-    if (dateErr || !dateRows) return empty;
+    const dateRows = await fetchAllPages((from, to) =>
+      client
+        .from('raw_daily_data')
+        .select('date')
+        .lt('date', beforeDate)
+        .order('date', { ascending: false })
+        .range(from, to)
+    );
 
     const distinctDates = [...new Set(dateRows.map((r: any) => r.date as string))]
       .sort()
@@ -430,12 +469,15 @@ export async function fetchRawDailyTrailingDays(
 
     if (distinctDates.length === 0) return { dates: [], bySymbol: new Map() };
 
-    const { data, error } = await client
-      .from('raw_daily_data')
-      .select('date, symbol, foreign_net_buy_amt, organ_net_buy_amt, program_net_buy_amt')
-      .in('date', distinctDates);
+    const data = await fetchAllPages((from, to) =>
+      client
+        .from('raw_daily_data')
+        .select('date, symbol, foreign_net_buy_amt, organ_net_buy_amt, program_net_buy_amt, close_price, open_price, high_price, low_price, volume, change_rate')
+        .in('date', distinctDates)
+        .range(from, to)
+    );
 
-    if (error || !data) return { dates: distinctDates, bySymbol: new Map() };
+    if (!data) return { dates: distinctDates, bySymbol: new Map() };
 
     const bySymbol = new Map<string, Map<string, RawDailyTrailingRow>>();
     data.forEach((row: any) => {

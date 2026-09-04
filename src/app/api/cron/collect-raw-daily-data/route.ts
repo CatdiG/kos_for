@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { fetchKisInvestorTrend, fetchKisProgramTradeDaily } from '@/lib/kisApi';
 import { TOP_300_STOCKS } from '@/lib/stockUniverse300';
-import { saveRawDailyDataToSupabase, RawDailyInvestorRecord } from '@/lib/supabase';
+import { runRawDailyDataBackfill } from '@/lib/batchCollector';
 
 // 장마감 확정치 반영 후(18:30 KST) 자동 실행되는 raw_daily_data 아카이빙 크론.
 // 지금까지 raw_daily_data는 scratch/collect_raw_daily_data_v2.js를 사람이 손으로 실행해야만
@@ -15,13 +14,14 @@ import { saveRawDailyDataToSupabase, RawDailyInvestorRecord } from '@/lib/supaba
 // 외국인/기관 순매수 확정치(FHKST01010900)가 바로 입고되지 않아 isTodaySettled=false인 채로
 // 14:30 잠정치를 대신 쓰는 구간이 있다(kisApi.ts:812-827). 15:35에 수집하면 미확정 0값을
 // 영구 저장할 위험이 있어, 확정치가 통상 반영되는 18:30으로 여유를 두었다.
+//
+// 🚨 [실제 수집 로직 이동] 종목 순회/청크/upsert 로직 자체는 batchCollector.ts의
+// runRawDailyDataBackfill로 옮겼다 - 이 라우트(HTTP+CRON_SECRET 인증 계층)뿐 아니라, 로컬처럼
+// Vercel Cron이 아예 안 도는 환경에서 자동 자가치유하는 triggerRawDailyDataBackfillIfStale도
+// 인증 계층 없이 인프로세스로 같은 로직을 재사용해야 하기 때문이다(수칙 1-6: 중복 구현 금지).
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 export const maxDuration = 300; // 5분 타임아웃 (archive-3m-candles와 동일한 상한)
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 export async function GET(request: NextRequest) {
   return handleCollectRawDailyData(request);
@@ -60,83 +60,18 @@ async function handleCollectRawDailyData(request: NextRequest) {
   const endIdxParam = url.searchParams.get('endIdx');
   const startIdx = startIdxParam ? Math.max(0, parseInt(startIdxParam, 10)) : 0;
   const endIdx = endIdxParam ? Math.min(TOP_300_STOCKS.length, parseInt(endIdxParam, 10)) : TOP_300_STOCKS.length;
-  const targetList = TOP_300_STOCKS.slice(startIdx, endIdx);
 
-  const startedAt = Date.now();
-  const records: RawDailyInvestorRecord[] = [];
-  const unsettled: string[] = []; // 외인/기관 둘 다 0 (확정치 미입고로 추정) - 저장은 하되 별도 보고
-  const failed: string[] = [];
-
-  console.log(`[Raw Daily Data Cron] 시작 - 대상 ${targetList.length}종목 (전체 ${TOP_300_STOCKS.length}종목 중 [${startIdx}, ${endIdx}) 구간)`);
-
-  // KIS 순간 레이트리밋(EGW00201) 방지: fetchKisInvestorTrend는 전역 kisQueue를 타지만
-  // fetchKisProgramTradeDaily는 큐를 타지 않으므로, 청크 단위로 나누고 청크 사이에 딜레이를 둔다.
-  const CHUNK_SIZE = 5;
-  const CHUNK_DELAY_MS = 250;
-
-  for (let i = 0; i < targetList.length; i += CHUNK_SIZE) {
-    const chunk = targetList.slice(i, i + CHUNK_SIZE);
-    await Promise.all(
-      chunk.map(async (stock) => {
-        try {
-          const trendRes = await fetchKisInvestorTrend(stock.symbol, '5d', 'LOW');
-          const latestDay = trendRes?.trend?.[trendRes.trend.length - 1];
-          if (!latestDay || !latestDay.date) {
-            failed.push(stock.symbol);
-            return;
-          }
-
-          const progPoints = await fetchKisProgramTradeDaily(stock.symbol).catch(() => []);
-          const progMatch = progPoints.find((p) => p.date === latestDay.date);
-
-          const isSettled = latestDay.foreignNetBuyAmt !== 0 || latestDay.organNetBuyAmt !== 0;
-          if (!isSettled) unsettled.push(stock.symbol);
-
-          records.push({
-            date: latestDay.date,
-            symbol: stock.symbol,
-            name: stock.name,
-            close_price: latestDay.closePrice,
-            open_price: latestDay.openPrice,
-            high_price: latestDay.highPrice,
-            low_price: latestDay.lowPrice,
-            volume: latestDay.volume,
-            change_rate: latestDay.changeRate,
-            foreign_net_buy_qty: latestDay.foreignNetBuyQty,
-            foreign_net_buy_amt: latestDay.foreignNetBuyAmt,
-            organ_net_buy_qty: latestDay.organNetBuyQty,
-            organ_net_buy_amt: latestDay.organNetBuyAmt,
-            program_net_buy_qty: progMatch?.totalNetBuyQty || 0,
-            program_net_buy_amt: progMatch?.totalNetBuyAmt || 0,
-          });
-        } catch (err: any) {
-          console.warn(`[Raw Daily Data Cron Failed] ${stock.symbol}(${stock.name}): ${err?.message || err}`);
-          failed.push(stock.symbol);
-        }
-      })
-    );
-    await sleep(CHUNK_DELAY_MS);
-  }
-
-  const saved = records.length > 0 ? await saveRawDailyDataToSupabase(records) : false;
-  const elapsedMs = Date.now() - startedAt;
-
-  console.log(
-    `[Raw Daily Data Cron] 완료 - 수집 ${records.length}/${TOP_300_STOCKS.length}, 실패 ${failed.length}건, 미확정(0값) ${unsettled.length}건, Supabase 저장: ${saved}, 소요 ${elapsedMs}ms`
-  );
+  // 매 실행마다 최근 90영업일치를 통째로 다시 upsert한다(랭킹 배지 계산이 과거일 소스로 쓰는
+  // DB_HISTORY_LOOKBACK_DAYS=90과 반드시 맞춰야 ma60까지 정상 계산되어 "바닥 반등" 등 60일선 기준
+  // 배지가 차트와 동기화된다) - 이미 있는 날짜는 같은 값으로 덮어써도 무해하고, 빠진 날짜(로컬처럼
+  // 며칠 못 돌았던 경우)는 자동으로 소급 채워진다.
+  const result = await runRawDailyDataBackfill(startIdx, endIdx, 90);
 
   return NextResponse.json({
     success: true,
-    total: targetList.length,
+    total: endIdx - startIdx,
     rangeStart: startIdx,
     rangeEnd: endIdx,
-    collectedCount: records.length,
-    failedCount: failed.length,
-    unsettledCount: unsettled.length,
-    unsettledSymbols: unsettled.slice(0, 20),
-    failedSymbols: failed.slice(0, 20),
-    saved,
-    elapsedMs,
-    date: records[0]?.date || null,
+    ...result,
   });
 }

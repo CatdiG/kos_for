@@ -3,7 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { InvestorTrendDay, InvestorTrendResponse, KisTokenResponse, ProgramTradeIntradayPoint, ProgramTradeSummary, SupplySummary, TrendPeriod, InvestorRankingResponse, RankingItem, RankingDirection, RankingPeriod, RankingType, OverlapInvestorRank, MarketType, SurgingRankItem, ScoreBreakdown, SurgingMode, isEtfOrEtn, IntradayCandlePoint, IntradayPivotFibonacciLevels, IntradayChartResponse, IndexTrendResponse, IndexTrendDay, StockBadgeItem, StockBadgeSummaryResponse } from './types';
-import { getStockName, resolveStockPriceAndChange, updateRuntimeStockPrice, resolveMarketType, computeUnifiedStatusBadge, getSettledAsOfDateLabel, getKrxEstimateSlotInfo, findSplitSafeStartIndex, roundToKrxTick, computeRecentVolumeRatio } from './mockData';
+import { getStockName, resolveStockPriceAndChange, updateRuntimeStockPrice, registerRuntimeStockName, resolveMarketType, computeUnifiedStatusBadge, getSettledAsOfDateLabel, getKrxEstimateSlotInfo, findSplitSafeStartIndex, roundToKrxTick, computeRecentVolumeRatio } from './mockData';
 import { TOP_300_STOCKS } from './stockUniverse300';
 import { fetchTokenFromSupabase, fetchCreditBatchFromSupabase, saveCreditBatchToSupabase, fetchIntraday3mCandlesFromSupabase, saveIntraday3mCandlesToSupabase, fetchConsecutiveOverlapWatch, upsertConsecutiveOverlapWatch, fetchDailyOverlapFirstSeen, insertDailyOverlapFirstSeenIfMissing, fetchLatestActiveBeforeDate, upsertSharedRankCache, fetchSharedRankCacheBatch } from './supabase';
 export { resolveStockPriceAndChange, computeUnifiedStatusBadge };
@@ -507,8 +507,10 @@ async function executeKisIndexDailyTrendFetch(
   });
 
   // 1. 지수 현재가
+  // 🚨 [버그 수정 - 근본 원인] 이 함수(executeKisIndexDailyTrendFetch)도 kisQueue.enqueue(HIGH 우선순위,
+  // 473번 줄)로 감싸진다 - 타임아웃 없이 hang되면 동일하게 전체 큐가 마비된다(1211번 줄 참고).
   const priceUrl = `${baseUrl}/uapi/domestic-stock/v1/quotations/inquire-index-price?FID_COND_MRKT_DIV_CODE=U&FID_INPUT_ISCD=${indexCode}`;
-  const priceRes = await fetch(priceUrl, { headers: buildHeaders('FHPUP02100000'), cache: 'no-store' });
+  const priceRes = await fetch(priceUrl, { headers: buildHeaders('FHPUP02100000'), cache: 'no-store', signal: AbortSignal.timeout(8000) });
   if (!priceRes.ok) throw new Error(`[KIS FHPUP02100000 HTTP ${priceRes.status}] ${indexName} 현재지수 조회 실패`);
   const priceJson = await priceRes.json();
   if (priceJson.rt_cd !== '0') throw new Error(`[KIS FHPUP02100000] ${priceJson.msg1 || '알 수 없는 오류'}`);
@@ -544,7 +546,7 @@ async function executeKisIndexDailyTrendFetch(
 
   const todayStr = getKstTodayStr();
   const dailyUrl = `${baseUrl}/uapi/domestic-stock/v1/quotations/inquire-index-daily-price?FID_COND_MRKT_DIV_CODE=U&FID_INPUT_ISCD=${indexCode}&FID_INPUT_DATE_1=${todayStr}&FID_PERIOD_DIV_CODE=D`;
-  const dailyRes = await fetch(dailyUrl, { headers: buildHeaders('FHPUP02120000'), cache: 'no-store' });
+  const dailyRes = await fetch(dailyUrl, { headers: buildHeaders('FHPUP02120000'), cache: 'no-store', signal: AbortSignal.timeout(8000) });
   if (!dailyRes.ok) throw new Error(`[KIS FHPUP02120000 HTTP ${dailyRes.status}] ${indexName} 일봉 조회 실패`);
   const dailyJson = await dailyRes.json();
   if (dailyJson.rt_cd !== '0') throw new Error(`[KIS FHPUP02120000] ${dailyJson.msg1 || '알 수 없는 오류'}`);
@@ -737,6 +739,10 @@ async function executeKisInvestorTrendFetch(
 
   const json = await fetchWithRetry(async () => {
     await enforceRateLimit();
+    // 🚨 [버그 수정 - 근본 원인] 이 함수(executeKisInvestorTrendFetch)는 fetchKisInvestorTrend가
+    // kisQueue.enqueue()로 감싸는 핵심 함수다(625번 줄) - 타임아웃 없이 fetch가 hang되면 kisQueue 전체가
+    // 영구히 마비된다(1211번 줄 fetchKisProgramTrade와 동일한 근본 원인, 실측으로 확인됨). 다른 곳과
+    // 동일하게 8초 타임아웃을 추가한다.
     const res = await fetch(url, {
       method: 'GET',
       headers: {
@@ -748,6 +754,7 @@ async function executeKisInvestorTrendFetch(
         custtype: 'P',
       },
       cache: 'no-store',
+      signal: AbortSignal.timeout(8000),
     });
 
     const text = await res.text();
@@ -792,6 +799,7 @@ async function executeKisInvestorTrendFetch(
           custtype: 'P',
         },
         cache: 'no-store',
+        signal: AbortSignal.timeout(8000),
       });
 
       const text = await res.text();
@@ -983,9 +991,21 @@ async function executeKisInvestorTrendFetch(
     latest.changeRate
   );
 
+  // 🚨 [버그 수정] getStockName(symbol) 정적 4단계 조회(런타임 캐시/PRESET/TOP300/마스터캐시)가 전부
+  // 실패하면 심볼 숫자를 이름 자리에 그대로 반환한다 - 검색창 헤더 등 이 stockInfo.name을 그대로 쓰는
+  // 화면에 "386380 386380"처럼 코드만 두 번 뜨는 근본 원인이었다(실측: 스카이랩스 386380, 니어스랩
+  // 417030 등 최근 상장/우선주 종목에서 재현). 정적 조회가 실패한 경우에만(대부분은 안 그럼 - 추가
+  // 비용 없음) 이미 있는 신용조회 API(fetchKisCreditAvailable, hts_kor_isnm 포함)를 한 번 더 호출해
+  // 실제 KIS 종목명을 받아온다. 그마저 실패하면(네트워크 오류 등) 가짜로 채우지 않고 심볼 그대로 둔다(수칙 1-3).
+  let resolvedName = getStockName(symbol);
+  if (resolvedName === symbol) {
+    await fetchKisCreditAvailable(symbol).catch(() => undefined);
+    resolvedName = getStockName(symbol); // fetchKisCreditAvailable 성공 시 내부에서 registerRuntimeStockName 등록됨
+  }
+
   const stockInfo = {
     symbol,
-    name: getStockName(symbol),
+    name: resolvedName,
     market: resolveMarketType(symbol),
     currentPrice: priceInfo.currentPrice,
     change: priceInfo.change,
@@ -1197,6 +1217,13 @@ export async function fetchKisProgramTrade(
     const sec = appSecret || process.env.KIS_APPSECRET || '';
 
     const url = `${urlBase}/uapi/domestic-stock/v1/quotations/program-trade-by-stock?FID_COND_MRKT_DIV_CODE=J&FID_INPUT_ISCD=${symbol}`;
+    // 🚨 [버그 수정 - 근본 원인] 이 fetch에 타임아웃이 없었다 - kisQueue.enqueue()로 감싸 완전 직렬화한
+    // 뒤(위 근본 원인 수정), KIS 서버가 응답을 지연시키는 단 1건만 있어도 그 fetch가 영원히 pending되면서
+    // KisRequestQueue.processNext()의 isProcessing이 영구히 true로 남아 이후 모든 KIS 호출(외국인/기관
+    // 랭킹 등 이 앱 전체가 공유하는 큐)까지 통째로 멈춰버렸다(실측: returnEarly 백그라운드 완성이 355초가
+    // 넘도록 끝나지 않고 hang - kisQueue 직렬화 이전엔 병렬 호출이라 종목 1개가 hang돼도 나머지 219개엔
+    // 영향이 없어서 드러나지 않던 문제). 다른 fetch 호출들(1750/1820/3773번 줄)과 동일하게
+    // AbortSignal.timeout(8000)을 추가해 8초 이상 응답이 없으면 자동 취소되고 폴백 체인으로 넘어가게 한다.
     const res = await fetch(url, {
       method: 'GET',
       headers: {
@@ -1208,6 +1235,7 @@ export async function fetchKisProgramTrade(
         custtype: 'P',
       },
       cache: 'no-store',
+      signal: AbortSignal.timeout(8000),
     });
 
     if (res.ok) {
@@ -1372,6 +1400,9 @@ export async function fetchKisProgramTradeDaily(
 
     const url = `${urlBase}/uapi/domestic-stock/v1/quotations/program-trade-by-stock-daily?FID_COND_MRKT_DIV_CODE=J&FID_INPUT_ISCD=${symbol}&FID_INPUT_DATE_1=${endDate}&FID_INPUT_DATE_2=${startDate}`;
 
+    // 🚨 [버그 수정 - 근본 원인] fetchKisProgramTrade와 동일한 이유(위 1211번 줄 주석 참고) - 이 폴백 TR도
+    // fetchKisProgramTrade의 kisQueue.enqueue() 콜백 내부에서 실행되므로, 타임아웃 없이 hang되면 똑같이
+    // 전체 큐를 마비시킨다. 동일하게 8초 타임아웃을 추가한다.
     const res = await fetch(url, {
       method: 'GET',
       headers: {
@@ -1383,6 +1414,7 @@ export async function fetchKisProgramTradeDaily(
         custtype: 'P',
       },
       cache: 'no-store',
+      signal: AbortSignal.timeout(8000),
     });
 
     if (res.ok) {
@@ -1466,6 +1498,8 @@ async function executeKisCreditAvailableFetch(symbol: string): Promise<boolean |
   if (!token) return undefined;
 
   const url = `${baseUrl}/uapi/domestic-stock/v1/quotations/inquire-price?FID_COND_MRKT_DIV_CODE=J&FID_INPUT_ISCD=${symbol}`;
+  // 🚨 [버그 수정 - 근본 원인] fetchKisCreditAvailable이 이 함수를 kisQueue.enqueue()(LOW 우선순위)로
+  // 감싼다 - 타임아웃 없이 hang되면 동일하게 전체 큐가 마비된다(1211번 줄 참고). 8초 타임아웃을 추가한다.
   const res = await fetch(url, {
     method: 'GET',
     headers: {
@@ -1477,6 +1511,7 @@ async function executeKisCreditAvailableFetch(symbol: string): Promise<boolean |
       custtype: 'P',
     },
     cache: 'no-store',
+    signal: AbortSignal.timeout(8000),
   });
 
   if (res.ok) {
@@ -1501,6 +1536,17 @@ async function executeKisCreditAvailableFetch(symbol: string): Promise<boolean |
 
       if (realPrice > 0) {
         updateRuntimeStockPrice(symbol, realPrice, realChange, realRate);
+      }
+      // 🚨 [버그 수정] 이 응답(KIS 주식현재가 시세조회)엔 항상 hts_kor_isnm(한글 종목명)이 같이 오는데
+      // 그동안 가격/신용여부만 뽑고 이름은 버리고 있었다 - stockMasterCache.json(정적 스냅샷이라 신규
+      // 상장 종목 누락)/TOP_300/STOCK_NAME_MAP 4단계 정적 조회가 전부 실패하는 종목(예: 스카이랩스
+      // 386380)이 검색창 헤더에 이름 대신 코드 그대로 뜨던 근본 원인이다. 새 API 호출 없이 이미 받는
+      // 필드 하나만 더 읽어서 registerRuntimeStockName에 등록하면(updateRuntimeStockPrice와 동일한
+      // 부산물 캐싱 패턴, 수칙 1-6) 이 함수가 호출되는 모든 화면(랭킹/뱃지/quotes 등)에서 자연스럽게
+      // 이름 캐시가 채워진다.
+      const realName = json.output.hts_kor_isnm || '';
+      if (realName) {
+        registerRuntimeStockName(symbol, realName);
       }
       return isCredit;
     }
@@ -1741,23 +1787,40 @@ async function executeKisForeignInstitutionRankingFetch(
     const baseAll = [...listKospi, ...listKosdaq];
     const existingSymbolsAll = new Set(baseAll.map((i: any) => i.mksc_shrn_iscd || i.stck_shrn_iscd));
 
+    // 🚨 [버그 수정 - 수칙 1-6: 동일 로직 중복 구현] market!=='ALL' 분기(아래 else)는 이미 getCached5dTrend로
+    // 실제 캐시된 종가/수급을 써서 30(60)위 밖 종목을 정석대로 보강하는데, 이 market==='ALL' 분기만
+    // 그 정석 로직 없이 stck_prpr(현재가)를 basePrice(하드코딩 기본가)로, prdy_ctrt(등락률)를 '0'으로,
+    // acml_vol(거래량)을 '1000000'으로 통째로 가짜 채워 넣고 있었다(수칙 1-3 위반: 임시 가상 숏컷 금지).
+    // 이게 SK이노베이션 등 "외국인/기관 매매종목가집계" 상위 30(60)위 밖인데도 TOP_300 상위 50위 안에
+    // 드는 종목들이 항상 더미 가격(basePrice)으로 계산돼 이격도/배지가 틀리게 나오던 진짜 근본 원인이었다
+    // - KIS API 장애나 장마감과 무관하게, API가 순위를 안 줬다는 이유만으로 매번 재현되는 구조적 결함.
+    // else 분기와 동일하게 getCached5dTrend(배치 예열 캐시의 실제 최근 종가)를 우선 쓰도록 통일한다.
+    const { getCached5dTrend: getCached5dTrendForAll } = await import('./batchCollector');
     const extraAll: any[] = [];
     TOP_300_STOCKS.slice(0, 50).forEach((stock) => {
-      if (!existingSymbolsAll.has(stock.symbol)) {
-        extraAll.push({
-          mksc_shrn_iscd: stock.symbol,
-          hts_kor_isnm: stock.name,
-          market: stock.market,
-          stck_prpr: String(stock.basePrice || 50000),
-          prdy_vrss: '0',
-          prdy_ctrt: '0',
-          acml_vol: '1000000',
-          frgn_ntby_tr_pbmn: '0',
-          frgn_ntby_qty: '0',
-          orgn_ntby_tr_pbmn: '0',
-          orgn_ntby_qty: '0',
-        });
-      }
+      if (existingSymbolsAll.has(stock.symbol)) return;
+      const trendRes = getCached5dTrendForAll(stock.symbol);
+      const trendList = trendRes?.trend || [];
+      const latest = trendList.length > 0 ? trendList[trendList.length - 1] : null;
+      const foreignAmt = latest?.foreignNetBuyAmt || trendRes?.summary?.foreign?.todayEstimateAmt || 0;
+      const foreignQty = latest?.foreignNetBuyQty || trendRes?.summary?.foreign?.todayEstimateQty || 0;
+      const organAmt = latest?.organNetBuyAmt || trendRes?.summary?.organ?.todayEstimateAmt || 0;
+      const organQty = latest?.organNetBuyQty || trendRes?.summary?.organ?.todayEstimateQty || 0;
+      const amt = type === 'foreign' ? foreignAmt : organAmt;
+      if (amt === 0) return; // else 분기와 동일한 기준: 실제 순매수가 없는 종목은 애초에 후보로 안 넣는다
+      extraAll.push({
+        mksc_shrn_iscd: stock.symbol,
+        hts_kor_isnm: stock.name,
+        market: stock.market,
+        stck_prpr: String(latest?.closePrice || stock.basePrice || 50000),
+        prdy_vrss: String(latest?.priceChange || 0),
+        prdy_ctrt: String(latest?.changeRate || 0),
+        acml_vol: String(latest?.volume || 1000000),
+        frgn_ntby_tr_pbmn: type === 'foreign' ? String(foreignAmt) : '0',
+        frgn_ntby_qty: type === 'foreign' ? String(foreignQty) : '0',
+        orgn_ntby_tr_pbmn: type === 'organ' ? String(organAmt) : '0',
+        orgn_ntby_qty: type === 'organ' ? String(organQty) : '0',
+      });
     });
 
     rawOutputs = [...baseAll, ...extraAll];
@@ -1925,18 +1988,26 @@ async function executeKisForeignInstitutionRankingFetch(
       : getSettledAsOfDateLabel();
     const lastBatchTime = isMarketOpen ? `${timeStr} 기준` : getSettledAsOfDateLabel();
 
-    const { getCached5dTrend } = await import('./batchCollector');
-    const finalList = slicedList.map((item) => {
-      const trendRes = getCached5dTrend(item.symbol);
-      const trendData = trendRes?.trend || [];
-      const statusInfo = computeStatusBadgeFromTrend(trendData);
-      return {
-        ...item,
-        statusBadge: statusInfo?.shortBadge,
-        statusBadgeStyle: statusInfo?.badgeStyle,
-        asOfDateLabel: item.asOfDateLabel || rankingAsOfDateLabel,
-      };
-    });
+    // 🚨 [버그 수정] getCached5dTrend(라이브 예열 캐시)에만 의존했었다 - 그게 비어있으면(실측: 93개
+    // 종목 전부) computeStatusBadgeFromTrend가 예외 없이 "이평선 수렴" fallback을 반환해 program/
+    // overlap 다른 탭과 어긋났다. resolveTrendForBadge로 통일(DB 1순위)한다 - 수칙 1-6.
+    const finalList = await Promise.all(
+      slicedList.map(async (item) => {
+        const trendData = await resolveTrendForBadge(item.symbol, {
+          currentPrice: item.currentPrice,
+          change: item.change,
+          changeRate: item.changeRate,
+          volume: item.volume,
+        });
+        const statusInfo = computeStatusBadgeFromTrend(trendData);
+        return {
+          ...item,
+          statusBadge: statusInfo?.shortBadge,
+          statusBadgeStyle: statusInfo?.badgeStyle,
+          asOfDateLabel: item.asOfDateLabel || rankingAsOfDateLabel,
+        };
+      })
+    );
 
     return {
       type,
@@ -2086,6 +2157,110 @@ async function enrichRankingWithRawInvestorData(
 
 
 
+/**
+ * 🚨 [버그 수정 - 수칙 1-6: 배지 계산용 트렌드 데이터 단일 소스 통합] 그동안 이 배지("이평선 수렴" 등)를
+ * program/foreign·organ/overlap(당일·2일연속) 4곳이 각자 독립적으로 재구현하며 서로 다른 시점·소스의
+ * 데이터를 썼다 - 실측: 같은 순간 SK스퀘어가 program에서는 "바닥 반등", overlap/foreign에서는 "이평선
+ * 수렴"으로 갈렸고, foreign/organ은 93개 종목 전부가 예외 없이 "이평선 수렴"으로 뭉개져 있었다(그 경로가
+ * DB 없이 getCached5dTrend 라이브 예열 캐시에만 의존했는데 그게 비어있었기 때문). 이제 모든 경로가 이
+ * 함수 하나로 통일해서 같은 우선순위(1. raw_daily_data DB 20일치 - 재시작/캐시상태 무관 안정적,
+ * 2. trendDetailCache 60일 상세, 3. getCached5dTrend 라이브 예열)를 쓰게 한다.
+ * DB 조회(fetchRawDailyTrailingDays) 자체는 3분 캐시로 감싸서, 여러 랭킹 API가 짧은 시간 안에 각자
+ * 호출해도 Supabase 왕복이 매 요청마다 중복 발생하지 않게 한다.
+ *
+ * 🚨 [버그 수정 - 수칙 1-6] kisQueue(위 KisRequestQueue.inFlightMap, line 239)가 이미 "동일 id로
+ * 진행 중인 요청은 새로 안 만들고 그 Promise를 공유"하는 Single-Flight 패턴을 갖고 있고, 2/3일연속
+ * 교집합 쪽도 "완전판 계산이 이미 진행 중이면 중복 실행 안 함"이라는 동일 개념의 가드가 있는데, 처음엔
+ * 이걸 재사용하지 않고 값만 저장하는 캐시로 짰다 - 그 결과 콜드스타트처럼 여러 요청이 동시에 몰리면
+ * 캐시가 채워지기 전에 각자 따로 Supabase를 두드려 부하가 커지는(실측: upstream timeout 반복) 문제가
+ * 있었다. 같은 Single-Flight 개념을 여기도 그대로 적용해 진행 중인 Promise를 공유한다.
+ */
+const dbTrailingTrendCache = getGlobalMap<string, { data: { dates: string[]; bySymbol: Map<string, Map<string, any>> }; timestamp: number }>('dbTrailingTrendCache');
+const dbTrailingTrendInFlight = getGlobalMap<string, Promise<{ dates: string[]; bySymbol: Map<string, Map<string, any>> }>>('dbTrailingTrendInFlight');
+const DB_TRAILING_TREND_TTL_MS = 3 * 60 * 1000; // 3분
+
+async function getSharedDbTrailingTrend(): Promise<{ dates: string[]; bySymbol: Map<string, Map<string, any>> }> {
+  const key = getKstTodayStr();
+  const cached = dbTrailingTrendCache.get(key);
+  if (cached && Date.now() - cached.timestamp < DB_TRAILING_TREND_TTL_MS) {
+    return cached.data;
+  }
+
+  // Single-Flight: 이미 같은 날짜로 진행 중인 조회가 있으면 새로 시작하지 않고 그 Promise를 공유한다.
+  const inFlight = dbTrailingTrendInFlight.get(key);
+  if (inFlight) return inFlight;
+
+  const fetchPromise = (async () => {
+    const { fetchRawDailyTrailingDays } = await import('./supabase');
+    // 🚨 [버그 수정] 20일로는 ma60이 항상 null이 되어 "바닥 반등"/60일선 기준 단기과열 배지가 DB 경로에서
+    // 절대 안 나오던 근본 원인이었다(차트는 라이브 180일치라 정상 - 실측: SK스퀘어 program/overlap
+    // "이평선 수렴" ↔ 차트 "바닥 반등" 불일치). ma60 계산 최소 요건(60일)보다 여유있게 90일로 늘린다.
+    const data = await fetchRawDailyTrailingDays(key, 90).catch(() => ({ dates: [] as string[], bySymbol: new Map<string, Map<string, any>>() }));
+    dbTrailingTrendCache.set(key, { data, timestamp: Date.now() });
+    return data;
+  })();
+
+  dbTrailingTrendInFlight.set(key, fetchPromise);
+  try {
+    return await fetchPromise;
+  } finally {
+    dbTrailingTrendInFlight.delete(key);
+  }
+}
+
+export async function resolveTrendForBadge(
+  symbol: string,
+  todaySnapshot: { currentPrice: number; change?: number; changeRate: number; volume: number }
+): Promise<InvestorTrendDay[]> {
+  const { dates: dbDates, bySymbol: dbBySymbol } = await getSharedDbTrailingTrend();
+  const symbolDbDates = dbBySymbol.get(symbol);
+  if (symbolDbDates && symbolDbDates.size > 0) {
+    const dbTrend: InvestorTrendDay[] = dbDates
+      .filter((d) => symbolDbDates.has(d))
+      .map((d) => {
+        const row: any = symbolDbDates.get(d)!;
+        return {
+          date: d,
+          closePrice: row.close_price || 0,
+          openPrice: row.open_price || 0,
+          highPrice: row.high_price || 0,
+          lowPrice: row.low_price || 0,
+          volume: row.volume || 0,
+          changeRate: row.change_rate || 0,
+        } as InvestorTrendDay;
+      });
+    // 🚨 [버그 수정] 장마감 후엔 todaySnapshot.currentPrice가 "오늘의 새 시세"가 아니라 DB에 이미 저장된
+    // 최신 확정일(예: 9/4)의 마감가 그대로다 - 그런데 무조건 "오늘"이라는 새 항목으로 추가해버려서 같은
+    // 값이 이틀치처럼 중복됐다. 91개(중복 포함) 기준 slice(-60)이 진짜 60일 중 가장 오래된 1일을 밀어내고
+    // 대신 중복값을 넣어 disparate60이 89.9%→90.6%로 미세하게 바뀌며 "바닥 반등" 판정을 근소하게
+    // 놓쳤다(실측: 리노공업 058470 - 차트 disparate60=89.9% vs 이 버그로 랭킹 90.6%). DB의 마지막
+    // 종가와 오늘 스냅샷 가격이 같으면(=이미 반영된 같은 거래일) 중복 추가하지 않는다.
+    const lastDbClose = dbTrend.length > 0 ? dbTrend[dbTrend.length - 1].closePrice : 0;
+    const isAlreadyReflected = lastDbClose > 0 && lastDbClose === todaySnapshot.currentPrice;
+    if (!isAlreadyReflected) {
+      dbTrend.push({
+        date: 'today',
+        closePrice: todaySnapshot.currentPrice,
+        priceChange: todaySnapshot.change || 0,
+        changeRate: todaySnapshot.changeRate,
+        volume: todaySnapshot.volume,
+      } as InvestorTrendDay);
+    }
+    if (dbTrend.filter((d) => d.closePrice > 0).length > 0) {
+      return dbTrend;
+    }
+  }
+
+  // 2/3순위 폴백: DB 이력이 아직 없는 신규상장 등 - 가짜로 채우지 않고 있는 캐시만 사용(수칙 1-3)
+  const fullCacheKey = `${symbol}-60d-v60d-full`;
+  const fullCached: InvestorTrendResponse | null | undefined = trendDetailCache.get(fullCacheKey)?.data;
+  if (fullCached && fullCached.trend && fullCached.trend.length > 0) return fullCached.trend;
+
+  const { getCached5dTrend } = await import('./batchCollector');
+  const trendRes = getCached5dTrend(symbol);
+  return trendRes?.trend || [];
+}
+
 export function computeStatusBadgeFromTrend(trend: InvestorTrendDay[]): { shortBadge: string; badgeStyle: string } {
   const rawItems = (trend || []).filter((d) => d.closePrice && d.closePrice > 0);
   const rawCloses = rawItems.map((d) => d.closePrice);
@@ -2130,6 +2305,13 @@ export async function fetchOverlapRankingData(
     masterData = cached.data;
   }
 
+  // 🚨 [시도했다가 되돌림] Supabase에서 완전 리스트를 읽어와 재사용하는 시도를 했었는데, 실측해보니
+  // (1) 재시작 2회 연속 조회에도 여전히 다른 개수(7개→15개)가 나와 효과가 없었고 - 근본적으로 매
+  // 재계산 자체(라이브 KIS 외국인/기관/프로그램 후보 수집)가 콜드스타트 타이밍마다 결과가 달라지는
+  // 문제라 캐시 계층을 하나 더 얹는 것만으론 못 고쳤다 - (2) 오히려 이 코드를 넣은 채로 서버가 완전히
+  // 응답 불가(hang) 상태에 빠지는 사고까지 있었다. 위험 대비 효과가 없어 원상복구한다. 진짜 근본
+  // 해결(당일교집합 후보 자체를 라이브 대신 raw_daily_data DB 확정치로 구성)은 훨씬 큰 리팩터링이라
+  // 별도로 신중하게 진행해야 한다.
   if (!masterData) {
     masterData = await executeAsyncOverlapCalculation(direction, period, minOverlap, market, masterCacheKey);
   }
@@ -2244,6 +2426,12 @@ async function executeAsyncOverlapCalculation(
         ranksByType: OverlapInvestorRank[];
       }
     >();
+    // 🚨 [버그 수정] resolveStockPriceAndChange가 콜드스타트 등으로 runtimePriceCache 미등록 상태라
+    // fallback(basePrice) 값을 돌려준 종목들을 별도로 추적한다 - 이런 종목이 하나라도 섞인 결과를
+    // 그대로 마스터 캐시에 저장하면, 장마감 후엔 "다음날 개장 전까지 사실상 영구 캐시" 정책 때문에
+    // 오염된 스냅샷이 하루 종일 고정되는 문제로 이어진다(실측 확인됨). 아래에서 캐시 저장 여부를
+    // 이 Set으로 판단한다.
+    const fallbackPricedSymbols = new Set<string>();
 
     const isBuy = direction === 'buy';
 
@@ -2259,6 +2447,20 @@ async function executeAsyncOverlapCalculation(
       topList.forEach((item, idx) => {
         if (!map.has(item.symbol)) {
           const priceInfo = resolveStockPriceAndChange(item.symbol, item.currentPrice, item.change, item.changeRate);
+          // 🚨 [버그 수정 - 정밀화] 처음엔 "runtimePriceCache 미등록 = fallback"으로 단순 판정해서
+          // 이 종목을 이번 계산에서 통째로 제외했는데, 이게 너무 거칠었다 - item.currentPrice(외국인/
+          // 기관/프로그램 랭킹 API가 이미 준 값) 자체는 이미 정상 실시간 값인 경우가 많은데도, 단지
+          // runtimePriceCache에 아직 없다는 이유만으로 멀쩡한 종목까지 통째로 걸러내 버려서(실측: 순수
+          // 당일교집합 쿼리가 0개를 반환하는 과도한 부작용 발견) 오히려 데이터가 더 사라지는 회귀를
+          // 만들었다. 진짜 fallback인지는 "그 값이 stockUniverse300의 하드코딩된 basePrice와 정확히
+          // 일치하는지"로만 판정한다 - 실제 KIS 실시간가가 basePrice와 우연히 정확히 일치할 확률은
+          // 사실상 0이므로, 이 조건이 참일 때만 "진짜 더미값"으로 신뢰하고 제외한다.
+          const basePriceEntry = TOP_300_STOCKS.find((s) => s.symbol === item.symbol);
+          const isSuspectedDummy = priceInfo.isFallback && !!basePriceEntry && priceInfo.currentPrice === basePriceEntry.basePrice;
+          if (isSuspectedDummy) {
+            fallbackPricedSymbols.add(item.symbol);
+            return;
+          }
           map.set(item.symbol, {
             symbol: item.symbol,
             name: item.name,
@@ -2269,7 +2471,8 @@ async function executeAsyncOverlapCalculation(
             ranksByType: [],
           });
         }
-        const entry = map.get(item.symbol)!;
+        const entry = map.get(item.symbol);
+        if (!entry) return; // 위에서 fallback 가격으로 제외된 종목 - ranksByType도 함께 건너뛴다
         entry.ranksByType.push({
           type,
           label,
@@ -2285,6 +2488,45 @@ async function executeAsyncOverlapCalculation(
     addList(foreignRes, 'foreign', '외국인');
     addList(organRes, 'organ', '기관');
     addList(programRes, 'program', '프로그램');
+
+    // 🚨 [버그 수정 - 당일교집합 후보 수집 불안정성 근본 원인] 위 3개 addList()가 채우는 map은 오직
+    // 그 순간의 라이브 상위 50위 스냅샷(외국인/기관 KIS 랭킹 TR, 프로그램 배치 top-50)에만 의존한다.
+    // 이 세 스냅샷 어디에도 없던 종목은 실제로 오늘 2개 이상 주체가 순매수 중이었어도 통째로 후보에서
+    // 빠지고, 이 top-50 자체가 호출 시점(콜드스타트 재시작 포함)마다 달라져 "몇 개 종목이 잡히는지"가
+    // 실제 시장 움직임과 무관하게 매 계산마다 흔들렸다(실측: 재시작 2회 연속 조회에도 7개→15개로 변동
+    // - 위 2285번 줄 [시도했다가 되돌림] 주석 참고). fetchConsecutiveNDaysOverlapRankingData(2/3일연속)
+    // 는 이미 TOP_300_STOCKS 전체를 캐시 기반(universeExtra, 3378번 줄)으로 훑어 이 문제를 풀어놨다 -
+    // 동일 패턴을 여기 재사용한다. 신규 라이브 KIS 호출은 전혀 만들지 않는다(캐시 미보유 종목은 그냥
+    // 건너뜀 - fail-open, 2/3일연속과 동일 원칙). 이렇게 map만 넓혀두면 바로 아래(entries 순회) 기존
+    // "50위 랭킹 풀에 없더라도 실제 당일 순매수한 주체를 트렌드 실데이터에서 전수 동기화" 루프가
+    // 그대로 이 종목들의 ranksByType/overlapCount를 판정한다 - 새 판정 로직은 추가하지 않는다.
+    const overlapUniverseCovered = new Set(map.keys());
+    const overlapUniverseExtra = TOP_300_STOCKS.filter(
+      (s) => !overlapUniverseCovered.has(s.symbol) && (market === 'ALL' || s.market === market)
+    );
+    overlapUniverseExtra.forEach((s) => {
+      const trendRes = trendDetailCache.get(s.symbol)?.data || getCached5dTrend(s.symbol) || getBatchTrend5d(s.symbol);
+      if (!trendRes || !Array.isArray(trendRes.trend) || trendRes.trend.length === 0) return; // 캐시 미보유 - 라이브 호출 없이 스킵
+
+      const info = trendRes.stockInfo;
+      const priceInfo = resolveStockPriceAndChange(s.symbol, info?.currentPrice ?? 0, info?.change ?? 0, info?.changeRate ?? 0);
+      // addList()와 동일한 fallback 더미가격 판정(2436번 줄) - 오염된 값이 map에 섞여 캐시되는 걸 막는다.
+      const isSuspectedDummy = priceInfo.isFallback && priceInfo.currentPrice === s.basePrice;
+      if (isSuspectedDummy) {
+        fallbackPricedSymbols.add(s.symbol);
+        return;
+      }
+
+      map.set(s.symbol, {
+        symbol: s.symbol,
+        name: getStockName(s.symbol, info?.name),
+        currentPrice: priceInfo.currentPrice,
+        change: priceInfo.change,
+        changeRate: priceInfo.changeRate,
+        volume: info?.volume ?? trendRes.trend[trendRes.trend.length - 1]?.volume ?? 0,
+        ranksByType: [],
+      });
+    });
 
     // 50위 랭킹 풀에 없더라도 실제 당일 순매수한 주체를 트렌드 실데이터에서 전수 동기화
     const overlapItems: RankingItem[] = [];
@@ -2392,12 +2634,22 @@ async function executeAsyncOverlapCalculation(
       return (b.overlapCount || 0) - (a.overlapCount || 0);
     });
 
-    // 상위 교집합 종목들의 일봉 트렌드를 메모리 캐시에서 0ms 즉시 확보하여 차트와 100% 동일한 5대 상태 뱃지 산출
-    const finalOverlapItems = overlapItems.map((item, index) => {
-      const fullCacheKey = `${item.symbol}-60d-v60d-full`;
-      const fullCached: InvestorTrendResponse | null | undefined = trendDetailCache.get(fullCacheKey)?.data;
+    // 🚨 [버그 수정 - 수칙 1-6: program/foreign·organ과 동일한 resolveTrendForBadge로 통일] 당일교집합만
+    // 독자적인 DB 조회 로직을 따로 갖고 있었다 - 이제 foreign/organ도 쓰는 공용 함수 하나로 합쳐서
+    // 세 경로가 완전히 같은 데이터·우선순위로 배지를 계산하게 한다(실측: 로보티즈 108490이 당일교집합=
+    // 이평선수렴, 2일연속=단기과열(설거지주의)로 같은 순간에 달랐던 문제, foreign/organ 93종목 전부
+    // "이평선 수렴"으로 뭉개졌던 문제 - 둘 다 이 통합으로 해결).
+    const finalOverlapItems = await Promise.all(overlapItems.map(async (item, index) => {
+      // 아래쪽(foreignAmt/organAmt/programAmt 순위밖 보정)이 trendRes.summary/programTrade(트렌드
+      // 배열이 아닌 원본 요약 필드)를 참조하므로 별도로 계속 조회해둔다(0ms 인메모리 조회, 비용 없음).
       const trendRes = getCached5dTrend(item.symbol);
-      const trendData = (fullCached && fullCached.trend && fullCached.trend.length > 0) ? fullCached.trend : (trendRes?.trend || []);
+      const trendData = await resolveTrendForBadge(item.symbol, {
+        currentPrice: item.currentPrice,
+        change: item.change,
+        changeRate: item.changeRate,
+        volume: item.volume,
+      });
+
       const latestTrend = trendData.length > 0 ? trendData[trendData.length - 1] : null;
       const statusInfo = trendData.length > 0
         ? computeStatusBadgeFromTrend(trendData)
@@ -2479,7 +2731,7 @@ async function executeAsyncOverlapCalculation(
         statusBadge: statusInfo.shortBadge,
         statusBadgeStyle: statusInfo.badgeStyle,
       };
-    });
+    }));
 
     // 3대 주체 전수 합산 후 최종 정렬: 1. overlapCount 내림차순, 2. totalNetBuyAmt 내림차순
     finalOverlapItems.sort((a, b) => {
@@ -2495,6 +2747,7 @@ async function executeAsyncOverlapCalculation(
 
     const aiPickCandidates = [...finalOverlapItems]
       .filter((item) => isEntryReadyBadge(item.statusBadge)) // 단기과열 종목은 별표(AI픽) 후보군에서 제외
+      .filter((item) => !isEtfOrEtn(item.name)) // 레버리지/인버스 등 ETF·ETN은 개별 종목 추천 취지에 안 맞아 AI픽 후보군에서 제외 (사용자 요청: "레버리지관련 종목은 다 빼서 추천")
       .map((item) => ({
         symbol: item.symbol,
         score: computeOverlapAiPickScore(item),
@@ -2545,9 +2798,27 @@ async function executeAsyncOverlapCalculation(
       updatedAt: new Date().toISOString(),
     };
 
-    if (masterData.list && masterData.list.length > 0) {
+    // 🚨 [버그 수정] 결과에 fallback 가격(콜드스타트로 runtimePriceCache 미등록)이 섞여 있으면 캐시에
+    // 저장하지 않는다 - 저장해버리면 장마감 후 "다음날 개장 전까지 사실상 영구" 캐시 정책 때문에 이
+    // 오염이 하루 종일 고정된다(실측: SK이노베이션 등 여러 종목이 배지 계산 불가 상태로 고정됐었음).
+    // 저장을 건너뛰어도 이번 응답 자체는 그대로 반환하고(fail-open), 다음 요청 때 재계산을 다시
+    // 시도해 실시간 가격이 채워지면(runtimePriceCache 등록) 그제서야 정상적으로 캐시된다.
+    const hasFallbackContamination = masterData.list.some((item) => fallbackPricedSymbols.has(item.symbol));
+    // 🚨 [버그 수정 - 근본 원인] runTop50BatchCollector에 returnEarly 백그라운드 완성 패턴을 도입한 뒤,
+    // 콜드스타트 직후 programRes(getBatchRankingDataAsync)가 우선순위 40종목만 채워진 부분판
+    // (isPartial:true)을 반환하는 구간이 생겼다 - 그 순간 당일교집합을 계산하면 후보 풀 자체가 40종목
+    // 뿐이라 실제보다 훨씬 적은 개수(실측: 17개, 완전판 기준 37개)로 나오는데, 이걸 그대로 캐시해버리면
+    // program이 몇 초 뒤 295종목 완전판으로 채워져도 당일교집합 캐시(장마감 후 프리징 정책)는 이 부분판
+    // 스냅샷에 계속 고정된다(수칙 2-1에서 재현 확인: node scratch/verify_21_checks_regression.js 재실행에도
+    // 계속 FAIL). fallback 가격 오염과 동일한 원칙(fail-open, 캐시만 스킵)으로 처리한다.
+    const hasPartialProgramContamination = !!programRes.isPartial;
+    if (masterData.list && masterData.list.length > 0 && !hasFallbackContamination && !hasPartialProgramContamination) {
       overlapMemoryCache.set(masterCacheKey, { data: masterData, timestamp: Date.now() });
       syncSharedRankCache(masterCacheKey, masterData.list);
+    } else if (hasFallbackContamination) {
+      console.warn(`[Overlap Master Cache Skip] fallback 가격 오염 감지(${[...fallbackPricedSymbols].join(',')}) - 이번 결과는 캐시하지 않고 다음 요청에서 재계산`);
+    } else if (hasPartialProgramContamination) {
+      console.warn('[Overlap Master Cache Skip] programRes.isPartial=true(백그라운드 완성 진행 중) - 이번 결과는 캐시하지 않고 다음 요청에서 재계산');
     }
     return masterData;
   } catch (err: any) {
@@ -2959,6 +3230,7 @@ async function finalizeConsecutiveOverlapResult(
   // Calculate Risk-Adjusted AI Pick Candidates (Matching 1st~6th Buy Timing Hierarchy)
   const aiPickCandidates = [...results]
     .filter((item) => isEntryReadyBadge(item.statusBadge)) // 단기과열 종목은 별표(AI픽) 후보군에서 제외
+    .filter((item) => !isEtfOrEtn(item.name)) // 레버리지/인버스 등 ETF·ETN은 개별 종목 추천 취지에 안 맞아 AI픽 후보군에서 제외 (사용자 요청: "레버리지관련 종목은 다 빼서 추천")
     .map((item) => ({
       symbol: item.symbol,
       score: computeOverlapAiPickScore(item),
@@ -2998,6 +3270,15 @@ export async function fetchConsecutiveNDaysOverlapRankingData(
   market: MarketType = 'ALL',
   targetDays: number = 3
 ): Promise<InvestorRankingResponse> {
+  // 🚨 [로컬 자가치유] 이 계산이 과거일 소스로 쓰는 raw_daily_data는 배포 환경에선 Vercel Cron이
+  // 매일 채워주지만, 로컬 개발(npm run dev)에선 그 Cron이 전혀 안 돌아서 최근 며칠이 계속 비어있는
+  // 채로 남는다 - 그 결과 배지 계산에 ma20 등이 null이 되어 실제 이격도와 안 맞는 값이 나오는 문제가
+  // 있었다(사용자 실측). 요청을 막지 않는 백그라운드 트리거(30분 잠금)로 빈 날짜를 알아서 채운다 -
+  // 배포 환경에서도 안전하다(이미 있는 값을 같은 값으로 재upsert할 뿐).
+  import('./batchCollector').then(({ triggerRawDailyDataBackfillIfStale }) => {
+    triggerRawDailyDataBackfillIfStale();
+  }).catch(() => {});
+
   const cacheKey = `c_${direction}_${targetDays}d_${minOverlap}_${market}_${topLimit}`;
   const cached = consecutiveOverlapMemoryCache.get(cacheKey);
   if (cached && Date.now() - cached.timestamp < CONSECUTIVE_OVERLAP_CACHE_TTL_MS) {
@@ -3076,7 +3357,10 @@ export async function fetchConsecutiveNDaysOverlapRankingData(
   // (오늘 낮에 /history 페이지에서 고쳤던 것과 정확히 같은 캡핑 버그를 여기서 다시 만들 뻔했다 - 실측:
   // LG에너지솔루션이 2일연속 탭에선 "2일연속", 3일연속 탭에선 "3일연속"으로 서로 다르게 표시되는 걸 보고
   // 발견함). 20일치를 넉넉히 당겨오면 백워드 루프가 진짜 연속일수를 끝까지 셀 수 있다.
-  const DB_HISTORY_LOOKBACK_DAYS = 20;
+  // 🚨 [버그 수정] 20일로는 이 경로의 computeStatusBadgeFromTrend(line ~2881)도 ma60이 항상 null이 되어
+  // "바닥 반등"/60일선 기준 단기과열 배지를 절대 못 낸다 - resolveTrendForBadge와 동일 기준(90일)으로
+  // 맞춘다(수칙 1-6).
+  const DB_HISTORY_LOOKBACK_DAYS = 90;
   const { fetchRawDailyTrailingDays } = await import('./supabase');
   const { dates: trailingDatesFull, bySymbol: trailingBySymbol } = await fetchRawDailyTrailingDays(todayStr, DB_HISTORY_LOOKBACK_DAYS).catch(() => ({ dates: [] as string[], bySymbol: new Map() }));
   // 사전필터(universeExtra) 게이트는 원래 의도대로 "과거 targetDays-1일"만 본다 - 20일치 중 가장 최근 것.
@@ -3109,6 +3393,12 @@ export async function fetchConsecutiveNDaysOverlapRankingData(
 
     if (todayAmts && hasFullDbHistory) {
       const symbolDates = trailingBySymbol.get(stock.symbol)!;
+      // 🚨 [버그 수정] closePrice를 0으로 하드코딩했었다 - raw_daily_data DB에 실제 종가가 저장돼 있는데도
+      // fetchRawDailyTrailingDays의 select가 가격 컬럼을 안 가져와서 여기선 값이 없는 것처럼 취급됐다.
+      // 그 결과 computeStatusBadgeFromTrend(closePrice>0 필터)가 과거 19일을 전부 버려 ma5/ma20/ma60이
+      // 항상 null이 되고, 이 최적화 경로를 타는 종목(우선순위 상위 15개)의 배지가 항상 "이평선 수렴"으로
+      // 고정되는 문제가 있었다 - 랭킹 목록과 종목 상세 차트의 배지가 서로 다르게 보이던 근본 원인.
+      // 이제 select를 고쳐 실제 종가를 받아오므로 그대로 채운다.
       const trend: any[] = trailingDatesFull
         .filter((d) => symbolDates.has(d))
         .map((d) => {
@@ -3116,7 +3406,12 @@ export async function fetchConsecutiveNDaysOverlapRankingData(
           return {
             date: d,
             stck_bsop_date: d,
-            closePrice: 0,
+            closePrice: row.close_price || 0,
+            openPrice: row.open_price || 0,
+            highPrice: row.high_price || 0,
+            lowPrice: row.low_price || 0,
+            volume: row.volume || 0,
+            changeRate: row.change_rate || 0,
             foreignNetBuyAmt: row.foreign_net_buy_amt || 0,
             organNetBuyAmt: row.organ_net_buy_amt || 0,
           };
@@ -3383,8 +3678,6 @@ export async function fetchYesterdayOverlapDropouts(
 
   return results;
 }
-
-import { registerRuntimeStockName } from './mockData';
 
 const surgingCacheStore = getGlobalMap<string, InvestorRankingResponse>('surgingCacheStore');
 

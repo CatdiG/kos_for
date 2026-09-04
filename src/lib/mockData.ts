@@ -5,6 +5,7 @@
 
 import { MarketType } from './types';
 import { TOP_300_STOCKS } from './stockUniverse300';
+import { getMasterStockList } from './stockDictionary';
 
 export function getSettledAsOfDateLabel(lastTradeDate?: string): string {
   if (lastTradeDate && lastTradeDate.length === 8) {
@@ -232,6 +233,21 @@ export function resolveMarketType(
     return foundInTop50.market;
   }
 
+  // 🚨 [버그 수정] 여기서 바로 숫자 코드 범위 추정(아래)으로 넘어가던 게 문제였다 - KRX 종목코드는
+  // 시장별로 엄격한 숫자 구간 규칙이 없어서(예: 6만 미만도 코스닥 종목이 많음), 이 추정이 자주 틀렸다
+  // (실측: 리노공업 058470 - 실제 코스닥인데 58470 < 60000이라 무조건 KOSPI로 잘못 판정되어 organ
+  // 랭킹에 "코스피"로 잘못 표시됨). TOP_300_STOCKS(295종목)와 stockMasterCache.json(3,554개 전
+  // 상장종목, 이미 정확한 market 필드 보유)을 먼저 확인해서 실제 데이터로 정확히 판별한다.
+  const foundInTop300 = TOP_300_STOCKS.find((s) => s.symbol === symbol);
+  if (foundInTop300) {
+    return foundInTop300.market;
+  }
+
+  const foundInMaster = getMasterStockList().find((s) => s.symbol === symbol);
+  if (foundInMaster) {
+    return foundInMaster.market;
+  }
+
   if (KOSDAQ_KNOWN_SYMBOLS.has(symbol)) {
     return 'KOSDAQ';
   }
@@ -273,19 +289,27 @@ export function resolveStockPriceAndChange(
   defaultPrice: number,
   defaultChange: number,
   defaultChangeRate: number
-): { currentPrice: number; change: number; changeRate: number } {
+): { currentPrice: number; change: number; changeRate: number; isFallback: boolean } {
   if (runtimePriceCache.has(symbol)) {
     const cached = runtimePriceCache.get(symbol)!;
     return {
       currentPrice: cached.price,
       change: cached.change,
       changeRate: cached.changeRate,
+      isFallback: false,
     };
   }
+  // 🚨 [버그 수정] runtimePriceCache에 아직 없으면(콜드스타트 등) defaultPrice(보통 stockUniverse300의
+  // basePrice, 실시간과 무관한 하드코딩 fallback)를 그대로 돌려주는데, 예전엔 호출부가 이 fallback 여부를
+  // 전혀 몰라서 그대로 정상 데이터인 것처럼 캐시(장마감 후엔 다음날 개장 전까지 사실상 영구)에 저장해버렸다
+  // - 한 번의 콜드스타트 순간 오염이 다음날 아침까지 고정되는 문제로 이어졌다(실측: SK이노베이션 등 여러
+  // 종목이 이격도/배지 계산이 안 되는 상태로 하루 종일 남아있었음). isFallback을 노출해 호출부가 "이 값은
+  // 아직 신뢰할 수 없다"는 걸 알고 캐시 저장 여부를 스스로 판단하게 한다.
   return {
     currentPrice: defaultPrice,
     change: defaultChange,
     changeRate: defaultChangeRate,
+    isFallback: true,
   };
 }
 
