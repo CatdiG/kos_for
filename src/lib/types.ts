@@ -92,6 +92,7 @@ export interface IntradayCandlePoint {
   ma5?: number | null;
   ma20?: number | null;
   ma60?: number | null;
+  vwap?: number | null; // 당일 거래량가중평균가 - 하루 시작 시점부터 누적, 날짜 바뀌면 리셋
 }
 
 export interface IntradayPivotFibonacciLevels {

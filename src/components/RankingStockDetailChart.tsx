@@ -120,6 +120,7 @@ export default function RankingStockDetailChart({
   const [show3mPivot, setShow3mPivot] = useState(true);
   const [show3mFibo, setShow3mFibo] = useState(true);
   const [show3mVolumeProfile, setShow3mVolumeProfile] = useState(false);
+  const [show3mVWAP, setShow3mVWAP] = useState(true);
 
   // Hover Crosshair Horizontal Price Line State (Snaps to OHLC: High, Open, Close, Low)
   const [hoverPriceInfo, setHoverPriceInfo] = useState<{ y: number; price: number; label?: string } | null>(null);
@@ -1008,6 +1009,16 @@ function findActiveSwingLow(candles: any[]): SwingLowPoint | null {
             >
               매물대
             </button>
+            <button
+              type="button"
+              onClick={() => setShow3mVWAP(!show3mVWAP)}
+              className={`px-1.5 py-0.5 rounded font-bold border transition cursor-pointer ${
+                show3mVWAP ? 'bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border-indigo-500/30' : 'bg-slate-50 text-slate-400 border-slate-200 opacity-50'
+              }`}
+              title="당일 거래량가중평균가 - 장중 동적 지지/저항 기준선. 날짜 바뀌면 매일 새로 리셋됨"
+            >
+              VWAP
+            </button>
           </div>
         )}
 
@@ -1478,6 +1489,12 @@ function findActiveSwingLow(candles: any[]): SwingLowPoint | null {
                       {show3mMA5 && <Line type="monotone" dataKey="ma5" stroke="#f97316" strokeDasharray="3 3" strokeWidth={1} dot={false} isAnimationActive={false} name="5선" />}
                       {show3mMA20 && <Line type="monotone" dataKey="ma20" stroke="#eab308" strokeDasharray="3 3" strokeWidth={2} dot={false} isAnimationActive={false} name="20선(황금선)" />}
                       {show3mMA60 && <Line type="monotone" dataKey="ma60" stroke="#a855f7" strokeDasharray="3 3" strokeWidth={1} dot={false} isAnimationActive={false} name="60선" />}
+                      {/* VWAP(거래량가중평균가) - 이동평균선과 달리 점선이 아닌 실선으로 구분, 당일 장중
+                          동적 지지/저항 기준선이라 피봇(전일 고정선)과 성격이 다름을 시각적으로 구분한다.
+                          🚨 [색상 충돌 수정] 원래 #06b6d4(cyan)를 썼는데, 같은 3분봉 화면에 이미 "단기
+                          지지선"(스윙 로우)이 동일한 cyan을 쓰고 있어서 두 선이 구분 안 되는 문제가 있었다
+                          - indigo로 바꿔 겹치지 않게 함. */}
+                      {show3mVWAP && <Line type="monotone" dataKey="vwap" stroke="#6366f1" strokeWidth={1.5} dot={false} isAnimationActive={false} name="VWAP" />}
                     </ComposedChart>
                   </ResponsiveContainer>
                 )}
@@ -1580,6 +1597,12 @@ function findActiveSwingLow(candles: any[]): SwingLowPoint | null {
                   <div className="flex items-center gap-1">
                     <svg width="18" height="6" className="inline-block shrink-0"><line x1="0" y1="3" x2="18" y2="3" stroke="#a855f7" strokeWidth="1" strokeDasharray="3 2" /></svg>
                     <span>60선</span>
+                  </div>
+                )}
+                {show3mVWAP && (
+                  <div className="flex items-center gap-1">
+                    <svg width="18" height="6" className="inline-block shrink-0"><line x1="0" y1="3" x2="18" y2="3" stroke="#6366f1" strokeWidth="1.5" /></svg>
+                    <span className="font-bold text-indigo-600 dark:text-indigo-400">VWAP</span>
                   </div>
                 )}
               </div>

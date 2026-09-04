@@ -137,6 +137,13 @@ export const CustomCandleTooltip = ({ active, payload, label, priceLabel = '원'
             <span className="font-mono font-bold text-purple-500">{fmt(dataPoint.recentLow)}{priceLabel}</span>
           </div>
         )}
+
+        {dataPoint.vwap !== undefined && dataPoint.vwap !== null && (
+          <div className="flex justify-between items-center gap-3">
+            <span className="text-indigo-600 dark:text-indigo-400 font-medium">📊 VWAP (당일 평균단가):</span>
+            <span className="font-mono font-bold text-indigo-500">{fmt(dataPoint.vwap)}{priceLabel}</span>
+          </div>
+        )}
       </div>
     </div>
   );

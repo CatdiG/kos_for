@@ -4391,6 +4391,24 @@ export async function fetchKis3mCandlesFullDay(
     // ========================================================================
     // 6. 실제 봉 배열 대상 연속 이동평균선(MA5, MA20, MA60) 정석 연산
     // ========================================================================
+    // VWAP(거래량가중평균가) - 당일 장 시작부터의 누적(전형가×거래량)/누적거래량. combinedReal은 어제
+    // 실제 봉 + 오늘 실시간 봉이 이어붙어 있으므로, 날짜가 바뀌는 지점에서 누적치를 반드시 리셋해야
+    // "어제 매물까지 섞인 가짜 VWAP"이 되지 않는다(하루 단위로 끊어서 계산하는 게 VWAP의 정의 그 자체).
+    let vwapCumPV = 0;
+    let vwapCumVol = 0;
+    let vwapDate = '';
+    const vwapByIndex: number[] = combinedReal.map((c) => {
+      if (c.date !== vwapDate) {
+        vwapDate = c.date;
+        vwapCumPV = 0;
+        vwapCumVol = 0;
+      }
+      const typicalPrice = (c.highPrice + c.lowPrice + c.closePrice) / 3;
+      vwapCumPV += typicalPrice * c.volume;
+      vwapCumVol += c.volume;
+      return vwapCumVol > 0 ? Math.round(vwapCumPV / vwapCumVol) : c.closePrice;
+    });
+
     const candles: IntradayCandlePoint[] = combinedReal.map((c, idx, arr) => {
       // MA5
       const slice5 = arr.slice(Math.max(0, idx - 4), idx + 1);
@@ -4417,6 +4435,7 @@ export async function fetchKis3mCandlesFullDay(
         ma5,
         ma20,
         ma60,
+        vwap: vwapByIndex[idx],
       };
     });
 
