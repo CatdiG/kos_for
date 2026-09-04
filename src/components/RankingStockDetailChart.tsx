@@ -1023,8 +1023,9 @@ function findActiveSwingLow(candles: any[]): SwingLowPoint | null {
             <button
               type="button"
               onClick={() => setShow3mVWAPBand(!show3mVWAPBand)}
+              style={show3mVWAPBand ? { backgroundColor: 'rgba(47,157,39,0.1)', color: '#2F9D27', borderColor: 'rgba(47,157,39,0.3)' } : undefined}
               className={`px-1.5 py-0.5 rounded font-bold border transition cursor-pointer ${
-                show3mVWAPBand ? 'bg-slate-800 text-white dark:bg-white dark:text-slate-900 border-slate-800 dark:border-white' : 'bg-slate-50 text-slate-400 border-slate-200 opacity-50'
+                show3mVWAPBand ? '' : 'bg-slate-50 text-slate-400 border-slate-200 opacity-50'
               }`}
               title="VWAP ±1·2 표준편차 밴드 - 당일 누적 표본 기준 통계적 과열/과매도 구간. 장 시작 직후엔 표본이 적어 밴드가 좁고 불안정함"
             >
@@ -1510,16 +1511,14 @@ function findActiveSwingLow(candles: any[]): SwingLowPoint | null {
                           구분해서 "밴드 안쪽(1σ)"과 "더 바깥쪽(2σ, 통계적 극단)"을 시각적으로 나눈다. */}
                       {show3mVWAPBand && (
                         <>
-                          {/* 🚨 [색상 재수정 2차] violet→pink로 바꿔도 3분봉의 다른 색상 계열(빨강/파랑/주황/
-                              노랑/보라/청록/초록/남색)과 톤이 비슷해 눈에 확 안 띈다는 피드백을 받았다.
-                              이번엔 색상(hue) 경쟁을 아예 피해서, 테마 배경과 정반대(라이트=거의 검정,
-                              다크=거의 흰색)로 최대 명암 대비를 주는 방식으로 바꿨다 - 다른 어떤 선과도
-                              색상으로 헷갈릴 일이 없고, 배경 대비가 가장 강해서 "확 띄는" 요구를 직접
-                              충족한다. */}
-                          <Line type="monotone" dataKey="vwapUpper1" stroke={isDark ? '#f8fafc' : '#0f172a'} strokeWidth={2} strokeDasharray="6 3" dot={false} isAnimationActive={false} name="VWAP +1σ" />
-                          <Line type="monotone" dataKey="vwapLower1" stroke={isDark ? '#f8fafc' : '#0f172a'} strokeWidth={2} strokeDasharray="6 3" dot={false} isAnimationActive={false} name="VWAP -1σ" />
-                          <Line type="monotone" dataKey="vwapUpper2" stroke={isDark ? '#94a3b8' : '#475569'} strokeWidth={1.5} strokeDasharray="3 3" dot={false} isAnimationActive={false} name="VWAP +2σ" />
-                          <Line type="monotone" dataKey="vwapLower2" stroke={isDark ? '#94a3b8' : '#475569'} strokeWidth={1.5} strokeDasharray="3 3" dot={false} isAnimationActive={false} name="VWAP -2σ" />
+                          {/* 🚨 [색상 지정] 사용자 지정 색상 #2F9D27(진한 초록) 사용. 1σ는 원색 그대로,
+                              2σ는 같은 색상의 옅은 톤(#8FCB89)으로 둬서 "안쪽(1σ)"과 "바깥쪽(2σ)"을
+                              구분한다. 피보나치 38.2%선(#10b981, 청록에 가까운 초록)과 색상 계열이
+                              가깝긴 하지만, 사용자가 이 정확한 색을 명시적으로 지정함. */}
+                          <Line type="monotone" dataKey="vwapUpper1" stroke="#2F9D27" strokeWidth={2} strokeDasharray="6 3" dot={false} isAnimationActive={false} name="VWAP +1σ" />
+                          <Line type="monotone" dataKey="vwapLower1" stroke="#2F9D27" strokeWidth={2} strokeDasharray="6 3" dot={false} isAnimationActive={false} name="VWAP -1σ" />
+                          <Line type="monotone" dataKey="vwapUpper2" stroke="#8FCB89" strokeWidth={1.5} strokeDasharray="3 3" dot={false} isAnimationActive={false} name="VWAP +2σ" />
+                          <Line type="monotone" dataKey="vwapLower2" stroke="#8FCB89" strokeWidth={1.5} strokeDasharray="3 3" dot={false} isAnimationActive={false} name="VWAP -2σ" />
                         </>
                       )}
                     </ComposedChart>
@@ -1634,8 +1633,8 @@ function findActiveSwingLow(candles: any[]): SwingLowPoint | null {
                 )}
                 {show3mVWAPBand && (
                   <div className="flex items-center gap-1">
-                    <svg width="18" height="6" className="inline-block shrink-0"><line x1="0" y1="3" x2="18" y2="3" stroke={isDark ? '#f8fafc' : '#0f172a'} strokeWidth="2" strokeDasharray="6 3" /></svg>
-                    <span className="font-bold text-slate-800 dark:text-slate-100">VWAP ±1·2σ</span>
+                    <svg width="18" height="6" className="inline-block shrink-0"><line x1="0" y1="3" x2="18" y2="3" stroke="#2F9D27" strokeWidth="2" strokeDasharray="6 3" /></svg>
+                    <span className="font-bold" style={{ color: '#2F9D27' }}>VWAP ±1·2σ</span>
                   </div>
                 )}
               </div>
