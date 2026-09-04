@@ -2999,6 +2999,18 @@ export async function fetchConsecutiveNDaysOverlapRankingData(
     return cached.data;
   }
 
+  // 🚨 [버그 수정] TTL(180초)이 만료됐다고 해서 무조건 새로 계산을 시작하면 안 된다 - 이미 이 cacheKey에
+  // 대해 백그라운드 완전판 계산이 진행 중인데(consecutiveOverlapBackgroundInFlight), 그게 180초보다
+  // 오래 걸리는 실제 상황(사용자 실측 확인: 30분 넘게 "상위 종목 우선 표시 중"에서 안 벗어남)에서는
+  // TTL 만료 시점마다 여기부터 다시 우선순위 15종목 라이브 재계산이 매번 새로 실행됐다 - 이게 캐시를
+  // "다시 isPartial:true, 극소수 종목짜리"로 덮어써버려서, 뒤에서 조용히 잘 진행되고 있던 완전판 계산의
+  // 최종 결과가 화면에 반영될 기회를 영영 못 잡고 계속 밀려나는(신선한 재시작이 완료를 추월) 문제였다.
+  // 이미 진행 중인 완전판 계산이 있으면 새로 계산을 시작하지 않고, 있는 캐시(TTL 지났어도)를 그대로
+  // 돌려준다 - 완전판이 끝나면 그 백그라운드 작업이 알아서 캐시를 갱신한다.
+  if (consecutiveOverlapBackgroundInFlight.get(cacheKey) && cached) {
+    return cached.data;
+  }
+
   const isBuy = direction === 'buy';
   const { getCached5dTrend, setCached5dTrend } = await import('./batchCollector');
 
