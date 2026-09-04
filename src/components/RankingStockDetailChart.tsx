@@ -107,6 +107,7 @@ export default function RankingStockDetailChart({
   const [showMA5, setShowMA5] = useState(true);
   const [showMA20, setShowMA20] = useState(true);
   const [showMA60, setShowMA60] = useState(true);
+  const [showMA120, setShowMA120] = useState(true);
   const [showForeign, setShowForeign] = useState(true);
   const [showOrgan, setShowOrgan] = useState(true);
   const [showProgram, setShowProgram] = useState(true);
@@ -213,6 +214,14 @@ export default function RankingStockDetailChart({
         ? Math.round(slice60.reduce((sum, d) => sum + (d.closePrice || 0), 0) / slice60.length)
         : null;
 
+      // 120-day MA: Calculate over available preceding days (up to 120 days) - arr는 최대 약 250 거래일치
+      // 원본(raw) trend 전체 배열이므로(fetchKisInvestorTrend가 항상 365일 조회) period='60d' 화면에서도
+      // 실제 120일 평균을 정석대로 계산할 수 있다 (수칙 1-3: 부족한 구간을 가짜로 채우지 않고 있는 만큼만 평균)
+      const slice120 = arr.slice(Math.max(sliceFloor, idx - 119), idx + 1);
+      const ma120 = slice120.length > 0
+        ? Math.round(slice120.reduce((sum, d) => sum + (d.closePrice || 0), 0) / slice120.length)
+        : null;
+
       // 당일 거래량 / 최근 20일(당일 제외) 평균 거래량 비율 - 세력매집/설거지주의 정교 판별용
       const sliceVol = arr.slice(Math.max(sliceFloor, idx - 20), idx + 1);
       const volumeRatio = computeRecentVolumeRatio(sliceVol.map((d) => d.volume));
@@ -260,6 +269,7 @@ export default function RankingStockDetailChart({
         ma5,
         ma20,
         ma60,
+        ma120,
         recentLow,
         trendStatus,
         programNetBuyAmt: progAmt,
@@ -369,12 +379,12 @@ function calculateUltraTightKrxPriceAxis(minRaw: number, maxRaw: number, targetT
   // 100%-Baseline Disparate Ratio & 4-Stage Status Computation
   const disparateInfo = React.useMemo(() => {
     if (!displayTrend || displayTrend.length === 0) {
-      return { ma5: 0, ma20: 0, ma60: 0, disparate20: 100, disparate60: 100, overbought20Price: 0, oversold60Price: 0, badge: '⚪ 이평선 수렴', badgeStyle: 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-300 dark:border-slate-700' };
+      return { ma5: 0, ma20: 0, ma60: 0, ma120: 0, disparate20: 100, disparate60: 100, disparate120: 100, overbought20Price: 0, oversold60Price: 0, overbought120Price: 0, oversold120Price: 0, badge: '⚪ 이평선 수렴', badgeStyle: 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-300 dark:border-slate-700' };
     }
 
     const rawCloses = displayTrend.map((d) => d.closePrice).filter((c) => c && c > 0);
     if (rawCloses.length === 0) {
-      return { ma5: 0, ma20: 0, ma60: 0, disparate20: 100, disparate60: 100, overbought20Price: 0, oversold60Price: 0, badge: '⚪ 이평선 수렴', badgeStyle: 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-300 dark:border-slate-700' };
+      return { ma5: 0, ma20: 0, ma60: 0, ma120: 0, disparate20: 100, disparate60: 100, disparate120: 100, overbought20Price: 0, oversold60Price: 0, overbought120Price: 0, oversold120Price: 0, badge: '⚪ 이평선 수렴', badgeStyle: 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-300 dark:border-slate-700' };
     }
 
     // 액면분할/무상감자 등 옛 가격 스케일 구간은 제외하고 계산 (수칙 1-3: 오염 구간 제외 방식)
@@ -393,6 +403,15 @@ function calculateUltraTightKrxPriceAxis(minRaw: number, maxRaw: number, targetT
     const disparate20 = Number(((currentP / ma20) * 100).toFixed(1));
     const disparate60 = Number(((currentP / ma60) * 100).toFixed(1));
 
+    // 120일선: 여기 closes는 이미 period(5d/20d/60d)로 잘린 displayTrend 기준이라 최대 60개뿐이라서
+    // slice(-120) 방식으로는 진짜 120일 평균을 만들 수 없다 (60일선과 똑같은 값이 되는 가짜 계산이 된다).
+    // 대신 displayTrend 각 행에 이미 원본(raw) 전체 trend 배열(최대 약 250 거래일) 기준으로 정확히
+    // 계산되어 있는 ma120 필드(fullTrendWithMA 참고)를 그대로 재사용한다 (수칙 1-3/1-6: 가짜 축소 계산 및
+    // 중복 재구현 금지).
+    const lastPoint = splitSafeDisplayTrend[splitSafeDisplayTrend.length - 1] as any;
+    const ma120 = (lastPoint?.ma120 !== undefined && lastPoint?.ma120 !== null) ? lastPoint.ma120 : ma60;
+    const disparate120 = Number(((currentP / ma120) * 100).toFixed(1));
+
     // 당일 거래량 / 최근 20일(당일 제외) 평균 거래량 비율 - 세력매집/설거지주의 정교 판별용
     const volumeRatio = computeRecentVolumeRatio(splitSafeDisplayTrend.map((d) => d.volume));
 
@@ -404,10 +423,13 @@ function calculateUltraTightKrxPriceAxis(minRaw: number, maxRaw: number, targetT
     const oversold20Price = roundToKrxTick(ma20 * 0.95);
     const overbought60Price = roundToKrxTick(ma60 * 1.10);
     const oversold60Price = roundToKrxTick(ma60 * 0.90);
+    // 120일선도 60일선과 동일한 90%/110% 과열·침체 기준을 그대로 적용 (사용자 요청: "다른 선들과 똑같이")
+    const overbought120Price = roundToKrxTick(ma120 * 1.10);
+    const oversold120Price = roundToKrxTick(ma120 * 0.90);
     const support1Price = roundToKrxTick(ma20);
     const recentLowPrice = Math.min(...splitSafeDisplayTrend.map((d) => (d.lowPrice && d.lowPrice > 0 ? d.lowPrice : d.closePrice)));
 
-    return { ma5, ma20, ma60, disparate20, disparate60, overbought20Price, oversold20Price, overbought60Price, oversold60Price, support1Price, recentLowPrice, badge, badgeStyle };
+    return { ma5, ma20, ma60, ma120, disparate20, disparate60, disparate120, overbought20Price, oversold20Price, overbought60Price, oversold60Price, overbought120Price, oversold120Price, support1Price, recentLowPrice, badge, badgeStyle };
   }, [displayTrend]);
 
   const { minPrice, maxPrice, priceDomain, priceTicks } = React.useMemo(() => {
@@ -735,7 +757,7 @@ function findActiveSwingLow(candles: any[]): SwingLowPoint | null {
           {/* 2-Column Asymmetric Grid: Expanded 20D Card (col-span-7) & Compact 60D Card (col-span-5) */}
           <div className="grid grid-cols-1 xl:grid-cols-12 gap-2 w-full">
             {/* 20D Card */}
-            <div className="xl:col-span-7 flex flex-col gap-1.5 bg-white/90 dark:bg-[#1c202c]/90 p-2.5 rounded-lg border border-slate-200/80 dark:border-[#2a2e39] shadow-2xs">
+            <div className="xl:col-span-6 flex flex-col gap-1.5 bg-white/90 dark:bg-[#1c202c]/90 p-2.5 rounded-lg border border-slate-200/80 dark:border-[#2a2e39] shadow-2xs">
               <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] font-sans pb-1 border-b border-slate-100 dark:border-slate-800/80">
                 <div className="flex items-center gap-1.5 shrink-0 font-mono">
                   <span className="font-bold text-amber-600 dark:text-amber-400 text-xs font-sans">📊 20일선 이격도:</span>
@@ -768,30 +790,45 @@ function findActiveSwingLow(candles: any[]): SwingLowPoint | null {
               </div>
             </div>
 
-            {/* 60D Card */}
-            <div className="xl:col-span-5 flex flex-col gap-1.5 bg-white/90 dark:bg-[#1c202c]/90 p-2.5 rounded-lg border border-slate-200/80 dark:border-[#2a2e39] shadow-2xs">
+            {/* 60D·120D 통합 카드 (사용자 요청: 120일선 이격도 추가, 우측에 "60,120일선" 기준 명시) */}
+            <div className="xl:col-span-6 flex flex-col gap-1.5 bg-white/90 dark:bg-[#1c202c]/90 p-2.5 rounded-lg border border-slate-200/80 dark:border-[#2a2e39] shadow-2xs">
               <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] font-sans pb-1 border-b border-slate-100 dark:border-slate-800/80">
-                <div className="flex items-center gap-1.5 shrink-0 font-mono">
-                  <span className="font-bold text-cyan-600 dark:text-cyan-400 text-xs font-sans">📈 60일선 이격도:</span>
-                  <strong className={`font-black text-[14px] ${disparateInfo.disparate60 <= 90 ? 'text-blue-600 dark:text-blue-400' : 'text-slate-800 dark:text-slate-100'}`}>
-                    {disparateInfo.disparate60}%
-                  </strong>
-                  <span className="text-[11px] font-sans font-bold text-slate-500 dark:text-slate-400">
-                    {disparateInfo.disparate60 >= 110 ? '(⚠️ 과열)' : disparateInfo.disparate60 <= 90 ? '(🔵 반등)' : ''}
+                <div className="flex items-center gap-x-2.5 gap-y-0.5 flex-wrap shrink-0 font-mono">
+                  <span className="font-bold text-slate-500 dark:text-slate-400 text-xs font-sans">📈 이격도:</span>
+                  <span className="flex items-center gap-1">
+                    <span className="text-[10px] font-bold text-cyan-600 dark:text-cyan-400 font-sans">60일선</span>
+                    <strong className={`font-black text-[14px] ${disparateInfo.disparate60 <= 90 ? 'text-blue-600 dark:text-blue-400' : disparateInfo.disparate60 >= 110 ? 'text-rose-600 dark:text-rose-400' : 'text-slate-800 dark:text-slate-100'}`}>
+                      {disparateInfo.disparate60}%
+                    </strong>
+                  </span>
+                  <span className="flex items-center gap-1">
+                    <span className="text-[10px] font-bold text-fuchsia-600 dark:text-fuchsia-400 font-sans">120일선</span>
+                    <strong className={`font-black text-[14px] ${disparateInfo.disparate120 <= 90 ? 'text-blue-600 dark:text-blue-400' : disparateInfo.disparate120 >= 110 ? 'text-rose-600 dark:text-rose-400' : 'text-slate-800 dark:text-slate-100'}`}>
+                      {disparateInfo.disparate120}%
+                    </strong>
                   </span>
                 </div>
-                <div className="text-[11px] text-slate-500 dark:text-slate-400 font-sans flex items-center gap-x-2.5 ml-auto flex-wrap shrink-0">
-                  <span>• <strong>90% 이하</strong>: 반등</span>
-                  <span>• <strong>110% 이상</strong>: 과열</span>
-                </div>
+                <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 font-sans bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-1.5 py-0.5 rounded shrink-0 ml-auto">
+                  60,120일선
+                </span>
+              </div>
+              <div className="text-[10px] text-slate-500 dark:text-slate-400 font-sans flex items-center gap-x-2.5 flex-wrap pb-0.5">
+                <span>• <strong>90% 이하</strong>: 반등</span>
+                <span>• <strong>110% 이상</strong>: 과열</span>
               </div>
 
               <div className="grid grid-cols-2 gap-0 text-xs font-sans pt-1 border-t border-slate-100 dark:border-slate-800/60 w-full whitespace-nowrap">
-                <div className="flex items-center justify-center text-center text-red-600 dark:text-red-400 border-r border-slate-200/80 dark:border-slate-800/80 pr-2 whitespace-nowrap">
-                  <span>🔴 110% 과열가: <strong className="font-bold font-mono text-xs sm:text-[13px]">{(disparateInfo?.overbought60Price || 0) > 0 ? `${(disparateInfo?.overbought60Price || 0).toLocaleString()}원` : '-'}</strong></span>
+                <div className="flex items-center justify-center text-center text-red-600 dark:text-red-400 border-r border-b border-slate-200/80 dark:border-slate-800/80 pr-2 pb-1 whitespace-nowrap">
+                  <span>🔴 60일 과열가: <strong className="font-bold font-mono text-xs sm:text-[13px]">{(disparateInfo?.overbought60Price || 0) > 0 ? `${(disparateInfo?.overbought60Price || 0).toLocaleString()}원` : '-'}</strong></span>
                 </div>
-                <div className="flex items-center justify-center text-center text-blue-600 dark:text-blue-400 pl-2 whitespace-nowrap">
-                  <span>🔵 90% 침체가: <strong className="font-bold font-mono text-xs sm:text-[13px]">{(disparateInfo?.oversold60Price || 0) > 0 ? `${(disparateInfo?.oversold60Price || 0).toLocaleString()}원` : '-'}</strong></span>
+                <div className="flex items-center justify-center text-center text-red-600 dark:text-red-400 border-b border-slate-200/80 dark:border-slate-800/80 pl-2 pb-1 whitespace-nowrap">
+                  <span>🔴 120일 과열가: <strong className="font-bold font-mono text-xs sm:text-[13px]">{(disparateInfo?.overbought120Price || 0) > 0 ? `${(disparateInfo?.overbought120Price || 0).toLocaleString()}원` : '-'}</strong></span>
+                </div>
+                <div className="flex items-center justify-center text-center text-blue-600 dark:text-blue-400 border-r border-slate-200/80 dark:border-slate-800/80 pr-2 pt-1 whitespace-nowrap">
+                  <span>🔵 60일 침체가: <strong className="font-bold font-mono text-xs sm:text-[13px]">{(disparateInfo?.oversold60Price || 0) > 0 ? `${(disparateInfo?.oversold60Price || 0).toLocaleString()}원` : '-'}</strong></span>
+                </div>
+                <div className="flex items-center justify-center text-center text-blue-600 dark:text-blue-400 pl-2 pt-1 whitespace-nowrap">
+                  <span>🔵 120일 침체가: <strong className="font-bold font-mono text-xs sm:text-[13px]">{(disparateInfo?.oversold120Price || 0) > 0 ? `${(disparateInfo?.oversold120Price || 0).toLocaleString()}원` : '-'}</strong></span>
                 </div>
               </div>
             </div>
@@ -1060,6 +1097,15 @@ function findActiveSwingLow(candles: any[]): SwingLowPoint | null {
             </button>
             <button
               type="button"
+              onClick={() => setShowMA120(!showMA120)}
+              className={`px-1.5 py-0.5 rounded font-bold border transition cursor-pointer ${
+                showMA120 ? 'bg-fuchsia-500/10 text-fuchsia-600 dark:text-fuchsia-400 border-fuchsia-500/30' : 'bg-slate-50 text-slate-400 border-slate-200 opacity-50'
+              }`}
+            >
+              120일선
+            </button>
+            <button
+              type="button"
               onClick={() => {
                 const nextState = !showDisparate;
                 setShowDisparate(nextState);
@@ -1067,10 +1113,12 @@ function findActiveSwingLow(candles: any[]): SwingLowPoint | null {
                   setShowMA5(false);
                   setShowMA20(false);
                   setShowMA60(false);
+                  setShowMA120(false);
                 } else {
                   setShowMA5(true);
                   setShowMA20(true);
                   setShowMA60(true);
+                  setShowMA120(true);
                 }
               }}
               className={`px-1.5 py-0.5 rounded font-bold border transition cursor-pointer ${
@@ -1241,6 +1289,7 @@ function findActiveSwingLow(candles: any[]): SwingLowPoint | null {
                     {showMA5 && <Line type="linear" dataKey="ma5" name="5일 이동평균" stroke="#f59e0b" strokeWidth={1.8} strokeDasharray="5 5" dot={false} activeDot={false} connectNulls={true} />}
                     {showMA20 && <Line type="linear" dataKey="ma20" name="20일 이동평균" stroke="#a855f7" strokeWidth={2.0} strokeDasharray="5 5" dot={false} activeDot={false} connectNulls={true} />}
                     {showMA60 && <Line type="linear" dataKey="ma60" name="60일 이동평균" stroke="#06b6d4" strokeWidth={1.8} strokeDasharray="5 5" dot={false} activeDot={false} connectNulls={true} />}
+                    {showMA120 && <Line type="linear" dataKey="ma120" name="120일 이동평균" stroke="#d946ef" strokeWidth={1.8} strokeDasharray="5 5" dot={false} activeDot={false} connectNulls={true} />}
                     {showDisparate && (disparateInfo.overbought20Price || 0) > 0 && (
                       <ReferenceLine
                         y={disparateInfo.overbought20Price || 0}
