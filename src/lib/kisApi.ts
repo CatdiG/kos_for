@@ -4104,7 +4104,20 @@ export async function fetchKis3mCandlesFullDay(
       })
     );
 
-    const allRawCandles = responses.flat();
+    // 🚨 [버그 수정] 당일 신규상장 종목(실측: 스카이랩스 386380)에서 KIS가 일부 틱을 현재가 "0"과
+    // cntg_vol "-9223372036854775808"(Int64 최솟값 - 정상 체결량이 될 수 없는 값, KIS 측 데이터 없음/
+    // 오류 센티널로 추정)로 반환하는 게 실측(DEBUG_3M_CANDLES 진단 로그)으로 확인됐다. 이런 깨진 틱을
+    // 그대로 3분봉에 섞어 집계하면 시가/고가/저가/종가가 전부 0, 거래량이 천문학적 음수인 가짜 봉이
+    // "생성"되어(정상 생성이 아니라 깨진 데이터가 뜨는 것) 신규상장일 당일 3분봉이 사실상 안 나오는
+    // 것처럼 보였다. 정상 체결이라면 현재가는 반드시 양수, 거래량은 반드시 0 이상이어야 하므로, 이
+    // 조건을 만족하지 못하는 틱은 진짜 체결이 아니라고 보고 집계 자체에서 제외한다(가짜 보간이 아니라
+    // "이 틱은 없었던 것으로 취급" - 그 3분 슬롯에 살아있는 틱이 하나도 없으면 그 슬롯은 그냥 빈다).
+    const isValidTick = (row: any): boolean => {
+      const price = parseInt(row?.stck_prpr || '0', 10);
+      const vol = parseInt(row?.cntg_vol || '0', 10);
+      return Number.isFinite(price) && price > 0 && Number.isFinite(vol) && vol >= 0;
+    };
+    const allRawCandles = responses.flat().filter(isValidTick);
 
     // 날짜 + 시간 기준 중복 제거 및 오름차순 정렬
     const uniqueMap = new Map<string, any>();
