@@ -121,6 +121,7 @@ export default function RankingStockDetailChart({
   const [show3mFibo, setShow3mFibo] = useState(true);
   const [show3mVolumeProfile, setShow3mVolumeProfile] = useState(false);
   const [show3mVWAP, setShow3mVWAP] = useState(true);
+  const [show3mVWAPBand, setShow3mVWAPBand] = useState(false);
 
   // Hover Crosshair Horizontal Price Line State (Snaps to OHLC: High, Open, Close, Low)
   const [hoverPriceInfo, setHoverPriceInfo] = useState<{ y: number; price: number; label?: string } | null>(null);
@@ -1019,6 +1020,16 @@ function findActiveSwingLow(candles: any[]): SwingLowPoint | null {
             >
               VWAP
             </button>
+            <button
+              type="button"
+              onClick={() => setShow3mVWAPBand(!show3mVWAPBand)}
+              className={`px-1.5 py-0.5 rounded font-bold border transition cursor-pointer ${
+                show3mVWAPBand ? 'bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border-indigo-500/30' : 'bg-slate-50 text-slate-400 border-slate-200 opacity-50'
+              }`}
+              title="VWAP ±1·2 표준편차 밴드 - 당일 누적 표본 기준 통계적 과열/과매도 구간. 장 시작 직후엔 표본이 적어 밴드가 좁고 불안정함"
+            >
+              VWAP 밴드(±1·2σ)
+            </button>
           </div>
         )}
 
@@ -1495,6 +1506,16 @@ function findActiveSwingLow(candles: any[]): SwingLowPoint | null {
                           지지선"(스윙 로우)이 동일한 cyan을 쓰고 있어서 두 선이 구분 안 되는 문제가 있었다
                           - indigo로 바꿔 겹치지 않게 함. */}
                       {show3mVWAP && <Line type="monotone" dataKey="vwap" stroke="#6366f1" strokeWidth={1.5} dot={false} isAnimationActive={false} name="VWAP" />}
+                      {/* VWAP ±1·2 표준편차 밴드 - VWAP 실선보다 얇고 옅게, 1σ는 점선/2σ는 더 옅은 점선으로
+                          구분해서 "밴드 안쪽(1σ)"과 "더 바깥쪽(2σ, 통계적 극단)"을 시각적으로 나눈다. */}
+                      {show3mVWAPBand && (
+                        <>
+                          <Line type="monotone" dataKey="vwapUpper1" stroke="#818cf8" strokeWidth={1} strokeDasharray="2 2" dot={false} isAnimationActive={false} name="VWAP +1σ" />
+                          <Line type="monotone" dataKey="vwapLower1" stroke="#818cf8" strokeWidth={1} strokeDasharray="2 2" dot={false} isAnimationActive={false} name="VWAP -1σ" />
+                          <Line type="monotone" dataKey="vwapUpper2" stroke="#c7d2fe" strokeWidth={1} strokeDasharray="2 3" dot={false} isAnimationActive={false} name="VWAP +2σ" />
+                          <Line type="monotone" dataKey="vwapLower2" stroke="#c7d2fe" strokeWidth={1} strokeDasharray="2 3" dot={false} isAnimationActive={false} name="VWAP -2σ" />
+                        </>
+                      )}
                     </ComposedChart>
                   </ResponsiveContainer>
                 )}
@@ -1603,6 +1624,12 @@ function findActiveSwingLow(candles: any[]): SwingLowPoint | null {
                   <div className="flex items-center gap-1">
                     <svg width="18" height="6" className="inline-block shrink-0"><line x1="0" y1="3" x2="18" y2="3" stroke="#6366f1" strokeWidth="1.5" /></svg>
                     <span className="font-bold text-indigo-600 dark:text-indigo-400">VWAP</span>
+                  </div>
+                )}
+                {show3mVWAPBand && (
+                  <div className="flex items-center gap-1">
+                    <svg width="18" height="6" className="inline-block shrink-0"><line x1="0" y1="3" x2="18" y2="3" stroke="#818cf8" strokeWidth="1" strokeDasharray="2 2" /></svg>
+                    <span className="text-indigo-400">VWAP ±1·2σ</span>
                   </div>
                 )}
               </div>

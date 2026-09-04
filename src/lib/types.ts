@@ -93,6 +93,10 @@ export interface IntradayCandlePoint {
   ma20?: number | null;
   ma60?: number | null;
   vwap?: number | null; // 당일 거래량가중평균가 - 하루 시작 시점부터 누적, 날짜 바뀌면 리셋
+  vwapUpper1?: number | null; // VWAP + 1표준편차
+  vwapLower1?: number | null; // VWAP - 1표준편차
+  vwapUpper2?: number | null; // VWAP + 2표준편차
+  vwapLower2?: number | null; // VWAP - 2표준편차
 }
 
 export interface IntradayPivotFibonacciLevels {

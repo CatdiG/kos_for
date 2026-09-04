@@ -4394,19 +4394,40 @@ export async function fetchKis3mCandlesFullDay(
     // VWAP(거래량가중평균가) - 당일 장 시작부터의 누적(전형가×거래량)/누적거래량. combinedReal은 어제
     // 실제 봉 + 오늘 실시간 봉이 이어붙어 있으므로, 날짜가 바뀌는 지점에서 누적치를 반드시 리셋해야
     // "어제 매물까지 섞인 가짜 VWAP"이 되지 않는다(하루 단위로 끊어서 계산하는 게 VWAP의 정의 그 자체).
+    //
+    // VWAP 표준편차 밴드(±1σ/±2σ) - 거래량가중 분산(Var = E[X²] - E[X]²)을 VWAP과 동일하게 누적으로
+    // 계산한다. cumPV2(전형가²×거래량의 누적)를 추가로 누적해서 매 시점마다 그 시점까지의 표준편차를
+    // 구한다 - 장 시작 직후엔 누적 표본이 적어 밴드가 좁고 불안정한 게 VWAP 밴드의 원래 특성이라
+    // 별도 보정 없이 그대로 둔다(가짜 안정화 금지).
     let vwapCumPV = 0;
+    let vwapCumPV2 = 0;
     let vwapCumVol = 0;
     let vwapDate = '';
-    const vwapByIndex: number[] = combinedReal.map((c) => {
+    const vwapByIndex: Array<{ vwap: number; upper1: number; lower1: number; upper2: number; lower2: number }> = combinedReal.map((c) => {
       if (c.date !== vwapDate) {
         vwapDate = c.date;
         vwapCumPV = 0;
+        vwapCumPV2 = 0;
         vwapCumVol = 0;
       }
       const typicalPrice = (c.highPrice + c.lowPrice + c.closePrice) / 3;
       vwapCumPV += typicalPrice * c.volume;
+      vwapCumPV2 += typicalPrice * typicalPrice * c.volume;
       vwapCumVol += c.volume;
-      return vwapCumVol > 0 ? Math.round(vwapCumPV / vwapCumVol) : c.closePrice;
+
+      if (vwapCumVol <= 0) {
+        return { vwap: c.closePrice, upper1: c.closePrice, lower1: c.closePrice, upper2: c.closePrice, lower2: c.closePrice };
+      }
+      const vwap = vwapCumPV / vwapCumVol;
+      const variance = Math.max(0, vwapCumPV2 / vwapCumVol - vwap * vwap); // 부동소수점 오차로 아주 살짝 음수가 나올 수 있어 0 하한
+      const stdDev = Math.sqrt(variance);
+      return {
+        vwap: Math.round(vwap),
+        upper1: Math.round(vwap + stdDev),
+        lower1: Math.round(vwap - stdDev),
+        upper2: Math.round(vwap + 2 * stdDev),
+        lower2: Math.round(vwap - 2 * stdDev),
+      };
     });
 
     const candles: IntradayCandlePoint[] = combinedReal.map((c, idx, arr) => {
@@ -4435,7 +4456,11 @@ export async function fetchKis3mCandlesFullDay(
         ma5,
         ma20,
         ma60,
-        vwap: vwapByIndex[idx],
+        vwap: vwapByIndex[idx].vwap,
+        vwapUpper1: vwapByIndex[idx].upper1,
+        vwapLower1: vwapByIndex[idx].lower1,
+        vwapUpper2: vwapByIndex[idx].upper2,
+        vwapLower2: vwapByIndex[idx].lower2,
       };
     });
 
