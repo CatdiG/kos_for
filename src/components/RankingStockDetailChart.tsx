@@ -120,8 +120,8 @@ export default function RankingStockDetailChart({
   const [show3mPivot, setShow3mPivot] = useState(true);
   const [show3mFibo, setShow3mFibo] = useState(true);
   const [show3mVolumeProfile, setShow3mVolumeProfile] = useState(false);
+  // VWAP 선 + ±1·2σ 밴드를 하나로 묶어서 켜고 끈다(버튼도 하나로 통합됨).
   const [show3mVWAP, setShow3mVWAP] = useState(true);
-  const [show3mVWAPBand, setShow3mVWAPBand] = useState(false);
 
   // Hover Crosshair Horizontal Price Line State (Snaps to OHLC: High, Open, Close, Low)
   const [hoverPriceInfo, setHoverPriceInfo] = useState<{ y: number; price: number; label?: string } | null>(null);
@@ -1010,26 +1010,18 @@ function findActiveSwingLow(candles: any[]): SwingLowPoint | null {
             >
               매물대
             </button>
+            {/* 🚨 [버튼 통합] VWAP 선과 VWAP 밴드가 원래 별도 버튼(별도 상태)이었는데, 밴드는 VWAP 없이는
+                의미가 없는 부속 지표라 두 버튼으로 나뉘어 있는 게 오히려 헷갈린다는 요청을 받아 하나로
+                합쳤다 - show3mVWAP 하나로 VWAP 선과 밴드를 함께 켜고 끈다(show3mVWAPBand 상태 제거). */}
             <button
               type="button"
               onClick={() => setShow3mVWAP(!show3mVWAP)}
               className={`px-1.5 py-0.5 rounded font-bold border transition cursor-pointer ${
                 show3mVWAP ? 'bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border-indigo-500/30' : 'bg-slate-50 text-slate-400 border-slate-200 opacity-50'
               }`}
-              title="당일 거래량가중평균가 - 장중 동적 지지/저항 기준선. 날짜 바뀌면 매일 새로 리셋됨"
+              title="당일 거래량가중평균가(장중 동적 지지/저항 기준선, indigo) + ±1·2 표준편차 밴드(초록). 날짜 바뀌면 매일 새로 리셋됨"
             >
-              VWAP
-            </button>
-            <button
-              type="button"
-              onClick={() => setShow3mVWAPBand(!show3mVWAPBand)}
-              style={show3mVWAPBand ? { backgroundColor: 'rgba(47,157,39,0.1)', color: '#2F9D27', borderColor: 'rgba(47,157,39,0.3)' } : undefined}
-              className={`px-1.5 py-0.5 rounded font-bold border transition cursor-pointer ${
-                show3mVWAPBand ? '' : 'bg-slate-50 text-slate-400 border-slate-200 opacity-50'
-              }`}
-              title="VWAP ±1·2 표준편차 밴드 - 당일 누적 표본 기준 통계적 과열/과매도 구간. 장 시작 직후엔 표본이 적어 밴드가 좁고 불안정함"
-            >
-              VWAP 밴드(±1·2σ)
+              VWAP(±1·2σ)
             </button>
           </div>
         )}
@@ -1509,7 +1501,7 @@ function findActiveSwingLow(candles: any[]): SwingLowPoint | null {
                       {show3mVWAP && <Line type="monotone" dataKey="vwap" stroke="#6366f1" strokeWidth={1.5} dot={false} isAnimationActive={false} name="VWAP" />}
                       {/* VWAP ±1·2 표준편차 밴드 - VWAP 실선보다 얇고 옅게, 1σ는 점선/2σ는 더 옅은 점선으로
                           구분해서 "밴드 안쪽(1σ)"과 "더 바깥쪽(2σ, 통계적 극단)"을 시각적으로 나눈다. */}
-                      {show3mVWAPBand && (
+                      {show3mVWAP && (
                         <>
                           {/* 🚨 [색상 지정] 사용자 지정 색상 #2F9D27(진한 초록) 사용. 1σ는 원색 그대로,
                               2σ는 같은 색상의 옅은 톤(#8FCB89)으로 둬서 "안쪽(1σ)"과 "바깥쪽(2σ)"을
@@ -1631,10 +1623,10 @@ function findActiveSwingLow(candles: any[]): SwingLowPoint | null {
                     <span className="font-bold text-indigo-600 dark:text-indigo-400">VWAP</span>
                   </div>
                 )}
-                {show3mVWAPBand && (
+                {show3mVWAP && (
                   <div className="flex items-center gap-1">
                     <svg width="18" height="6" className="inline-block shrink-0"><line x1="0" y1="3" x2="18" y2="3" stroke="#2F9D27" strokeWidth="2" strokeDasharray="6 3" /></svg>
-                    <span className="font-bold" style={{ color: '#2F9D27' }}>VWAP ±1·2σ</span>
+                    <span className="font-bold" style={{ color: '#2F9D27' }}>±1·2σ</span>
                   </div>
                 )}
               </div>
