@@ -78,6 +78,31 @@ const CustomSupplyTooltip = ({ active, payload, label }: any) => {
   );
 };
 
+// 일별 거래량 서브플롯 전용 커스텀 툴팁 - 기존 기본 Recharts Tooltip(formatter만 지정)이 스타일 없는
+// 밋밋한 흰 박스로 나오던 걸, 위 CustomSupplyTooltip과 동일한 카드 스타일(둥근 모서리/블러/그림자)로 맞췄다.
+const CustomDailyVolumeTooltip = ({ active, payload, label }: any) => {
+  if (!active || !payload || !payload.length) return null;
+  const dataPoint = payload[0]?.payload;
+  if (!dataPoint) return null;
+
+  const volume = dataPoint.volume || 0;
+  const isUp = (dataPoint.closePrice ?? 0) >= (dataPoint.openPrice ?? 0);
+
+  return (
+    <div className="bg-white/95 dark:bg-[#1e222d]/95 backdrop-blur-md p-2.5 rounded-xl border border-slate-200 dark:border-[#2a2e39] shadow-xl text-xs space-y-1 z-50">
+      <div className="font-bold text-slate-700 dark:text-slate-200 pb-1 border-b border-slate-100 dark:border-slate-800">
+        {label} 거래량
+      </div>
+      <div className="flex justify-between items-center gap-3">
+        <span className={`font-bold flex items-center gap-1 ${isUp ? 'text-red-500' : 'text-blue-500'}`}>
+          {isUp ? '🔴 양봉' : '🔵 음봉'}
+        </span>
+        <span className="font-mono font-bold text-slate-900 dark:text-white">{volume.toLocaleString()}주</span>
+      </div>
+    </div>
+  );
+};
+
 export default function RankingStockDetailChart({
   symbol,
   rank,
@@ -1287,7 +1312,13 @@ function findActiveSwingLow(candles: any[]): SwingLowPoint | null {
                   <ComposedChart syncId="stock-detail-chart" data={displayTrend} margin={PRICE_CHART_CONFIG.margin}>
                     <CartesianGrid strokeDasharray="3 3" stroke={gridColor} opacity={0.7} />
                     <XAxis dataKey="formattedDate" hide={true} />
-                    <YAxis stroke={axisColor} tickFormatter={formatYPrice} tick={{ fontSize: 10 }} width={68} domain={priceDomain} ticks={priceTicks} />
+                    {/* 🚨 버그 수정: allowDataOverflow 미지정(기본값 false) 상태였는데, Recharts는 allowDataOverflow가
+                        false면 화면에 그려지는 모든 ReferenceLine의 y값까지 자동으로 포함해 축 범위를 몰래 늘린다.
+                        60일선/120일선 과열가·침체가 기준선을 추가하면서 이격도를 켤 때마다 y축 금액 범위 자체가
+                        제멋대로 늘어나 보였던 원인이 바로 이것. 3분봉 탭(1582번째 줄 YAxis)과 동일하게
+                        allowDataOverflow={true}를 명시해 우리가 계산한 priceDomain을 그대로 고정하고, 그 범위를
+                        벗어나는 기준선은(예: 120일선이 화면 밖으로 멀리 떨어진 경우) 그냥 안 그리도록 했다. */}
+                    <YAxis stroke={axisColor} tickFormatter={formatYPrice} tick={{ fontSize: 10 }} width={68} domain={priceDomain} ticks={priceTicks} allowDataOverflow={true} />
                     <Tooltip content={<CustomCandleTooltip />} cursor={{ stroke: '#94a3b8', strokeWidth: 1, strokeDasharray: '3 3' }} />
                     <Bar dataKey="closePrice" name="캔들스틱" shape={(props: any) => <CandlestickBar {...props} minPrice={minPrice} maxPrice={maxPrice} topPadding={PRICE_CHART_CONFIG.margin.top} plotHeight={PRICE_CHART_CONFIG.plotHeight} period={period} />} isAnimationActive={false} />
                     {showMA5 && <Line type="linear" dataKey="ma5" name="5일 이동평균" stroke="#f59e0b" strokeWidth={1.8} strokeDasharray="5 5" dot={false} activeDot={false} connectNulls={true} />}
@@ -1512,12 +1543,7 @@ function findActiveSwingLow(candles: any[]): SwingLowPoint | null {
                     <CartesianGrid strokeDasharray="3 3" stroke={gridColor} opacity={0.7} />
                     <XAxis dataKey="formattedDate" stroke={axisColor} tick={{ fontSize: 9 }} />
                     <YAxis stroke={axisColor} tickFormatter={(v: number) => (v >= 100000000 ? `${Math.round(v / 100000000)}억` : v >= 10000 ? `${Math.round(v / 10000)}만` : v.toLocaleString())} tick={{ fontSize: 9 }} width={68} domain={[0, 'auto']} />
-                    <Tooltip
-                      formatter={(value: any, _name: any, item: any) => {
-                        const isUp = item?.payload?.closePrice >= item?.payload?.openPrice;
-                        return [`${Number(value).toLocaleString()}주`, isUp ? '거래량 (양봉)' : '거래량 (음봉)'];
-                      }}
-                    />
+                    <Tooltip content={<CustomDailyVolumeTooltip />} cursor={{ fill: isDark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.04)' }} />
                     <Bar dataKey="volume" name="거래량" radius={[2, 2, 0, 0]} isAnimationActive={false}>
                       {displayTrend.map((entry: any, idx: number) => (
                         <Cell
