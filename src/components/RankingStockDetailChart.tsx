@@ -717,11 +717,8 @@ function findActiveSwingLow(candles: any[]): SwingLowPoint | null {
       {activeTab === 'daily' ? (
         /* 일간 수급 전용: 100%-Baseline 이격도 & 4대 핵심 가격선 헤더 카드 */
         <div className="flex flex-col gap-1.5 p-2.5 mb-2 bg-slate-50/90 dark:bg-[#161a25]/90 border border-slate-200/80 dark:border-[#2a2e39] rounded-xl font-sans shadow-xs w-full">
-          {/* Header Row: Centered Overall Status Badge & Right-aligned Close Button */}
-          <div className="relative flex items-center justify-center border-b border-slate-200/60 dark:border-[#2a2e39] pb-1 w-full min-h-[26px]">
-            <span className={`px-2.5 py-0.5 rounded text-xs font-bold border shadow-2xs ${disparateInfo.badgeStyle}`}>
-              {disparateInfo.badge}
-            </span>
+          {/* Header Row: Right-aligned Close Button (추세 뱃지는 하단 "주가 캔들스틱" 패널 타이틀 옆으로 이동 - 거래량 그래프 추가 공간 확보) */}
+          <div className="relative flex items-center justify-end border-b border-slate-200/60 dark:border-[#2a2e39] pb-1 w-full min-h-[20px]">
             {onClose && (
               <button
                 type="button"
@@ -1156,6 +1153,9 @@ function findActiveSwingLow(candles: any[]): SwingLowPoint | null {
             <div className="p-2 flex flex-col justify-between">
               <div className="flex items-center justify-between text-[11px] font-bold text-slate-700 dark:text-slate-300 pb-0.5">
                 <div className="flex items-center gap-2">
+                  <span className={`px-2 py-0.5 rounded text-[11px] font-bold border shadow-2xs ${disparateInfo.badgeStyle}`}>
+                    {disparateInfo.badge}
+                  </span>
                   <span>주가 캔들스틱 & 이동평균선</span>
                   {isGenuinelyNewListing && (
                     <span className="text-[10px] font-normal text-amber-600 dark:text-amber-400 bg-amber-500/10 border border-amber-500/20 px-1.5 py-0.2 rounded">
@@ -1329,17 +1329,18 @@ function findActiveSwingLow(candles: any[]): SwingLowPoint | null {
               </div>
             </div>
 
-            {/* Bottom Subplot Panel 2: Daily Investor Supply Grouped Bar Chart (0-Baseline) */}
+            {/* Bottom Subplot Panel 2: Daily Investor Supply Grouped Bar Chart (0-Baseline) - 거래량 서브플롯 추가를 위해 높이를 130px→96px로 축소 */}
             <div className="p-2 flex flex-col justify-between">
               <div className="flex items-center justify-between text-[11px] font-bold text-slate-700 dark:text-slate-300 pb-0.5">
                 <span>4대 주체 일별 순매수/순매도 수급</span>
                 <span className="text-[9px] text-slate-400 font-mono">0점 기준 (단위: 억원)</span>
               </div>
-              <div className="w-full h-[130px] min-h-[130px] shrink-0 relative">
-                <ResponsiveContainer width="100%" height={130}>
+              <div className="w-full h-[96px] min-h-[96px] shrink-0 relative">
+                <ResponsiveContainer width="100%" height={96}>
                   <ComposedChart syncId="stock-detail-chart" data={displayTrend} margin={{ top: 5, right: 15, left: -10, bottom: 0 }} barGap={0} barCategoryGap="18%">
                     <CartesianGrid strokeDasharray="3 3" stroke={gridColor} opacity={0.7} />
-                    <XAxis dataKey="formattedDate" stroke={axisColor} tick={{ fontSize: 9 }} />
+                    {/* 날짜축은 바로 아래 거래량 서브플롯에서 한 번만 표시 (중복 제거로 확보한 공간을 차트 높이에 재배분) */}
+                    <XAxis dataKey="formattedDate" hide={true} />
                     <YAxis stroke={axisColor} tickFormatter={formatYAmt} tick={{ fontSize: 9 }} width={68} domain={supplyDomain as any} />
                     <Tooltip content={<CustomSupplyTooltip />} cursor={{ fill: isDark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.04)' }} />
                     <ReferenceLine y={0} stroke={isDark ? '#475569' : '#94a3b8'} strokeWidth={1.5} />
@@ -1369,6 +1370,45 @@ function findActiveSwingLow(candles: any[]): SwingLowPoint | null {
                     <span>프로그램</span>
                   </div>
                 )}
+              </div>
+            </div>
+
+            {/* Bottom Subplot Panel 3: Daily 거래량 바 차트 (신규 추가, Panel 2와 동일 syncId로 X축 동기화) */}
+            <div className="p-2 flex flex-col justify-between">
+              <div className="flex items-center justify-between text-[11px] font-bold text-slate-700 dark:text-slate-300 pb-0.5">
+                <div className="flex items-center gap-2">
+                  <span>일별 거래량</span>
+                  <span className="flex items-center gap-1 text-[9px] font-semibold text-red-500">
+                    <span className="w-2 h-2 rounded-xs bg-red-500 inline-block" />양봉
+                  </span>
+                  <span className="flex items-center gap-1 text-[9px] font-semibold text-blue-500">
+                    <span className="w-2 h-2 rounded-xs bg-blue-500 inline-block" />음봉
+                  </span>
+                </div>
+                <span className="text-[9px] text-slate-400 font-mono">단위: 주</span>
+              </div>
+              <div className="w-full h-[64px] min-h-[64px] shrink-0 relative">
+                <ResponsiveContainer width="100%" height={64}>
+                  <ComposedChart syncId="stock-detail-chart" data={displayTrend} margin={{ top: 5, right: 15, left: -10, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke={gridColor} opacity={0.7} />
+                    <XAxis dataKey="formattedDate" stroke={axisColor} tick={{ fontSize: 9 }} />
+                    <YAxis stroke={axisColor} tickFormatter={(v: number) => (v >= 100000000 ? `${Math.round(v / 100000000)}억` : v >= 10000 ? `${Math.round(v / 10000)}만` : v.toLocaleString())} tick={{ fontSize: 9 }} width={68} domain={[0, 'auto']} />
+                    <Tooltip
+                      formatter={(value: any, _name: any, item: any) => {
+                        const isUp = item?.payload?.closePrice >= item?.payload?.openPrice;
+                        return [`${Number(value).toLocaleString()}주`, isUp ? '거래량 (양봉)' : '거래량 (음봉)'];
+                      }}
+                    />
+                    <Bar dataKey="volume" name="거래량" radius={[2, 2, 0, 0]} isAnimationActive={false}>
+                      {displayTrend.map((entry: any, idx: number) => (
+                        <Cell
+                          key={`daily-vol-cell-${idx}`}
+                          fill={entry.closePrice >= entry.openPrice ? '#ef4444' : '#3b82f6'}
+                        />
+                      ))}
+                    </Bar>
+                  </ComposedChart>
+                </ResponsiveContainer>
               </div>
             </div>
           </div>
