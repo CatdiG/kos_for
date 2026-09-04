@@ -739,13 +739,16 @@ function findActiveSwingLow(candles: any[]): SwingLowPoint | null {
       {activeTab === 'daily' ? (
         /* 일간 수급 전용: 100%-Baseline 이격도 & 4대 핵심 가격선 헤더 카드 */
         <div className="flex flex-col gap-1.5 p-2.5 mb-2 bg-slate-50/90 dark:bg-[#161a25]/90 border border-slate-200/80 dark:border-[#2a2e39] rounded-xl font-sans shadow-xs w-full">
-          {/* Header Row: Right-aligned Close Button (추세 뱃지는 하단 "주가 캔들스틱" 패널 타이틀 옆으로 이동 - 거래량 그래프 추가 공간 확보) */}
-          <div className="relative flex items-center justify-end border-b border-slate-200/60 dark:border-[#2a2e39] pb-1 w-full min-h-[20px]">
+          {/* Header Row: Right-aligned Close Button (추세 뱃지는 하단 "주가 캔들스틱" 패널 타이틀 옆으로 이동 - 거래량 그래프 추가 공간 확보)
+              🚨 버그 수정: 버튼을 absolute + top-1/2 translate로 띄워두고 부모 행은 min-h-[20px]로 낮게 고정했더니
+              버튼 실제 높이(~26px)가 행보다 커서 하단 border-b 선 아래로 버튼이 삐져나와 보였다. absolute를 없애고
+              flex 정상 흐름에 맡겨 행 높이가 버튼에 맞게 자연스럽게 늘어나도록 했다. */}
+          <div className="flex items-center justify-end border-b border-slate-200/60 dark:border-[#2a2e39] pb-1.5 w-full">
             {onClose && (
               <button
                 type="button"
                 onClick={onClose}
-                className="absolute right-0 top-1/2 -translate-y-1/2 px-2.5 py-1 rounded-lg bg-slate-200/80 hover:bg-slate-300 dark:bg-[#1e222d] dark:hover:bg-[#2a2e39] text-slate-700 dark:text-slate-200 font-bold text-xs transition flex items-center gap-1 cursor-pointer shadow-2xs"
+                className="px-2.5 py-1 rounded-lg bg-slate-200/80 hover:bg-slate-300 dark:bg-[#1e222d] dark:hover:bg-[#2a2e39] text-slate-700 dark:text-slate-200 font-bold text-xs transition flex items-center gap-1 cursor-pointer shadow-2xs"
                 title="차트 닫기"
               >
                 <span>차트 닫기</span>
@@ -754,10 +757,11 @@ function findActiveSwingLow(candles: any[]): SwingLowPoint | null {
             )}
           </div>
 
-          {/* 2-Column Asymmetric Grid: Expanded 20D Card (col-span-7) & Compact 60D Card (col-span-5) */}
+          {/* 2-Column Asymmetric Grid: 60/120D 카드가 값 2개 + 뱃지 2개를 표시해야 해서 20D보다 더 넓게 배정
+              (20D: col-span-5, 60·120D: col-span-7 - 사용자 요청: "이격도의 가로비율은 조정해도 좋다") */}
           <div className="grid grid-cols-1 xl:grid-cols-12 gap-2 w-full">
             {/* 20D Card */}
-            <div className="xl:col-span-6 flex flex-col gap-1.5 bg-white/90 dark:bg-[#1c202c]/90 p-2.5 rounded-lg border border-slate-200/80 dark:border-[#2a2e39] shadow-2xs">
+            <div className="xl:col-span-5 flex flex-col gap-1.5 bg-white/90 dark:bg-[#1c202c]/90 p-2.5 rounded-lg border border-slate-200/80 dark:border-[#2a2e39] shadow-2xs">
               <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] font-sans pb-1 border-b border-slate-100 dark:border-slate-800/80">
                 <div className="flex items-center gap-1.5 shrink-0 font-mono">
                   <span className="font-bold text-amber-600 dark:text-amber-400 text-xs font-sans">📊 20일선 이격도:</span>
@@ -790,26 +794,31 @@ function findActiveSwingLow(candles: any[]): SwingLowPoint | null {
               </div>
             </div>
 
-            {/* 60D·120D 통합 카드 - 20D 카드와 동일하게 헤더 1행 + 통계 1행 구조로 맞춰 높이/정렬을 통일했다 */}
-            <div className="xl:col-span-6 flex flex-col gap-1.5 bg-white/90 dark:bg-[#1c202c]/90 p-2.5 rounded-lg border border-slate-200/80 dark:border-[#2a2e39] shadow-2xs">
+            {/* 60D·120D 통합 카드 - 20D 카드와 완전히 동일한 구성(값+과열/반등 뱃지+기준 안내 문구)을 그대로
+                유지하면서 60일/120일 두 값을 함께 보여준다. col-span을 넓게 배정해 한 줄에 다 들어가게 했다. */}
+            <div className="xl:col-span-7 flex flex-col gap-1.5 bg-white/90 dark:bg-[#1c202c]/90 p-2.5 rounded-lg border border-slate-200/80 dark:border-[#2a2e39] shadow-2xs">
               <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] font-sans pb-1 border-b border-slate-100 dark:border-slate-800/80">
                 <div className="flex items-center gap-1.5 shrink-0 font-mono flex-wrap">
                   <span className="font-bold text-slate-500 dark:text-slate-400 text-xs font-sans">📈 이격도:</span>
-                  <span className="text-[10px] font-bold text-cyan-600 dark:text-cyan-400 font-sans">60일</span>
+                  <span className="text-xs font-bold text-cyan-600 dark:text-cyan-400 font-sans">60일</span>
                   <strong className={`font-black text-[14px] ${disparateInfo.disparate60 <= 90 ? 'text-blue-600 dark:text-blue-400' : disparateInfo.disparate60 >= 110 ? 'text-rose-600 dark:text-rose-400' : 'text-slate-800 dark:text-slate-100'}`}>
                     {disparateInfo.disparate60}%
                   </strong>
-                  <span className="text-[10px] font-bold text-fuchsia-600 dark:text-fuchsia-400 font-sans">120일</span>
+                  <span className="text-[11px] font-sans font-bold text-slate-500 dark:text-slate-400">
+                    {disparateInfo.disparate60 >= 110 ? '(⚠️ 과열)' : disparateInfo.disparate60 <= 90 ? '(🔵 반등)' : ''}
+                  </span>
+                  <span className="text-xs font-bold text-fuchsia-600 dark:text-fuchsia-400 font-sans">120일</span>
                   <strong className={`font-black text-[14px] ${disparateInfo.disparate120 <= 90 ? 'text-blue-600 dark:text-blue-400' : disparateInfo.disparate120 >= 110 ? 'text-rose-600 dark:text-rose-400' : 'text-slate-800 dark:text-slate-100'}`}>
                     {disparateInfo.disparate120}%
                   </strong>
+                  <span className="text-[11px] font-sans font-bold text-slate-500 dark:text-slate-400">
+                    {disparateInfo.disparate120 >= 110 ? '(⚠️ 과열)' : disparateInfo.disparate120 <= 90 ? '(🔵 반등)' : ''}
+                  </span>
                 </div>
-                <span
-                  className="text-[10px] font-bold text-slate-500 dark:text-slate-400 font-sans bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-1.5 py-0.5 rounded shrink-0 ml-auto"
-                  title="90% 이하: 반등 · 110% 이상: 과열 (60일선과 동일 기준)"
-                >
-                  60,120일선
-                </span>
+                <div className="text-[11px] text-slate-500 dark:text-slate-400 font-sans flex items-center gap-x-2.5 ml-auto flex-wrap shrink-0">
+                  <span>• <strong>90% 이하</strong>: 반등</span>
+                  <span>• <strong>110% 이상</strong>: 과열</span>
+                </div>
               </div>
 
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-0 text-xs font-sans pt-1 border-t border-slate-100 dark:border-slate-800/60 w-full whitespace-nowrap">
