@@ -5,6 +5,10 @@
       "schedule": "0 22 * * *"
     },
     {
+      "path": "/api/cron/collect-program",
+      "schedule": "5 0 * * 1-5"
+    },
+    {
       "path": "/api/cron/archive-3m-candles?startIdx=0&endIdx=60",
       "schedule": "35 6 * * 1-5"
     },
