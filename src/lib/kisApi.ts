@@ -1059,6 +1059,10 @@ async function executeKisInvestorTrendFetch(
     resolvedName = getStockName(symbol); // fetchKisCreditAvailable 성공 시 내부에서 registerRuntimeStockName 등록됨
   }
 
+  // 🚨 [기능 추가] investor-trend 응답의 stockInfo에는 신용가능 여부가 아예 없었다(실측 확인: 이 함수
+  // 어디에도 isCreditAvailable을 채우는 코드가 없었음) - 모바일 종목 상세 화면에 신용정보 배지를 추가하며
+  // 발견했다. 랭킹 파이프라인이 이미 쓰는 동일 함수(getEvaluatedCreditStatus, 배치/개별 신용조회 캐시
+  // 기반, 추가 KIS 호출 없음)를 그대로 재사용한다(수칙 1-6) - 새 판정 로직을 만들지 않는다.
   const stockInfo = {
     symbol,
     name: resolvedName,
@@ -1067,6 +1071,7 @@ async function executeKisInvestorTrendFetch(
     change: priceInfo.change,
     changeRate: priceInfo.changeRate,
     volume: latest.volume || 1000000,
+    isCreditAvailable: getEvaluatedCreditStatus(symbol, resolvedName),
   };
 
   const net5dForeign = trend.slice(-5).reduce((s, i) => s + i.foreignNetBuyAmt, 0);
