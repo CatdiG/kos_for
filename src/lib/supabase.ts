@@ -22,6 +22,18 @@ function getSupabaseServiceKey(): string {
   return key.trim();
 }
 
+// 🚨 [버그 수정 - 근본 원인] createClient()에 fetch 타임아웃이 전혀 없었다 - kisApi.ts의 KIS 호출들이
+// 오늘 겪은 것과 정확히 같은 패턴: Supabase 응답이 지연되면(네트워크 이슈, DB 부하 등) 그 요청이
+// 영원히 pending 상태로 남을 수 있다. fetchOverlapRankingData의 기존 주석([kisApi.ts:2344] 참고)에
+// "Supabase에서 완전 리스트를 읽어와 재사용하는 시도를 했다가 서버가 완전히 응답 불가(hang) 상태에
+// 빠지는 사고가 있었다"는 실제 기록이 남아있는데, 이게 그 근본 원인이었을 가능성이 높다 - 이제
+// shared_rank_cache를 다시 읽기 경로에 추가하기 전에, 모든 Supabase 호출에 일괄 타임아웃을 건다.
+// supabase-js v2는 client 옵션의 global.fetch로 커스텀 fetch를 주입할 수 있어(공식 지원 API),
+// 호출부마다 따로 손볼 필요 없이 여기 한 곳에서 전부 안전해진다(수칙 1-6).
+const supabaseFetchWithTimeout: typeof fetch = (input, init) => {
+  return fetch(input, { ...init, signal: AbortSignal.timeout(8000) });
+};
+
 export function getSupabasePublic(): SupabaseClient | null {
   const url = getSupabaseUrl();
   const key = getSupabaseAnonKey();
@@ -31,6 +43,7 @@ export function getSupabasePublic(): SupabaseClient | null {
   if (!supabasePublicClient) {
     supabasePublicClient = createClient(url, key, {
       auth: { persistSession: false },
+      global: { fetch: supabaseFetchWithTimeout },
     });
   }
   return supabasePublicClient;
@@ -45,6 +58,7 @@ export function getSupabaseAdmin(): SupabaseClient | null {
   if (!supabaseAdminClient) {
     supabaseAdminClient = createClient(url, key, {
       auth: { persistSession: false },
+      global: { fetch: supabaseFetchWithTimeout },
     });
   }
   return supabaseAdminClient;

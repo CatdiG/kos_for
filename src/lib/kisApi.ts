@@ -2341,15 +2341,33 @@ export async function fetchOverlapRankingData(
     masterData = cached.data;
   }
 
-  // 🚨 [시도했다가 되돌림] Supabase에서 완전 리스트를 읽어와 재사용하는 시도를 했었는데, 실측해보니
-  // (1) 재시작 2회 연속 조회에도 여전히 다른 개수(7개→15개)가 나와 효과가 없었고 - 근본적으로 매
-  // 재계산 자체(라이브 KIS 외국인/기관/프로그램 후보 수집)가 콜드스타트 타이밍마다 결과가 달라지는
-  // 문제라 캐시 계층을 하나 더 얹는 것만으론 못 고쳤다 - (2) 오히려 이 코드를 넣은 채로 서버가 완전히
-  // 응답 불가(hang) 상태에 빠지는 사고까지 있었다. 위험 대비 효과가 없어 원상복구한다. 진짜 근본
-  // 해결(당일교집합 후보 자체를 라이브 대신 raw_daily_data DB 확정치로 구성)은 훨씬 큰 리팩터링이라
-  // 별도로 신중하게 진행해야 한다.
+  // 🚨 [재시도 - 근본 원인 3가지가 그 사이 해소됨] 예전에 이 자리에 Supabase 읽기를 넣었다가
+  // (1) 매 재계산 자체가 콜드스타트 타이밍마다 결과가 달라져 효과가 없었고 (2) 서버가 완전히 응답
+  // 불가(hang) 상태에 빠지는 사고가 있었고 (3, 1차 재시도에서 새로 발견) 뱃지 요약 전용 경량 캐시를
+  // "완전한 리스트"로 오인해 읽어 name/isCreditAvailable 등 핵심 필드가 통째로 undefined가 되는
+  // 회귀를 만들었다. (1)은 fetchKisProgramTrade kisQueue 직렬화로, (2)는 Supabase 클라이언트에
+  // 8초 타임아웃 추가로, (3)은 완전히 별도의 cache_key('full:' 접두사, 아래 executeAsyncOverlapCalculation
+  // 안에서 저장)로 각각 해소됐다 - program 배치(batchCollector.ts)에서 이미 재검증 완료
+  // (21대 검증 + 골든 스냅샷 모두 PASS, 필드 누락 0건 확인)했으므로 동일 패턴을 여기도 적용한다.
+  // maxAgeMs=24시간: 당일교집합도 "다음 영업일 08:30까지 사실상 영구" 정책(getDynamicRankingTtl)이라
+  // 짧은 TTL은 의미가 없다.
   if (!masterData) {
-    masterData = await executeAsyncOverlapCalculation(direction, period, minOverlap, market, masterCacheKey);
+    const sharedMap = await fetchSharedRankCacheBatch([`full:${masterCacheKey}`], 24 * 60 * 60 * 1000).catch(() => new Map<string, any[]>());
+    const sharedList = sharedMap.get(`full:${masterCacheKey}`);
+    if (sharedList && sharedList.length > 0) {
+      console.log(`[Shared Rank Cache Hit] full:${masterCacheKey} - 다른 인스턴스가 이미 계산해둔 당일교집합 결과를 Supabase에서 재사용`);
+      masterData = {
+        type: 'overlap',
+        direction,
+        period,
+        list: sharedList,
+        isMock: false,
+        updatedAt: new Date().toISOString(),
+      };
+      overlapMemoryCache.set(masterCacheKey, { data: masterData, timestamp: Date.now() });
+    } else {
+      masterData = await executeAsyncOverlapCalculation(direction, period, minOverlap, market, masterCacheKey);
+    }
   }
 
   let list = masterData.list || [];
@@ -2850,7 +2868,16 @@ async function executeAsyncOverlapCalculation(
     const hasPartialProgramContamination = !!programRes.isPartial;
     if (masterData.list && masterData.list.length > 0 && !hasFallbackContamination && !hasPartialProgramContamination) {
       overlapMemoryCache.set(masterCacheKey, { data: masterData, timestamp: Date.now() });
+      // syncSharedRankCache: 뱃지 요약 전용 경량 캐시(symbol/rank/statusBadge 등 일부 필드만) -
+      // getStockBadgeSummary가 계속 쓰므로 그대로 유지한다.
       syncSharedRankCache(masterCacheKey, masterData.list);
+      // 🚨 [버그 수정 - 근본 원인] 처음 시도 때 위 syncSharedRankCache(트림된 요약본)를 "완전한 랭킹
+      // 리스트"인 것처럼 오인해 그대로 읽어다 화면에 냈다가, name/currentPrice/isCreditAvailable 등
+      // 화면에 필요한 핵심 필드가 통째로 undefined가 되는 회귀를 만들었다(골든 스냅샷 검증으로 발견,
+      // batchCollector.ts의 program 배치에서 동일 원리로 이미 재검증 완료). 뱃지 요약 캐시와 절대
+      // 충돌하지 않도록 완전히 별도의 cache_key('full:' 접두사)에 RankingItem 전체(masterData.list,
+      // 트림 없음)를 따로 저장한다 - 같은 테이블(shared_rank_cache) 재사용, 새 스키마 불필요(수칙 1-6).
+      upsertSharedRankCache(`full:${masterCacheKey}`, masterData.list).catch(() => {});
     } else if (hasFallbackContamination) {
       console.warn(`[Overlap Master Cache Skip] fallback 가격 오염 감지(${[...fallbackPricedSymbols].join(',')}) - 이번 결과는 캐시하지 않고 다음 요청에서 재계산`);
     } else if (hasPartialProgramContamination) {

@@ -4,7 +4,7 @@ import { TOP_50_STOCKS, getStockName, resolveMarketType, getSettledAsOfDateLabel
 import { TOP_300_STOCKS } from './stockUniverse300';
 import { fetchKisInvestorTrend, fetchKisProgramTrade, fetchKisProgramTradeDaily, fetchKisForeignInstitutionRanking, assertNoMockLeak, getKisAccessToken, getEvaluatedCreditStatus, computeStatusBadgeFromTrend, resolveTrendForBadge, getGlobalMap, syncSharedRankCache, kisQueue } from './kisApi';
 import { InvestorRankingResponse, RankingItem, RankingType, RankingDirection, RankingPeriod, MarketType } from './types';
-import { saveRawDailyDataToSupabase, RawDailyInvestorRecord } from './supabase';
+import { saveRawDailyDataToSupabase, RawDailyInvestorRecord, upsertSharedRankCache, fetchSharedRankCacheBatch } from './supabase';
 
 // Configurable Batch Parameters
 export const BATCH_CONFIG = {
@@ -371,7 +371,21 @@ async function buildAndCacheRankings(type: 'program', rawList: RankingItem[], ti
     assertNoMockLeak(buyRes);
     console.log(`📌 [TRACE 4-POST-PURGE] assertNoMockLeak 필터 통과 후 개수: type=${type}, period=${period}, listCount=${buyRes.list.length}`);
     batchCacheStore.set(`${type}_buy_${period}`, { data: buyRes, timestamp });
-    syncSharedRankCache(`${type}_buy_${period}`, buyRes.list);
+    // 🚨 [버그 수정 - 근본 원인] isPartial(우선순위 40종목 단계)일 때도 그대로 공유 캐시에 썼었다 -
+    // 다른 서버리스 인스턴스가 이 부분판을 완전판으로 오인해 40개짜리로 영구 고정될 위험이 있었다.
+    // 완전판일 때만 인스턴스 간 공유 캐시에 올린다.
+    if (!isPartial) {
+      // syncSharedRankCache: 기존 뱃지 요약 전용 경량 캐시(symbol/rank/statusBadge 등 일부 필드만) -
+      // getStockBadgeSummary가 계속 쓰므로 그대로 유지한다.
+      syncSharedRankCache(`${type}_buy_${period}`, buyRes.list);
+      // 🚨 [버그 수정 - 근본 원인] 처음 시도 때 이 위 syncSharedRankCache(트림된 요약본)를 "완전한
+      // 랭킹 리스트"인 것처럼 오인해 그대로 읽어다 화면에 냈다가, name/currentPrice/isCreditAvailable
+      // 등 화면에 필요한 핵심 필드가 통째로 undefined가 되는 회귀를 만들었다(골든 스냅샷 검증으로 발견).
+      // 뱃지 요약 캐시와 절대 충돌하지 않도록 완전히 별도의 cache_key('full:' 접두사)에 RankingItem
+      // 전체(buyRes.list, 트림 없음)를 따로 저장한다 - 같은 테이블(shared_rank_cache) 재사용, 새
+      // 스키마 불필요(수칙 1-6).
+      upsertSharedRankCache(`full:${type}_buy_${period}`, buyRes.list).catch(() => {});
+    }
 
     const sellPeriodList = rawList.map((item) => {
       let netBuyAmt = item.netBuyAmt;
@@ -401,7 +415,10 @@ async function buildAndCacheRankings(type: 'program', rawList: RankingItem[], ti
     };
 
     batchCacheStore.set(`${type}_sell_${period}`, { data: sellRes, timestamp });
-    syncSharedRankCache(`${type}_sell_${period}`, sellRes.list);
+    if (!isPartial) {
+      syncSharedRankCache(`${type}_sell_${period}`, sellRes.list);
+      upsertSharedRankCache(`full:${type}_sell_${period}`, sellRes.list).catch(() => {});
+    }
   }
 }
 
@@ -496,14 +513,47 @@ export async function getBatchRankingDataAsync(
 
   // 1. 콜드스타트 시 배치 수집 실행 및 캐시 빌드 (가짜 seedList 반환 절대 금지)
   if (!cached || !cached.data || !Array.isArray(cached.data.list) || cached.data.list.length === 0) {
-    console.log(`[Batch Async Collector] Cold-start empty cache for ${type}. Executing runTop50BatchCollector...`);
-    // warmTrend=false: 사용자가 지금 이 응답을 기다리고 있으므로(동기 await) 여기서는 프로그램 매매만 빠르게
-    // 수집하고, 2일/3일연속용 트렌드 예열(20~25초)은 생략한다. 예열은 크론(collect-program)이 담당한다.
-    // returnEarly=true: kisQueue 직렬화(근본 원인 수정) 후 300종목 전체 스캔이 ~103~110초 걸려 그대로
-    // 동기 대기시키면 사용자 체감 지연이 너무 크다 - 우선순위 40종목만 기다리고 나머지는 백그라운드로
-    // 넘긴다(isPartial:true 응답, 프론트가 4초 간격 자동 재조회로 완전판을 받아감).
-    await runTop50BatchCollector(true, `batch_${type}`, false, true).catch((err) => console.error('[Background Batch Collector Error]', err));
-    cached = batchCacheStore.get(cacheKey);
+    // 🚨 [버그 수정 - 근본 원인: 서버리스 인스턴스 간 인메모리 캐시 불일치] 이 인메모리 캐시
+    // (batchCacheStore)는 프로세스 로컬이라, Vercel이 새 서버리스 인스턴스를 띄울 때마다 완전히
+    // 비어있는 채로 시작한다 - 다른 인스턴스가 이미 300종목 완전 스캔(최대 90~150초)을 끝내놨어도
+    // 그 사실을 전혀 모르고 처음부터 다시 라이브 스캔을 한다(실측: 프로덕션 21대 검증 반복 실행 시
+    // 완전판/부분판이 요청마다 오락가락함). 곧장 라이브 스캔을 시작하기 전에, 다른 인스턴스가 이미
+    // Supabase에 올려둔 완전판이 있는지 먼저 확인한다.
+    // 🚨 [버그 수정 - 1차 시도 회귀] 처음엔 뱃지 요약 전용 캐시(syncSharedRankCache가 쓰는 cache_key)를
+    // 그대로 읽었다가, name/currentPrice/isCreditAvailable 등 화면에 필요한 핵심 필드가 전부
+    // undefined가 되는 회귀를 만들었다(골든 스냅샷 검증으로 발견). 완전한 RankingItem 전체가 저장되는
+    // 별도 키('full:' 접두사, buildAndCacheRankings에서 저장)만 읽는다 - 절대 뒤섞이지 않는다.
+    // maxAgeMs=24시간: program은 "다음 영업일 08:30까지 사실상 영구" 정책(kisApi.ts의
+    // getDynamicRankingTtl)이라 짧은 TTL은 의미가 없다 - 대신 완전히 오래된(며칠 전) 데이터를 잘못
+    // 재사용하지 않도록 하루 단위로 넉넉히 제한한다.
+    const sharedMap = await fetchSharedRankCacheBatch([`full:${cacheKey}`], 24 * 60 * 60 * 1000).catch(() => new Map<string, any[]>());
+    const sharedList = sharedMap.get(`full:${cacheKey}`);
+
+    if (sharedList && sharedList.length > 0) {
+      console.log(`[Shared Rank Cache Hit] full:${cacheKey} - 다른 인스턴스가 이미 계산해둔 완전판을 Supabase에서 재사용 (라이브 스캔 생략)`);
+      const now = Date.now();
+      const hydrated: InvestorRankingResponse = {
+        type,
+        direction,
+        period,
+        list: sharedList,
+        isMock: false,
+        lastBatchTime: lastBatchTimeLabel,
+        updatedAt: new Date(now).toISOString(),
+        isPartial: false,
+      };
+      batchCacheStore.set(cacheKey, { data: hydrated, timestamp: now });
+      cached = batchCacheStore.get(cacheKey);
+    } else {
+      console.log(`[Batch Async Collector] Cold-start empty cache for ${type} (shared cache도 없음). Executing runTop50BatchCollector...`);
+      // warmTrend=false: 사용자가 지금 이 응답을 기다리고 있으므로(동기 await) 여기서는 프로그램 매매만 빠르게
+      // 수집하고, 2일/3일연속용 트렌드 예열(20~25초)은 생략한다. 예열은 크론(collect-program)이 담당한다.
+      // returnEarly=true: kisQueue 직렬화(근본 원인 수정) 후 300종목 전체 스캔이 ~103~110초 걸려 그대로
+      // 동기 대기시키면 사용자 체감 지연이 너무 크다 - 우선순위 40종목만 기다리고 나머지는 백그라운드로
+      // 넘긴다(isPartial:true 응답, 프론트가 4초 간격 자동 재조회로 완전판을 받아감).
+      await runTop50BatchCollector(true, `batch_${type}`, false, true).catch((err) => console.error('[Background Batch Collector Error]', err));
+      cached = batchCacheStore.get(cacheKey);
+    }
   }
 
   if (cached && cached.data && Array.isArray(cached.data.list) && cached.data.list.length > 0) {
