@@ -3398,12 +3398,17 @@ export async function fetchConsecutiveNDaysOverlapRankingData(
   // 매 프로덕션 요청마다 updatedAt이 달라져 매번 처음부터 재계산되고 있었음을 확인). 라이브 계산을 시작하기
   // 전에, 다른 인스턴스가 이미 Supabase에 올려둔 완전판이 있는지 먼저 확인한다(당일교집합/프로그램매매와
   // 동일 패턴, 수칙 1-6).
-  // maxAgeMs: 이 컴포넌트는 당일교집합/프로그램매매(다음 영업일까지 사실상 영구)와 달리 자체 로컬 TTL이
-  // CONSECUTIVE_OVERLAP_CACHE_TTL_MS(180초)로 짧게 설계돼 있다 - 이탈 종목 추적(watch)이 몇 분 단위로
-  // 갱신돼야 하기 때문. 공유 캐시도 이 설계 의도를 깨지 않도록 동일하게 180초까지만 신선하다고 인정한다
-  // (24시간처럼 길게 잡으면 장중 몇 시간 전 스냅샷을 "지금 값"인 것처럼 돌려주는 새로운 회귀를 만들게 된다).
+  // 🚨 [버그 수정 - 재설계] maxAgeMs를 처음엔 로컬 재계산 주기(CONSECUTIVE_OVERLAP_CACHE_TTL_MS=180초)와
+  // 똑같이 180초로 잡았었다 - "로컬 프로세스가 얼마나 자주 재계산할지"와 "다른 인스턴스가 얼마나 오래된
+  // 공유 캐시를 믿고 재사용할지"는 서로 다른 문제인데 같은 값으로 착각해 묶어버린 설계 실수였다. 그
+  // 결과 트래픽이 뜸한 실사용 환경에서는 "누군가 180초 이내에 이미 계산해뒀을" 확률이 낮아, 사용자가
+  // 매번 35~138초짜리 라이브 재계산(느리게 채워지는 현상)을 그대로 겪는 걸 실측으로 확인했다(사용자 지적:
+  // "몇초안에 채워진다해놓고 너무 느리게 채워지는데?"). 2일/3일연속 매수 여부는 당일교집합과 마찬가지로
+  // 며칠 단위로 움직이는 지표라 몇 분~몇십 분 정도 오래된 값을 재사용해도 실질적 문제가 없다 - 당일교집합/
+  // 프로그램매매와 동일하게 24시간으로 맞춘다. 로컬 프로세스 자체 재계산 주기(180초, 이탈 종목 추적 정확도
+  // 목적)는 그대로 유지 - 이건 아래 CONSECUTIVE_OVERLAP_CACHE_TTL_MS 로컬 캐시 체크에만 계속 쓰인다.
   if (!cached) {
-    const sharedMap = await fetchSharedRankCacheBatch([`full:${cacheKey}`], CONSECUTIVE_OVERLAP_CACHE_TTL_MS).catch(() => new Map<string, any[]>());
+    const sharedMap = await fetchSharedRankCacheBatch([`full:${cacheKey}`], 24 * 60 * 60 * 1000).catch(() => new Map<string, any[]>());
     const sharedList = sharedMap.get(`full:${cacheKey}`);
     if (sharedList && sharedList.length > 0) {
       console.log(`[Shared Rank Cache Hit] full:${cacheKey} - 다른 인스턴스가 이미 계산해둔 ${targetDays}일연속 교집합 완전판을 Supabase에서 재사용`);
