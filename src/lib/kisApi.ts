@@ -327,6 +327,9 @@ export const kisQueue = new KisRequestQueue();
 // 전역 종목 상세 수급 캐시 (5분 유효기간)
 const trendDetailCache = new Map<string, { data: InvestorTrendResponse; timestamp: number }>();
 const TREND_CACHE_TTL_MS = 5 * 60 * 1000;
+// fetchKisInvestorTrend가 kisQueue 없이도 동일 symbol+period 동시 중복 호출을 막기 위한 경량
+// Single-Flight 맵 (kisQueue.inFlightMap과 동일한 패턴, 단 이 함수 전용으로 분리해 전역 직렬화 없이 씀).
+const investorTrendInFlightMap = new Map<string, Promise<InvestorTrendResponse>>();
 
 /**
  * rate limit(EGW00201)과 인증 오류를 분리 처리하는 백오프 재시도 헬퍼
@@ -679,23 +682,38 @@ export async function fetchKisInvestorTrend(
     throw new Error('[KIS API 인증 오류] .env.local에 KIS_APPKEY 또는 KIS_APPSECRET이 설정되지 않았습니다.');
   }
 
-  try {
-    const response = await kisQueue.enqueue(
-      () => fetchWithRetry(() => executeKisInvestorTrendFetch(symbol, period)),
-      priority,
-      `trend-${symbol}-${period}`
-    );
-
-    if (response) {
-      trendDetailCache.set(cacheKey, { data: response, timestamp: Date.now() });
-    }
-    return response;
-  } catch (err: any) {
-    if (trendDetailCache.has(cacheKey)) {
-      return trendDetailCache.get(cacheKey)!.data;
-    }
-    throw err;
+  // 🚨 [버그 수정 - 두 번째 라운드] 원래 이 함수 전체를 kisQueue.enqueue()로 감쌌다 - executeKis
+  // InvestorTrendFetch 내부에서 순차로 최대 5번 KIS를 호출하는 무거운 함수라, 이 하나가 처리되는 동안
+  // (특히 재시도가 겹치면 수십 초까지) 다른 모든 종목의 요청(3분봉, 다른 종목 검색 등)까지 같은 전역
+  // kisQueue에서 순서를 기다리며 줄줄이 밀렸다. 실측(Vercel 프로덕션 진단 라우트)으로 KIS 자체는 동시
+  // 요청에 문제없이 응답하고, 내부 fetch들도 이미 전부 8초 타임아웃이 있어(802/847/908/925번 줄)
+  // "영구 hang으로 kisQueue 전체가 마비"될 위험이 없어졌으므로, 전역 직렬화를 제거하고 이 함수 자체가
+  // fetchWithRetry만으로 안전하게 동작하게 한다. kisQueue의 Single-Flight(동일 symbol+period 중복
+  // 호출 방지) 이점만은 별도의 가벼운 in-flight 맵으로 유지한다.
+  const inFlightKey = `trend-${symbol}-${period}`;
+  if (investorTrendInFlightMap.has(inFlightKey)) {
+    return investorTrendInFlightMap.get(inFlightKey)!;
   }
+
+  const fetchPromise = (async () => {
+    try {
+      const response = await fetchWithRetry(() => executeKisInvestorTrendFetch(symbol, period));
+      if (response) {
+        trendDetailCache.set(cacheKey, { data: response, timestamp: Date.now() });
+      }
+      return response;
+    } catch (err: any) {
+      if (trendDetailCache.has(cacheKey)) {
+        return trendDetailCache.get(cacheKey)!.data;
+      }
+      throw err;
+    } finally {
+      investorTrendInFlightMap.delete(inFlightKey);
+    }
+  })();
+
+  investorTrendInFlightMap.set(inFlightKey, fetchPromise);
+  return fetchPromise;
 }
 
 /**
@@ -4536,48 +4554,44 @@ export async function fetchKis3mCandlesFullDay(
       return slotTotalMinutes < nowTotalMinutes + 30; // 현재 진행 중인 30분 슬롯까지만 요청 (분 단위 선형 비교)
     });
 
-    // 🚨 [버그 수정 - 근본 원인] 원래 이 14개 슬롯을 Promise.all로 완전 병렬 fetch했다 - 이 코드베이스의
-    // 다른 모든 KIS 호출 함수가 이미 겪고 kisQueue.enqueue()로 고친 "레이트리밋(EGW00201) 초과로 인한
-    // hang" 문제를 이 함수만 그대로 갖고 있었다(주석 506/683/799/1281/1533/1769번 줄 등 참고). 실측으로
-    // 확인됨: 프로덕션에서 종목 상세를 열 때마다(모바일 prefetch로 호출 빈도가 늘면서) 여러 종목이 겹쳐
-    // KIS 실시간 조회 큐가 밀려 3분봉 API 응답이 30초+ 안 오는 회귀가 발생했다(다른 API는 0.25~4초로
-    // 정상 응답해 KIS 앱키 전체 차단이 아니라 이 함수 특유의 문제임을 확인). kisQueue로 감싸 다른 모든
-    // KIS 호출과 동일하게 전역 200ms 간격 직렬화를 적용하고, fetch 자체에도 AbortController 타임아웃을
-    // 추가해 KIS가 응답을 안 주더라도(레이트리밋 등) 8초 뒤엔 반드시 풀려나도록 한다(기존엔 타임아웃이
-    // 전혀 없어 hang되면 Vercel 함수 자체 시간제한까지 무한정 걸려있었다).
+    // 🚨 [버그 수정 - 두 번째 라운드, 진단으로 확정한 진짜 근본 원인] 처음엔 이 14개 슬롯을 kisQueue로
+    // 완전 직렬화(200ms 간격, 1개씩)했었는데, 실측(scratch/diagnose_3m_concurrency*.js + Vercel 프로덕션
+    // 진단 라우트)으로 KIS 자체는 14개~70개 동시 요청에도 수백ms~2초 내로 문제없이 응답하고, 레이트리밋도
+    // "즉시 거부"일 뿐 hang이 아님을 확인했다. 진짜 원인은 kisQueue.enqueue()의 구조적 결함이었다 -
+    // task.fn()이 타임아웃 없이 hang되면 processNext()의 finally(isProcessing=false)가 영원히 안
+    // 실행되어, 그 fetch를 처리하던 서버리스 인스턴스의 kisQueue 전체가 영구히 멈추고, Vercel이 그
+    // "죽은" 인스턴스를 재사용(warm reuse)하면 이후 모든 요청이 계속 hang됐다. kisQueue의 직렬화 자체가
+    // 필요한 게 아니라, 개별 fetch의 타임아웃 부재가 문제였으므로 - 이제 각 fetch에 8초 타임아웃과
+    // 레이트리밋 자동 재시도(fetchWithRetry)가 있으니 kisQueue 없이 원래처럼 병렬로 처리해도 안전하고,
+    // 훨씬 빠르다(직렬화 시 종목당 13~22초 → 병렬 시 실측 수백ms~2초).
     const responses = await Promise.all(
       timeSlots.map(async (slotHour) => {
         try {
-          return await kisQueue.enqueue(
-            () =>
-              fetchWithRetry(async () => {
-                const url = `${baseUrl}/uapi/domestic-stock/v1/quotations/inquire-time-itemchartprice?FID_COND_MRKT_DIV_CODE=J&FID_INPUT_ISCD=${symbol}&FID_INPUT_HOUR_1=${slotHour}&FID_PW_DATA_INCU_YN=Y&FID_ETC_CLS_CODE=`;
-                const controller = new AbortController();
-                const timeoutId = setTimeout(() => controller.abort(), 8000);
-                try {
-                  const res = await fetch(url, {
-                    method: 'GET',
-                    headers: {
-                      'content-type': 'application/json; charset=utf-8',
-                      authorization: `Bearer ${token}`,
-                      appkey: appKey,
-                      appsecret: appSecret,
-                      tr_id: 'FHKST03010200',
-                      custtype: 'P',
-                    },
-                    cache: 'no-store',
-                    signal: controller.signal,
-                  });
-                  if (!res.ok) throw new Error(`3분봉 슬롯(${slotHour}) 조회 HTTP ${res.status}`);
-                  const json = await res.json();
-                  return Array.isArray(json.output2) ? json.output2 : [];
-                } finally {
-                  clearTimeout(timeoutId);
-                }
-              }),
-            'HIGH', // 사용자가 직접 3분봉 탭을 눌러서 발생하는 요청 - 기존 index-trend와 동일한 우선순위 관례
-            `3m-slot-${symbol}-${timeUnit}-${slotHour}` // 동일 종목/슬롯 동시 요청은 kisQueue의 Single-Flight로 중복 제거
-          );
+          return await fetchWithRetry(async () => {
+            const url = `${baseUrl}/uapi/domestic-stock/v1/quotations/inquire-time-itemchartprice?FID_COND_MRKT_DIV_CODE=J&FID_INPUT_ISCD=${symbol}&FID_INPUT_HOUR_1=${slotHour}&FID_PW_DATA_INCU_YN=Y&FID_ETC_CLS_CODE=`;
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 8000);
+            try {
+              const res = await fetch(url, {
+                method: 'GET',
+                headers: {
+                  'content-type': 'application/json; charset=utf-8',
+                  authorization: `Bearer ${token}`,
+                  appkey: appKey,
+                  appsecret: appSecret,
+                  tr_id: 'FHKST03010200',
+                  custtype: 'P',
+                },
+                cache: 'no-store',
+                signal: controller.signal,
+              });
+              if (!res.ok) throw new Error(`3분봉 슬롯(${slotHour}) 조회 HTTP ${res.status}`);
+              const json = await res.json();
+              return Array.isArray(json.output2) ? json.output2 : [];
+            } finally {
+              clearTimeout(timeoutId);
+            }
+          });
         } catch (e: any) {
           console.warn(`[3분봉 슬롯 조회 실패] ${symbol} ${slotHour}: ${e?.message || e}`);
           return [];
