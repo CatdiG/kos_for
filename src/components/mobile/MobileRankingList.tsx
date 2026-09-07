@@ -123,10 +123,13 @@ function formatEok(v: number | undefined) {
   return `${sign}${v.toLocaleString()}억`;
 }
 
-function RankingCard({ item, activeTab }: { item: RankingItem; activeTab: RankingType }) {
+function RankingCard({ item, activeTab, onClick }: { item: RankingItem; activeTab: RankingType; onClick?: () => void }) {
   const isUp = item.change >= 0;
   return (
-    <div className="flex items-center gap-2.5 px-3 py-2.5 bg-white dark:bg-[#131722] border border-slate-200 dark:border-[#2a2e39] rounded-xl">
+    <div
+      onClick={onClick}
+      className="flex items-center gap-2.5 px-3 py-2.5 bg-white dark:bg-[#131722] border border-slate-200 dark:border-[#2a2e39] rounded-xl active:bg-slate-50 dark:active:bg-[#1a1e2a] cursor-pointer transition-colors"
+    >
       <div className="w-6 shrink-0 text-center text-xs font-bold text-slate-400 dark:text-slate-500">{item.rank}</div>
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-1.5">
@@ -178,7 +181,13 @@ function DropoutCard({ item, rank }: { item: DropoutItem; rank: number }) {
   );
 }
 
-export default function MobileRankingList() {
+interface MobileRankingListProps {
+  // 카드를 탭했을 때 어떤 종목을 열지 상위(page.tsx)에 알려주는 콜백 - 데스크톱
+  // InvestorRankingTable.tsx의 onSelectSymbol과 동일한 역할(수칙 1-6).
+  onSelectSymbol?: (symbol: string, item: RankingItem) => void;
+}
+
+export default function MobileRankingList({ onSelectSymbol }: MobileRankingListProps) {
   const [activeTab, setActiveTab] = useState<RankingType>('surging');
   const [direction, setDirection] = useState<RankingDirection>('buy');
   const [overlapMode, setOverlapMode] = useState<'daily' | 'consecutive2d' | 'consecutive3d'>('daily');
@@ -419,7 +428,12 @@ export default function MobileRankingList() {
       ) : (
         <div className="flex flex-col gap-2">
           {list.map((item) => (
-            <RankingCard key={item.symbol} item={item} activeTab={activeTab} />
+            <RankingCard
+              key={item.symbol}
+              item={item}
+              activeTab={activeTab}
+              onClick={() => onSelectSymbol?.(item.symbol, item)}
+            />
           ))}
         </div>
       )}

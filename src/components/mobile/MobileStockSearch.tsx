@@ -5,8 +5,12 @@
 // StockSearch.tsx가 쓰는 것과 동일한 걸 그대로 import해서 재사용한다(수칙 1-6, 새 검색 로직 금지).
 // 종목 선택 시 investor-trend를 조회해 기존 SupplySummaryCards.tsx에 그대로 넘긴다 - 이 컴포넌트는
 // 오늘 375px 실측에서 이미 정상 렌더링을 확인해 새로 만들지 않는다.
-
-import React, { useRef, useState } from 'react';
+//
+// 🚨 [버그 수정] symbol이 완전 내부(local) state라 매매순위 리스트(MobileRankingList)에서 종목을
+// 눌러도 이 컴포넌트로 전달할 방법이 없어 "아무 반응 없음" 버그가 났다(실측 확인: RankingCard에
+// onClick 자체가 없었음). 데스크톱 page.tsx가 StockSearch에 currentSymbol을 controlled로 내려주는
+// 패턴(수칙 1-6)과 동일하게 externalSymbol prop을 추가해 외부에서 강제로 열 수 있게 한다.
+import React, { useEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Search, X } from 'lucide-react';
 import { PRESET_STOCKS, TOP_50_STOCKS } from '@/lib/mockData';
@@ -25,7 +29,14 @@ async function fetchInvestorTrend(symbol: string): Promise<InvestorTrendResponse
   return res.json();
 }
 
-export default function MobileStockSearch() {
+interface MobileStockSearchProps {
+  // 랭킹 리스트 등 외부에서 강제로 열고 싶은 종목코드. 값이 바뀔 때마다 검색 입력/조회 상태를 동기화한다.
+  externalSymbol?: string;
+  // 종목이 최종 선택(검색 또는 외부 지정)될 때마다 상위에 알려 상태를 동기화한다.
+  onSymbolChange?: (symbol: string) => void;
+}
+
+export default function MobileStockSearch({ externalSymbol, onSymbolChange }: MobileStockSearchProps) {
   const [inputVal, setInputVal] = useState('');
   const [isOpen, setIsOpen] = useState(false);
   const [symbol, setSymbol] = useState<string>('');
@@ -53,6 +64,7 @@ export default function MobileStockSearch() {
     setSymbol(sym);
     setInputVal(name || getStockName(sym));
     setIsOpen(false);
+    onSymbolChange?.(sym);
   };
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -64,14 +76,38 @@ export default function MobileStockSearch() {
     handleSelect(targetSymbol, matched ? matched.name : getStockName(targetSymbol, trim));
   };
 
+  // 랭킹 리스트 등 외부에서 externalSymbol을 바꿔주면(예: 카드 탭) 이 검색창도 동일한 종목을 강제로
+  // 연다 - 이미 같은 종목이면 재조회하지 않도록 symbol과 비교한다(무한루프 방지).
+  const pendingScrollRef = useRef(false);
+  useEffect(() => {
+    if (externalSymbol && externalSymbol !== symbol) {
+      handleSelect(externalSymbol, getStockName(externalSymbol));
+      pendingScrollRef.current = true; // 외부(랭킹 카드) 진입일 때만 자동 스크롤 대상으로 표시
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [externalSymbol]);
+
   const { data, isLoading } = useQuery<InvestorTrendResponse>({
     queryKey: ['investorTrend', symbol, '60d'],
     queryFn: () => fetchInvestorTrend(symbol),
     enabled: Boolean(symbol),
   });
 
+  // 🚨 [버그 수정] 데이터가 아직 로딩 중일 때 스크롤하면 이후 SupplySummaryCards/뱃지/차트가 순차적으로
+  // 부풀어 오르면서 페이지 높이가 계속 바뀌어 목표 위치가 어긋난다(실측 확인: rect.top이 -3975px로
+  // 화면 밖에 위치). 데이터 로딩이 실제로 끝나(isLoading===false) 상세 콘텐츠가 다 그려진 뒤에
+  // 스크롤한다 - useEffect는 브라우저 페인트 이후 실행되므로 이 시점엔 이미 DOM에 반영돼 있어
+  // requestAnimationFrame으로 한 번 더 미룰 필요가 없다(실측 확인: rAF로 감싸면 백그라운드 탭에서
+  // 콜백 자체가 실행되지 않아 스크롤이 전혀 발동하지 않는 경우가 있었음).
+  useEffect(() => {
+    if (pendingScrollRef.current && !isLoading && data) {
+      pendingScrollRef.current = false;
+      document.getElementById('mobile-stock-search-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }, [isLoading, data]);
+
   return (
-    <div className="w-full flex flex-col gap-3">
+    <div id="mobile-stock-search-panel" className="w-full flex flex-col gap-3 scroll-mt-16">
       <div ref={wrapperRef} className="relative w-full bg-white dark:bg-[#131722] border border-slate-200 dark:border-[#2a2e39] rounded-xl p-3 shadow-sm">
         <form onSubmit={handleSubmit} className="relative flex items-center">
           <Search className="absolute left-3 w-4 h-4 text-slate-400 dark:text-[#787b86]" />
