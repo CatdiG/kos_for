@@ -234,7 +234,13 @@ interface QueueTask<T> {
 class KisRequestQueue {
   private queue: QueueTask<any>[] = [];
   private isProcessing = false;
-  private minDelayMs = 300; // 300ms 딜레이 (초당 약 3.3건으로 KIS 허용 속도 내에서 EGW00201 방지)
+  // 🚨 [성능 개선 - 실측 근거] 200ms까지는 지속 부하(60종목 순차 조회)에서도 0% 실패를 실측으로 확인했다
+  // (scratch/diagnose_program_safe_rate.js: 100ms=6.7% 실패, 150ms=1.7% 실패, 200ms=0.0%, 250ms=0.0%).
+  // 300ms 대비 초당 처리량이 약 33% 늘어(3.3건→5건) 대형 배치(신용조회 300개, 프로그램매매 300개)가
+  // 전체를 도는 시간이 90초→60초 수준으로 줄어든다. 다만 이 실측은 프로그램매매 TR(FHPPG04650101)
+  // 하나로만 검증했다는 한계가 있다 - EGW00201이 앱키 단위(TR 무관) 전역 제한으로 보이는 정황은 있지만,
+  // 다른 TR들과 섞인 실부하에서는 21대 회귀 검증으로 재확인한다.
+  private minDelayMs = 200;
   private lastCallTime = 0;
   private inFlightMap = new Map<string, Promise<any>>(); // Single-Flight Map
 
@@ -458,7 +464,10 @@ export async function fetchKisIndexDailyTrend(
   const { code, name } = INDEX_CODE_MAP[market];
   // summaryOnly(카드용 현재가만)와 전체(차트용) 응답은 캐시를 분리한다 - summaryOnly 응답의 trend가
   // 비어있는데 그게 전체 조회 캐시로 잘못 재사용되면 차트가 빈 데이터를 받게 되기 때문.
-  const cacheKey = `index-${code}-${period}${summaryOnly ? '-summary' : ''}`;
+  // 🚨 [기능 추가] executeKisIndexDailyTrendFetch가 이제 period와 무관하게 항상 동일한 풀 히스토리
+  // (최대 199일치)를 반환하므로(위 함수 주석 참고), period별로 캐시를 나누면 같은 데이터를 3배로
+  // 중복 저장/재조회하게 된다 - summaryOnly가 아닐 때는 캐시 키를 period 무관 'full'로 통일한다.
+  const cacheKey = summaryOnly ? `index-${code}-summary` : `index-${code}-full`;
   const cached = indexTrendMemoryCache.get(cacheKey);
   if (cached && Date.now() - cached.timestamp < INDEX_TREND_CACHE_TTL_MS) {
     return cached.data;
@@ -473,7 +482,7 @@ export async function fetchKisIndexDailyTrend(
   const response = await kisQueue.enqueue(
     () => fetchWithRetry(() => executeKisIndexDailyTrendFetch(code, name, period, summaryOnly)),
     'HIGH',
-    `index-trend-${code}-${period}${summaryOnly ? '-summary' : ''}`
+    cacheKey
   );
 
   indexTrendMemoryCache.set(cacheKey, { data: response, timestamp: Date.now() });
@@ -544,19 +553,46 @@ async function executeKisIndexDailyTrendFetch(
     };
   }
 
+  // 🚨 [기능 추가 - 근본 원인] inquire-index-daily-price(FHPUP02120000)는 한 번의 호출로 정확히
+  // 100영업일치만 반환한다(실측 확인: FID_INPUT_DATE_1=오늘 요청 시 최근 100건, 예: 20260410~20260904).
+  // 120일 이동평균을 계산하려면 100일로는 부족한데, FID_INPUT_DATE_1을 1차 응답의 가장 오래된 날짜로
+  // 지정해 재호출하면 그 날짜를 포함해 이전 100건을 추가로 준다는 것도 실측으로 확인했다(경계일 1건
+  // 중복). 이 2회 페이지네이션으로 최대 199영업일치를 확보해, 종목 차트(365일치를 한 번에 확보하는
+  // executeKisInvestorTrendFetch)와 동일하게 120일선 계산이 가능한 히스토리를 갖춘다. period 파라미터는
+  // 더 이상 서버측 트림(slice)에 안 쓴다 - 슬라이싱은 fullTrendWithMA 패턴처럼 프론트가 담당한다(종목
+  // 차트와 동일 구조, 수칙 1-6: 중복 계산 방지).
+  const fetchDailyPage = async (baseDate: string): Promise<any[]> => {
+    const url = `${baseUrl}/uapi/domestic-stock/v1/quotations/inquire-index-daily-price?FID_COND_MRKT_DIV_CODE=U&FID_INPUT_ISCD=${indexCode}&FID_INPUT_DATE_1=${baseDate}&FID_PERIOD_DIV_CODE=D`;
+    const res = await fetch(url, { headers: buildHeaders('FHPUP02120000'), cache: 'no-store', signal: AbortSignal.timeout(8000) });
+    if (!res.ok) throw new Error(`[KIS FHPUP02120000 HTTP ${res.status}] ${indexName} 일봉 조회 실패`);
+    const json = await res.json();
+    if (json.rt_cd !== '0') throw new Error(`[KIS FHPUP02120000] ${json.msg1 || '알 수 없는 오류'}`);
+    return Array.isArray(json.output2) ? json.output2 : [];
+  };
+
   const todayStr = getKstTodayStr();
-  const dailyUrl = `${baseUrl}/uapi/domestic-stock/v1/quotations/inquire-index-daily-price?FID_COND_MRKT_DIV_CODE=U&FID_INPUT_ISCD=${indexCode}&FID_INPUT_DATE_1=${todayStr}&FID_PERIOD_DIV_CODE=D`;
-  const dailyRes = await fetch(dailyUrl, { headers: buildHeaders('FHPUP02120000'), cache: 'no-store', signal: AbortSignal.timeout(8000) });
-  if (!dailyRes.ok) throw new Error(`[KIS FHPUP02120000 HTTP ${dailyRes.status}] ${indexName} 일봉 조회 실패`);
-  const dailyJson = await dailyRes.json();
-  if (dailyJson.rt_cd !== '0') throw new Error(`[KIS FHPUP02120000] ${dailyJson.msg1 || '알 수 없는 오류'}`);
-  const rawDaily: any[] = Array.isArray(dailyJson.output2) ? dailyJson.output2 : [];
+  const page1 = await fetchDailyPage(todayStr); // 최신순, 최대 100건
+  let combined = page1;
+  if (page1.length > 0) {
+    const oldestDate = page1[page1.length - 1].stck_bsop_date;
+    if (oldestDate) {
+      // 2차 페이지 실패는 fail-open으로 처리한다 - 120일선 계산은 못 하게 되지만(프론트에서 ma120이
+      // 데이터 부족으로 자연히 비게 됨), 최근 100일치(20/60일선 등 기존 기능)까지 통째로 잃지는 않는다.
+      const page2 = await fetchDailyPage(oldestDate).catch((e: any) => {
+        console.warn(`[Index Daily Trend 2nd Page Skip] ${indexName} 과거 100일 추가 조회 실패 - 최근 100일치만으로 계속 진행:`, e?.message || e);
+        return [];
+      });
+      if (page2.length > 0) {
+        // 경계일(oldestDate) 1건이 두 응답에 겹치므로 page2에서 그 날짜를 제외하고 합친다.
+        const page2WithoutOverlap = page2.filter((d) => d.stck_bsop_date !== oldestDate);
+        combined = [...page1, ...page2WithoutOverlap];
+      }
+    }
+  }
 
-  const ascending = [...rawDaily].reverse();
-  const limit = period === '5d' ? 5 : period === '20d' ? 20 : 60;
-  const sliced = ascending.slice(-limit);
+  const ascending = [...combined].reverse();
 
-  const trend: IndexTrendDay[] = sliced.map((d) => {
+  const trend: IndexTrendDay[] = ascending.map((d) => {
     const dateStr = String(d.stck_bsop_date || '');
     return {
       date: dateStr,
@@ -3902,7 +3938,13 @@ async function executeKisSurgingStocksFetch(
   });
 
   // 1. Immediately apply cached credit status to eliminate 12s auto-refresh flicker
-  mergeCreditStatusToRanking(items);
+  // 🚨 [버그 수정 - 근본 원인] 이 호출에 await가 빠져 있었다 - Supabase 배치 조회(fetchCreditBatchFromSupabase,
+  // 통상 수십~백여 ms)가 끝나기도 전에 바로 아래 2단계가 실행되면서, DB에 이미 있는 종목까지 전부
+  // "아직 캐시에 없음"으로 오판해 kisQueue(LOW)로 KIS 개별 재조회를 걸었다(실측: 급등주 탭 하나만
+  // 열어도 신용조회 kisQueue 작업이 100개 이상 한꺼번에 쌓임 - 사용자가 보고한 "수급교집합/종목검색이
+  // 안 뜨거나 무한로딩"의 근본 원인 중 하나). await를 붙여 DB 조회 결과가 먼저 캐시에 반영되게 하면,
+  // 2단계는 DB에도 정말 없는 신규/누락 종목만 걸러 KIS를 때우므로 불필요한 재조회가 사라진다.
+  await mergeCreditStatusToRanking(items);
 
   // 2. Populate credit status asynchronously in background ONLY for un-cached items (Non-blocking)
   Promise.all(
