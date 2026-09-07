@@ -73,12 +73,8 @@ export default function IndexDetailChart({ market, onClose }: IndexDetailChartPr
   const [showMA5, setShowMA5] = useState(true);
   const [showMA20, setShowMA20] = useState(true);
   const [showMA60, setShowMA60] = useState(true);
-  const [showMA120, setShowMA120] = useState(true);
   const [showVolumeProfile, setShowVolumeProfile] = useState(true);
   const [showDisparate, setShowDisparate] = useState(false);
-  // 120D 버튼: 종목 상세 차트(RankingStockDetailChart.tsx)와 동일한 UX - 새 API 호출 없이 이미 받아온
-  // 풀 히스토리(최대 199일치)에서 표시 슬라이스만 120일로 넓힌다.
-  const [show120dView, setShow120dView] = useState(false);
 
   const { data, isLoading, isError, error, refetch, isFetching } = useQuery<IndexTrendResponse>({
     queryKey: ['indexTrend', market, period],
@@ -87,11 +83,14 @@ export default function IndexDetailChart({ market, onClose }: IndexDetailChartPr
 
   const rawTrend = data?.trend || [];
 
-  // MA5/20/60/120 + 20일 전저점(2차 지지선) + 추세배지 계산 (종목 일간 차트와 동일한 방식) - 백엔드가
-  // 이제 항상 풀 히스토리(최대 199일치)를 보내므로, 표시 구간(period/120D)과 무관하게 이 전체 배열
-  // 기준으로 이동평균을 계산해야 120일선이 정확하다(종목 차트의 fullTrendWithMA와 동일한 이유 -
-  // RankingStockDetailChart.tsx 461~467번 줄 주석 참고: 표시용으로 잘린 배열로 120일 평균을 내면
-  // 60일선과 똑같아지는 가짜 계산이 된다).
+  // MA5/20/60 + 20일 전저점(2차 지지선) + 추세배지 계산 (종목 일간 차트와 동일한 방식) - 표시 구간과
+  // 무관하게 백엔드가 보내주는 전체 배열 기준으로 이동평균을 계산해야 60일선이 정확하다(종목 차트의
+  // fullTrendWithMA와 동일한 이유 - 표시용으로 잘린 배열로 평균을 내면 가짜 계산이 된다).
+  // 🚨 [기능 제거] 120일선(MA120)은 KIS 지수 일봉 API가 100영업일씩만 내려줘서 120일치를 채우려면
+  // 2페이지 페이지네이션이 필요했는데, 실측으로 2페이지 조회가 종종 실패해(예: 코스닥) 100일치로 조용히
+  // 굳어버리고 그 상태에서도 ma120이 데이터 부족 체크 없이 있는 만큼(100일)만으로 평균을 내 부정확한
+  // "120일 이격도" 숫자를 그대로 보여주는 문제가 있었다(수칙 1-3 위반 소지) - 안정성을 위해 120일선
+  // 기능 자체를 제거한다(사용자 결정).
   const fullTrendWithMA = React.useMemo(() => {
     return rawTrend.map((d, idx, arr) => {
       const slice5 = arr.slice(Math.max(0, idx - 4), idx + 1);
@@ -103,53 +102,43 @@ export default function IndexDetailChart({ market, onClose }: IndexDetailChartPr
       const slice60 = arr.slice(Math.max(0, idx - 59), idx + 1);
       const ma60 = slice60.reduce((acc, x) => acc + x.closePrice, 0) / slice60.length;
 
-      const slice120 = arr.slice(Math.max(0, idx - 119), idx + 1);
-      const ma120 = slice120.reduce((acc, x) => acc + x.closePrice, 0) / slice120.length;
-
       const recentLow = Math.min(...slice20.map((x) => (x.lowPrice > 0 ? x.lowPrice : x.closePrice)));
 
       const volumeRatio = idx > 0 && arr[idx - 1].volume > 0 ? d.volume / arr[idx - 1].volume : null;
       const { badge } = getTrendBadgeInfo(d.closePrice, ma5, idx >= 19 ? ma20 : null, idx >= 59 ? ma60 : null, volumeRatio);
 
-      return { ...d, ma5, ma20, ma60, ma120, recentLow, trendStatus: badge };
+      return { ...d, ma5, ma20, ma60, recentLow, trendStatus: badge };
     });
   }, [rawTrend]);
 
-  // 표시 구간만 슬라이스 - 종목 차트(336~337번 줄)와 동일한 patttern. 120D 버튼을 누르면 period는
-  // 그대로 두고(재조회 없음) 슬라이스 길이만 120으로 넓힌다.
+  // 표시 구간만 슬라이스 - 종목 차트와 동일한 패턴.
   const displayTrend = React.useMemo(() => {
-    const limit = show120dView ? 120 : period === '5d' ? 5 : period === '20d' ? 20 : 60;
+    const limit = period === '5d' ? 5 : period === '20d' ? 20 : 60;
     return fullTrendWithMA.slice(-limit);
-  }, [fullTrendWithMA, period, show120dView]);
+  }, [fullTrendWithMA, period]);
 
   // 100%-Baseline 이격도 & 4대 핵심 가격선 - 종목 일간 차트(RankingStockDetailChart.tsx)와 동일한 공식.
   // (지수는 KRX 호가단위 개념이 없어 roundToKrxTick 대신 포인트 0.01 단위로 반올림한다.)
   const roundIndexPt = (v: number) => Math.round(v * 100) / 100;
   const disparateInfo = React.useMemo(() => {
     if (displayTrend.length === 0) {
-      return { disparate20: 100, disparate60: 100, disparate120: 100, overbought20Price: 0, oversold20Price: 0, overbought60Price: 0, oversold60Price: 0, overbought120Price: 0, oversold120Price: 0, support1Price: 0, recentLowPrice: 0 };
+      return { disparate20: 100, disparate60: 100, overbought20Price: 0, oversold20Price: 0, overbought60Price: 0, oversold60Price: 0, support1Price: 0, recentLowPrice: 0 };
     }
     const last = displayTrend[displayTrend.length - 1];
     const currentP = last.closePrice;
     const ma20 = last.ma20;
     const ma60 = last.ma60;
-    const ma120 = last.ma120;
 
     const disparate20 = ma20 > 0 ? Number(((currentP / ma20) * 100).toFixed(1)) : 100;
     const disparate60 = ma60 > 0 ? Number(((currentP / ma60) * 100).toFixed(1)) : 100;
-    const disparate120 = ma120 > 0 ? Number(((currentP / ma120) * 100).toFixed(1)) : 100;
 
     return {
       disparate20,
       disparate60,
-      disparate120,
       overbought20Price: roundIndexPt(ma20 * 1.05),
       oversold20Price: roundIndexPt(ma20 * 0.95),
       overbought60Price: roundIndexPt(ma60 * 1.10),
       oversold60Price: roundIndexPt(ma60 * 0.90),
-      // 120일선도 60일선과 동일한 90%/110% 과열·침체 기준을 그대로 적용 (종목 차트와 동일 공식)
-      overbought120Price: roundIndexPt(ma120 * 1.10),
-      oversold120Price: roundIndexPt(ma120 * 0.90),
       support1Price: roundIndexPt(ma20),
       recentLowPrice: last.recentLow,
     };
@@ -162,18 +151,16 @@ export default function IndexDetailChart({ market, onClose }: IndexDetailChartPr
     const lows = displayTrend.map((d) => d.lowPrice || d.closePrice);
     const ma20s = displayTrend.map((d) => d.ma20).filter((v) => v > 0);
     const ma60s = displayTrend.map((d) => d.ma60).filter((v) => v > 0);
-    const ma120s = displayTrend.map((d) => d.ma120).filter((v) => v > 0);
     const disparateVals = showDisparate
       ? [
           disparateInfo.overbought20Price, disparateInfo.oversold20Price,
           disparateInfo.overbought60Price, disparateInfo.oversold60Price,
-          disparateInfo.overbought120Price, disparateInfo.oversold120Price,
           disparateInfo.recentLowPrice,
         ].filter((v) => v > 0)
       : [];
-    const allVals = [...highs, ...lows, ...(showMA20 ? ma20s : []), ...(showMA60 ? ma60s : []), ...(showMA120 ? ma120s : []), ...disparateVals];
+    const allVals = [...highs, ...lows, ...(showMA20 ? ma20s : []), ...(showMA60 ? ma60s : []), ...disparateVals];
     return calculateIndexPriceAxis(Math.min(...allVals), Math.max(...allVals), 6);
-  }, [displayTrend, showMA20, showMA60, showMA120, showDisparate, disparateInfo]);
+  }, [displayTrend, showMA20, showMA60, showDisparate, disparateInfo]);
 
   const volumeProfileBins = React.useMemo(() => {
     if (!showVolumeProfile || displayTrend.length === 0 || minPrice <= 0 || maxPrice <= minPrice) return [];
@@ -271,33 +258,22 @@ export default function IndexDetailChart({ market, onClose }: IndexDetailChartPr
               <div className="text-center text-blue-600 dark:text-blue-400">🔵 침체가: <strong className="font-mono">{disparateInfo.oversold20Price > 0 ? disparateInfo.oversold20Price.toLocaleString() : '-'}</strong></div>
             </div>
           </div>
-          {/* 60D·120D 통합 카드 - 20D 카드와 완전히 동일한 구성(값+과열/반등 뱃지+기준 안내 문구)을 그대로
-              유지하면서 60일/120일 두 값을 함께 보여준다 (종목 상세 차트 906~947번 줄과 동일 레이아웃) */}
+          {/* 60일선 이격도 카드 - 20일 카드와 동일한 구성(값+과열/반등 뱃지+기준 안내 문구) */}
           <div className="flex flex-col gap-1.5 bg-slate-50/90 dark:bg-[#161a25]/90 p-2.5 rounded-lg border border-slate-200/80 dark:border-[#2a2e39] shadow-2xs">
             <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] pb-1 border-b border-slate-100 dark:border-slate-800/80">
-              <div className="flex items-center gap-1.5 font-mono flex-wrap">
-                <span className="font-bold text-slate-500 dark:text-slate-400 text-xs">📈 이격도:</span>
-                <span className="text-xs font-bold text-cyan-600 dark:text-cyan-400">60일</span>
+              <div className="flex items-center gap-1.5 font-mono">
+                <span className="font-bold text-cyan-600 dark:text-cyan-400 text-xs">📈 60일선 이격도:</span>
                 <strong className={`font-black text-[14px] ${disparateInfo.disparate60 <= 90 ? 'text-blue-600 dark:text-blue-400' : disparateInfo.disparate60 >= 110 ? 'text-rose-600 dark:text-rose-400' : 'text-slate-800 dark:text-slate-100'}`}>
                   {disparateInfo.disparate60}%
                 </strong>
                 <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400">
                   {disparateInfo.disparate60 >= 110 ? '(⚠️ 과열)' : disparateInfo.disparate60 <= 90 ? '(🔵 반등)' : ''}
                 </span>
-                <span className="text-xs font-bold text-fuchsia-600 dark:text-fuchsia-400">120일</span>
-                <strong className={`font-black text-[14px] ${disparateInfo.disparate120 <= 90 ? 'text-blue-600 dark:text-blue-400' : disparateInfo.disparate120 >= 110 ? 'text-rose-600 dark:text-rose-400' : 'text-slate-800 dark:text-slate-100'}`}>
-                  {disparateInfo.disparate120}%
-                </strong>
-                <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400">
-                  {disparateInfo.disparate120 >= 110 ? '(⚠️ 과열)' : disparateInfo.disparate120 <= 90 ? '(🔵 반등)' : ''}
-                </span>
               </div>
             </div>
-            <div className="grid grid-cols-2 gap-x-0 gap-y-1.5 text-[11px] pt-1 border-t border-slate-100 dark:border-slate-800/60 whitespace-nowrap">
-              <div className="text-center text-red-600 dark:text-red-400 border-r border-slate-200/80 dark:border-slate-800/80 pr-1">🔴 60일 과열가: <strong className="font-mono">{disparateInfo.overbought60Price > 0 ? disparateInfo.overbought60Price.toLocaleString() : '-'}</strong></div>
-              <div className="text-center text-red-600 dark:text-red-400 pl-1">🔴 120일 과열가: <strong className="font-mono">{disparateInfo.overbought120Price > 0 ? disparateInfo.overbought120Price.toLocaleString() : '-'}</strong></div>
-              <div className="text-center text-blue-600 dark:text-blue-400 border-r border-t border-slate-200/80 dark:border-slate-800/80 pr-1 pt-1.5">🔵 60일 침체가: <strong className="font-mono">{disparateInfo.oversold60Price > 0 ? disparateInfo.oversold60Price.toLocaleString() : '-'}</strong></div>
-              <div className="text-center text-blue-600 dark:text-blue-400 border-t border-slate-200/80 dark:border-slate-800/80 pl-1 pt-1.5">🔵 120일 침체가: <strong className="font-mono">{disparateInfo.oversold120Price > 0 ? disparateInfo.oversold120Price.toLocaleString() : '-'}</strong></div>
+            <div className="grid grid-cols-2 gap-0 text-[11px] pt-1 border-t border-slate-100 dark:border-slate-800/60 whitespace-nowrap">
+              <div className="text-center text-red-600 dark:text-red-400 border-r border-slate-200/80 dark:border-slate-800/80">🔴 과열가: <strong className="font-mono">{disparateInfo.overbought60Price > 0 ? disparateInfo.overbought60Price.toLocaleString() : '-'}</strong></div>
+              <div className="text-center text-blue-600 dark:text-blue-400">🔵 침체가: <strong className="font-mono">{disparateInfo.oversold60Price > 0 ? disparateInfo.oversold60Price.toLocaleString() : '-'}</strong></div>
             </div>
           </div>
         </div>
@@ -309,32 +285,17 @@ export default function IndexDetailChart({ market, onClose }: IndexDetailChartPr
           {(['5d', '20d', '60d'] as TrendPeriod[]).map((p) => (
             <button
               key={p}
-              onClick={() => {
-                setPeriod(p);
-                setShow120dView(false);
-              }}
-              className={`px-2.5 py-1 rounded-md font-bold transition ${!show120dView && period === p ? 'bg-white dark:bg-[#2a2e39] text-slate-900 dark:text-white shadow-sm' : 'text-slate-500 dark:text-[#787b86]'}`}
+              onClick={() => setPeriod(p)}
+              className={`px-2.5 py-1 rounded-md font-bold transition ${period === p ? 'bg-white dark:bg-[#2a2e39] text-slate-900 dark:text-white shadow-sm' : 'text-slate-500 dark:text-[#787b86]'}`}
             >
               {p === '5d' ? '5일' : p === '20d' ? '20일' : '60일'}
             </button>
           ))}
-          {/* 120D: 종목 상세 차트(1062~1079번 줄)와 동일한 UX - 새 API 호출 없이 이미 받아온 풀 히스토리
-              (최대 199일치)에서 표시 슬라이스만 120일로 넓힌다. */}
-          <button
-            onClick={() => {
-              setPeriod('60d');
-              setShow120dView(true);
-            }}
-            className={`px-2.5 py-1 rounded-md font-bold transition ${show120dView ? 'bg-white dark:bg-[#2a2e39] text-slate-900 dark:text-white shadow-sm' : 'text-slate-500 dark:text-[#787b86]'}`}
-          >
-            120D
-          </button>
         </div>
         {[
           { key: 'ma5', label: 'MA5', active: showMA5, setter: setShowMA5, color: 'text-amber-500 border-amber-500/40' },
           { key: 'ma20', label: 'MA20', active: showMA20, setter: setShowMA20, color: 'text-purple-500 border-purple-500/40' },
           { key: 'ma60', label: 'MA60', active: showMA60, setter: setShowMA60, color: 'text-cyan-500 border-cyan-500/40' },
-          { key: 'ma120', label: 'MA120', active: showMA120, setter: setShowMA120, color: 'text-fuchsia-500 border-fuchsia-500/40' },
           { key: 'vp', label: '매물대', active: showVolumeProfile, setter: setShowVolumeProfile, color: 'text-slate-500 border-slate-400/40' },
         ].map((t) => (
           <button
@@ -353,12 +314,10 @@ export default function IndexDetailChart({ market, onClose }: IndexDetailChartPr
               setShowMA5(false);
               setShowMA20(false);
               setShowMA60(false);
-              setShowMA120(false);
             } else {
               setShowMA5(true);
               setShowMA20(true);
               setShowMA60(true);
-              setShowMA120(true);
             }
           }}
           className={`px-2.5 py-1 rounded-md text-xs font-bold border transition ${showDisparate ? 'bg-white dark:bg-[#1e222d] text-emerald-600 dark:text-emerald-400 border-emerald-500/40 ring-1 ring-emerald-500/40' : 'bg-slate-50 dark:bg-[#131722] text-slate-400 border-slate-200 dark:border-[#2a2e39] opacity-50'}`}
@@ -381,7 +340,7 @@ export default function IndexDetailChart({ market, onClose }: IndexDetailChartPr
                 <XAxis dataKey="formattedDate" hide={true} />
                 {/* 🚨 [버그 수정] allowDataOverflow 미지정(기본값 false) 상태였는데, Recharts는 이 값이
                     false면 화면에 그려지는 모든 ReferenceLine의 y값까지 자동으로 포함해 축 범위를 몰래
-                    늘린다 - 60일선/120일선 과열가·침체가 기준선을 추가하면서 이격도를 켤 때마다 y축
+                    늘린다 - 60일선 과열가·침체가 기준선을 추가하면서 이격도를 켤 때마다 y축
                     범위가 제멋대로 늘어나는 문제가 생긴다(종목 상세 차트에서 이미 겪고 고친 버그,
                     RankingStockDetailChart.tsx 1422~1427번 줄과 동일). allowDataOverflow={true}로
                     우리가 계산한 priceDomain을 그대로 고정한다. */}
@@ -391,7 +350,6 @@ export default function IndexDetailChart({ market, onClose }: IndexDetailChartPr
                 {showMA5 && <Line type="linear" dataKey="ma5" name="5일 이동평균" stroke="#f59e0b" strokeWidth={1.8} strokeDasharray="5 5" dot={false} activeDot={false} connectNulls={true} />}
                 {showMA20 && <Line type="linear" dataKey="ma20" name="20일 이동평균" stroke="#a855f7" strokeWidth={2.0} strokeDasharray="5 5" dot={false} activeDot={false} connectNulls={true} />}
                 {showMA60 && <Line type="linear" dataKey="ma60" name="60일 이동평균" stroke="#06b6d4" strokeWidth={1.8} strokeDasharray="5 5" dot={false} activeDot={false} connectNulls={true} />}
-                {showMA120 && <Line type="linear" dataKey="ma120" name="120일 이동평균" stroke="#d946ef" strokeWidth={1.8} strokeDasharray="5 5" dot={false} activeDot={false} connectNulls={true} />}
                 {showDisparate && disparateInfo.overbought20Price > 0 && (
                   <ReferenceLine y={disparateInfo.overbought20Price} stroke="#ef4444" strokeWidth={1.5} strokeDasharray="4 4" />
                 )}
@@ -404,20 +362,13 @@ export default function IndexDetailChart({ market, onClose }: IndexDetailChartPr
                 {showDisparate && disparateInfo.oversold20Price > 0 && (
                   <ReferenceLine y={disparateInfo.oversold20Price} stroke="#3b82f6" strokeWidth={1.5} strokeDasharray="4 4" />
                 )}
-                {/* 60일선·120일선 이격도 과열가/침체가 라인 - 20일선(빨강/파랑)과 겹치지 않는 색상(60일=
-                    에메랄드, 120일=라임)을 배정하고, 같은 기간 내에서는 과열가(성긴 대시)/침체가(점선)로
-                    구분한다 (종목 상세 차트 1471~1502번 줄과 동일) */}
+                {/* 60일선 이격도 과열가/침체가 라인 - 20일선(빨강/파랑)과 겹치지 않는 에메랄드 색상, 과열가
+                    (성긴 대시)/침체가(점선)로 구분한다 */}
                 {showDisparate && disparateInfo.overbought60Price > 0 && (
                   <ReferenceLine y={disparateInfo.overbought60Price} stroke="#10b981" strokeWidth={1.5} strokeDasharray="4 2" />
                 )}
                 {showDisparate && disparateInfo.oversold60Price > 0 && (
                   <ReferenceLine y={disparateInfo.oversold60Price} stroke="#10b981" strokeWidth={1.5} strokeDasharray="1 3" />
-                )}
-                {showDisparate && disparateInfo.overbought120Price > 0 && (
-                  <ReferenceLine y={disparateInfo.overbought120Price} stroke="#84cc16" strokeWidth={1.5} strokeDasharray="4 2" />
-                )}
-                {showDisparate && disparateInfo.oversold120Price > 0 && (
-                  <ReferenceLine y={disparateInfo.oversold120Price} stroke="#84cc16" strokeWidth={1.5} strokeDasharray="1 3" />
                 )}
               </ComposedChart>
             </ResponsiveContainer>
@@ -462,14 +413,6 @@ export default function IndexDetailChart({ market, onClose }: IndexDetailChartPr
               <div className="flex items-center gap-1">
                 <svg width="18" height="6" className="inline-block shrink-0"><line x1="0" y1="3" x2="18" y2="3" stroke="#10b981" strokeWidth="1.5" strokeDasharray="1 3" /></svg>
                 <span className="font-bold" style={{ color: '#10b981' }}>60일 침체가</span>
-              </div>
-              <div className="flex items-center gap-1">
-                <svg width="18" height="6" className="inline-block shrink-0"><line x1="0" y1="3" x2="18" y2="3" stroke="#84cc16" strokeWidth="1.5" strokeDasharray="4 2" /></svg>
-                <span className="font-bold" style={{ color: '#84cc16' }}>120일 과열가</span>
-              </div>
-              <div className="flex items-center gap-1">
-                <svg width="18" height="6" className="inline-block shrink-0"><line x1="0" y1="3" x2="18" y2="3" stroke="#84cc16" strokeWidth="1.5" strokeDasharray="1 3" /></svg>
-                <span className="font-bold" style={{ color: '#84cc16' }}>120일 침체가</span>
               </div>
             </div>
           )}

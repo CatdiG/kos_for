@@ -590,45 +590,25 @@ async function executeKisIndexDailyTrendFetch(
     };
   }
 
-  // 🚨 [기능 추가 - 근본 원인] inquire-index-daily-price(FHPUP02120000)는 한 번의 호출로 정확히
-  // 100영업일치만 반환한다(실측 확인: FID_INPUT_DATE_1=오늘 요청 시 최근 100건, 예: 20260410~20260904).
-  // 120일 이동평균을 계산하려면 100일로는 부족한데, FID_INPUT_DATE_1을 1차 응답의 가장 오래된 날짜로
-  // 지정해 재호출하면 그 날짜를 포함해 이전 100건을 추가로 준다는 것도 실측으로 확인했다(경계일 1건
-  // 중복). 이 2회 페이지네이션으로 최대 199영업일치를 확보해, 종목 차트(365일치를 한 번에 확보하는
-  // executeKisInvestorTrendFetch)와 동일하게 120일선 계산이 가능한 히스토리를 갖춘다. period 파라미터는
-  // 더 이상 서버측 트림(slice)에 안 쓴다 - 슬라이싱은 fullTrendWithMA 패턴처럼 프론트가 담당한다(종목
-  // 차트와 동일 구조, 수칙 1-6: 중복 계산 방지).
-  const fetchDailyPage = async (baseDate: string): Promise<any[]> => {
-    const url = `${baseUrl}/uapi/domestic-stock/v1/quotations/inquire-index-daily-price?FID_COND_MRKT_DIV_CODE=U&FID_INPUT_ISCD=${indexCode}&FID_INPUT_DATE_1=${baseDate}&FID_PERIOD_DIV_CODE=D`;
-    const res = await fetch(url, { headers: buildHeaders('FHPUP02120000'), cache: 'no-store', signal: AbortSignal.timeout(8000) });
+  // 🚨 [기능 제거] 예전엔 120일선 계산을 위해 이 자리에서 2회 페이지네이션(최대 199영업일치)을 했었다.
+  // 실측 결과 2차 페이지 조회가 종종 실패해(예: 코스닥) 100일치로 조용히 굳어버리고, 그 상태에서도
+  // 프론트가 데이터 부족 체크 없이 있는 만큼만으로 "120일 이동평균"을 계산해 부정확한 수치를 그대로
+  // 보여주는 문제가 있었다(수칙 1-3 위반 소지) - 120일선 기능 자체를 제거하기로 하면서(사용자 결정)
+  // 이 취약한 2차 페이지 호출도 함께 제거한다. inquire-index-daily-price(FHPUP02120000) 1회 호출로
+  // 받는 최근 100영업일치만으로도 화면에서 쓰는 최대 표시 구간(60일)을 충분히 커버한다.
+  const dailyUrl = `${baseUrl}/uapi/domestic-stock/v1/quotations/inquire-index-daily-price?FID_COND_MRKT_DIV_CODE=U&FID_INPUT_ISCD=${indexCode}&FID_INPUT_DATE_1=${getKstTodayStr()}&FID_PERIOD_DIV_CODE=D`;
+  const fetchDailyPage = async (): Promise<any[]> => {
+    const res = await fetch(dailyUrl, { headers: buildHeaders('FHPUP02120000'), cache: 'no-store', signal: AbortSignal.timeout(8000) });
     if (!res.ok) throw new Error(`[KIS FHPUP02120000 HTTP ${res.status}] ${indexName} 일봉 조회 실패`);
     const json = await res.json();
     if (json.rt_cd !== '0') throw new Error(`[KIS FHPUP02120000] ${json.msg1 || '알 수 없는 오류'}`);
     return Array.isArray(json.output2) ? json.output2 : [];
   };
 
-  const todayStr = getKstTodayStr();
-  // 지수현재가와 일봉 1페이지를 동시에 요청한다(위 fetchPriceInfo 분리 주석 참고) - 2페이지는 1페이지의
-  // 가장 오래된 날짜가 있어야 요청 가능하므로 그대로 순차 유지한다.
-  const [p, page1] = await Promise.all([fetchPriceInfo(), fetchDailyPage(todayStr)]); // page1: 최신순, 최대 100건
+  // 지수현재가와 일봉 조회를 동시에 요청한다(위 fetchPriceInfo 분리 주석 참고) - 서로 독립된 데이터라
+  // 순차로 기다릴 이유가 없다.
+  const [p, combined] = await Promise.all([fetchPriceInfo(), fetchDailyPage()]); // combined: 최신순, 최대 100건
   const priceChange = buildPriceChange(p);
-  let combined = page1;
-  if (page1.length > 0) {
-    const oldestDate = page1[page1.length - 1].stck_bsop_date;
-    if (oldestDate) {
-      // 2차 페이지 실패는 fail-open으로 처리한다 - 120일선 계산은 못 하게 되지만(프론트에서 ma120이
-      // 데이터 부족으로 자연히 비게 됨), 최근 100일치(20/60일선 등 기존 기능)까지 통째로 잃지는 않는다.
-      const page2 = await fetchDailyPage(oldestDate).catch((e: any) => {
-        console.warn(`[Index Daily Trend 2nd Page Skip] ${indexName} 과거 100일 추가 조회 실패 - 최근 100일치만으로 계속 진행:`, e?.message || e);
-        return [];
-      });
-      if (page2.length > 0) {
-        // 경계일(oldestDate) 1건이 두 응답에 겹치므로 page2에서 그 날짜를 제외하고 합친다.
-        const page2WithoutOverlap = page2.filter((d) => d.stck_bsop_date !== oldestDate);
-        combined = [...page1, ...page2WithoutOverlap];
-      }
-    }
-  }
 
   const ascending = [...combined].reverse();
 
