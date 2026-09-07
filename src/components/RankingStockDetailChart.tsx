@@ -191,7 +191,11 @@ export default function RankingStockDetailChart({
     return day >= 1 && day <= 5 && timeNum >= 900 && timeNum < 1530;
   }, []);
 
-  // 3-Minute Candlestick + Pivot/Fibonacci On-Demand Query
+  // 🚨 [기능 추가] 원래 activeTab==='3m'일 때만 enabled라 3분봉 탭을 눌러야 그 순간부터 fetch가
+  // 시작돼 매번 몇 초씩 기다려야 했다(사용자 지적: "3분봉이 너무 느리게 떠" - 모바일에서 먼저 prefetch로
+  // 고친 것과 동일하게 데스크톱도 반영). 일간 탭이 열리는 즉시(activeTab과 무관하게) 백그라운드로 미리
+  // 당겨두고, 자동 재조회(refetchInterval)만 실제로 3분봉 탭을 보고 있을 때로 한정해 불필요한 폴링을
+  // 막는다.
   const intraday3mQuery = useQuery<any>({
     queryKey: ['intraday3mCandles', safeSymbol],
     queryFn: async () => {
@@ -199,9 +203,9 @@ export default function RankingStockDetailChart({
       if (!res.ok) throw new Error('3분봉 데이터를 불러오는데 실패했습니다.');
       return res.json();
     },
-    enabled: activeTab === '3m' && Boolean(safeSymbol),
+    enabled: Boolean(safeSymbol),
     staleTime: 30 * 1000,
-    refetchInterval: isMarketOpen ? 30 * 1000 : false,
+    refetchInterval: activeTab === '3m' && isMarketOpen ? 30 * 1000 : false,
     refetchOnMount: false,
   });
 

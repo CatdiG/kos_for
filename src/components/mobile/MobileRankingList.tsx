@@ -190,7 +190,7 @@ function RankingCard({ item, activeTab, overlapMode, isExpanded, onClick }: { it
           {activeTab === 'overlap'
             ? buildOverlapSubLine(item, overlapMode)
             : activeTab === 'surging'
-            ? (item.surgingBadge || `거래량 ${item.volume?.toLocaleString() || '-'}`)
+            ? `${item.surgingBadge ? `${item.surgingBadge} · ` : ''}거래대금 ${(item.amountEok || 0).toLocaleString()}억`
             : activeTab === 'comprehensive'
             ? `종합점수 ${item.scoreBreakdown?.totalScore ?? '-'}점`
             : `순매수 ${formatEok(item.netBuyAmtEok)}`}
@@ -262,9 +262,15 @@ export default function MobileRankingList() {
         ? fetchSurging(activeTab === 'comprehensive' ? 'comprehensive' : surgingMode, market)
         : fetchRanking(activeTab, direction, period, overlapMode, market),
     staleTime: 30 * 1000,
+    // 🚨 [버그 수정] 프로그램 탭이 콜드스타트 직후(더미 시그니처가 섞인 stillWarming:true 상태)일 때
+    // 데스크톱(InvestorRankingTable.tsx:121)은 50초마다 자동 재조회해서 예열이 끝나는 대로 화면이
+    // 저절로 채워지는데, 모바일엔 이 폴링이 없어 그 상태로 영원히 멈춰 있었다(새로고침해야만 나아짐) -
+    // 사용자 지적("다른 탭들이 안떠")의 실제 원인.
     refetchInterval: (query) => {
       const d = query.state.data as InvestorRankingResponse | undefined;
-      return d?.isPartial ? 4 * 1000 : false;
+      if (d?.isPartial) return 4 * 1000;
+      if (activeTab === 'program' && d?.stillWarming) return 50 * 1000;
+      return false;
     },
   });
 

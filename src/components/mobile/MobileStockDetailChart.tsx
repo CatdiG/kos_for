@@ -8,7 +8,8 @@
 // 와 거래량 비율(computeRecentVolumeRatio)·KRX 호가단위 반올림(roundToKrxTick)은 RankingStockDetailChart.tsx가
 // 쓰는 mockData.ts의 기존 함수를 그대로 재사용한다 - 새 계산 로직을 만들지 않는다.
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import {
   ResponsiveContainer,
   ComposedChart,
@@ -24,9 +25,9 @@ import {
 import { InvestorTrendDay, StockInfo } from '@/lib/types';
 import { useTheme } from '@/providers/ThemeProvider';
 import { PRICE_CHART_CONFIG, CandlestickBar, CustomCandleTooltip, getTrendBadgeInfo } from '@/components/chart/CandlestickPrimitives';
-import { findSplitSafeStartIndex, roundToKrxTick } from '@/lib/mockData';
+import { findSplitSafeStartIndex, roundToKrxTick, computeRecentVolumeRatio } from '@/lib/mockData';
 import { ShieldCheck, ShieldOff } from 'lucide-react';
-import MobileIntraday3mChart from './MobileIntraday3mChart';
+import MobileIntraday3mChart, { fetchIntraday3m } from './MobileIntraday3mChart';
 
 interface MobileStockDetailChartProps {
   trend: InvestorTrendDay[];
@@ -58,6 +59,7 @@ function calculatePriceAxis(minRaw: number, maxRaw: number, targetTicks = 6) {
 
 export default function MobileStockDetailChart({ trend, stockInfo, isLoading }: MobileStockDetailChartProps) {
   const { theme } = useTheme();
+  const queryClient = useQueryClient();
   const isDark = theme === 'dark';
   const gridColor = isDark ? '#334155' : '#cbd5e1';
   const axisColor = isDark ? '#94a3b8' : '#475569';
@@ -71,6 +73,20 @@ export default function MobileStockDetailChart({ trend, stockInfo, isLoading }: 
   const [showMA120, setShowMA120] = useState(false);
   const [showVolumeProfile, setShowVolumeProfile] = useState(true);
   const [showDisparate, setShowDisparate] = useState(false);
+
+  // 🚨 [기능 추가] 이전엔 "3분봉" 탭을 실제로 눌러야만 MobileIntraday3mChart가 마운트되면서 그때부터
+  // fetch가 시작돼 매번 몇 초씩 기다려야 했다(사용자 지적: "3분봉이 너무 느리게 떠"). 일간 차트가 열리는
+  // 즉시(activeTab과 무관하게) 백그라운드로 미리 당겨둔다 - 무거운 3분봉 차트 컴포넌트를 이중 마운트하지
+  // 않고 데이터만 프리페치하며, MobileIntraday3mChart의 useQuery와 동일한 queryKey를 써서 나중에 탭을
+  // 누르면 이미 채워진 캐시를 그대로 재사용한다(react-query 표준 prefetchQuery 패턴).
+  useEffect(() => {
+    if (!stockInfo?.symbol) return;
+    queryClient.prefetchQuery({
+      queryKey: ['m-intraday3m', stockInfo.symbol],
+      queryFn: () => fetchIntraday3m(stockInfo.symbol),
+      staleTime: 30 * 1000,
+    });
+  }, [stockInfo?.symbol, queryClient]);
 
   const rawTrend = trend || [];
 
@@ -103,8 +119,13 @@ export default function MobileStockDetailChart({ trend, stockInfo, isLoading }: 
 
   // 이격도 & 4대(20/60/120일) 과열가/침체가 - RankingStockDetailChart.tsx 437~488번 줄과 동일 공식.
   // 액면분할/무상감자 등으로 가격 스케일이 급변한 구간은 findSplitSafeStartIndex로 제외한다(수칙 1-3).
+  // 🚨 [기능 추가] "바닥 반등"/"단기과열" 같은 이격도 상태 배지(badge)가 모바일 종목 상세에는 아예 안
+  // 떠 있었다 - 데스크톱은 getTrendBadgeInfo(RankingStockDetailChart.tsx:468)로 계산해서 헤더에
+  // 보여주는데, 모바일은 disparate 숫자만 계산하고 badge/badgeStyle 필드 자체를 안 만들었다. 데스크톱과
+  // 동일하게 ma5 + computeRecentVolumeRatio(당일 거래량/최근20일 평균 비율)까지 계산해 배지를 채운다.
   const disparateInfo = React.useMemo(() => {
-    const empty = { disparate20: 100, disparate60: 100, disparate120: 100, overbought20Price: 0, oversold20Price: 0, overbought60Price: 0, oversold60Price: 0, overbought120Price: 0, oversold120Price: 0, support1Price: 0, recentLowPrice: 0 };
+    const emptyBadge = { badge: '⚪ 이평선 수렴', badgeStyle: 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-300 dark:border-slate-700' };
+    const empty = { disparate20: 100, disparate60: 100, disparate120: 100, overbought20Price: 0, oversold20Price: 0, overbought60Price: 0, oversold60Price: 0, overbought120Price: 0, oversold120Price: 0, support1Price: 0, recentLowPrice: 0, ...emptyBadge };
     if (displayTrend.length === 0) return empty;
 
     const rawCloses = displayTrend.map((d) => d.closePrice).filter((c) => c && c > 0);
@@ -115,8 +136,10 @@ export default function MobileStockDetailChart({ trend, stockInfo, isLoading }: 
     if (splitSafeDisplayTrend.length === 0) return empty;
 
     const currentP = closes[closes.length - 1];
+    const slice5 = closes.slice(-Math.min(5, closes.length));
     const slice20 = closes.slice(-Math.min(20, closes.length));
     const slice60 = closes.slice(-Math.min(60, closes.length));
+    const ma5 = slice5.reduce((a, b) => a + b, 0) / slice5.length;
     const ma20 = slice20.reduce((a, b) => a + b, 0) / slice20.length;
     const ma60 = slice60.reduce((a, b) => a + b, 0) / slice60.length;
 
@@ -128,6 +151,11 @@ export default function MobileStockDetailChart({ trend, stockInfo, isLoading }: 
 
     const recentLowPrice = Math.min(...splitSafeDisplayTrend.map((d) => (d.lowPrice && d.lowPrice > 0 ? d.lowPrice : d.closePrice)));
 
+    // 당일 거래량 / 최근 20일(당일 제외) 평균 거래량 비율 - getTrendBadgeInfo가 세력매집/설거지주의
+    // 판별에 쓴다(RankingStockDetailChart.tsx:465와 동일).
+    const volumeRatio = computeRecentVolumeRatio(splitSafeDisplayTrend.map((d) => d.volume));
+    const { badge, badgeStyle } = getTrendBadgeInfo(currentP, ma5, ma20, ma60, volumeRatio);
+
     return {
       disparate20: Number(((currentP / ma20) * 100).toFixed(1)),
       disparate60: Number(((currentP / ma60) * 100).toFixed(1)),
@@ -138,6 +166,8 @@ export default function MobileStockDetailChart({ trend, stockInfo, isLoading }: 
       oversold60Price: roundToKrxTick(ma60 * 0.90),
       overbought120Price: roundToKrxTick(ma120 * 1.10),
       oversold120Price: roundToKrxTick(ma120 * 0.90),
+      badge,
+      badgeStyle,
       support1Price: roundToKrxTick(ma20),
       recentLowPrice,
     };
@@ -223,6 +253,14 @@ export default function MobileStockDetailChart({ trend, stockInfo, isLoading }: 
         <div className="py-10 text-center text-slate-400 text-xs">표시할 차트 데이터가 없습니다.</div>
       ) : (
       <>
+      {/* 이격도 상태 배지(바닥 반등/단기과열/정배열/이평선 수렴 등) - 데스크톱
+          RankingStockDetailChart.tsx:1325(일간)/942(3분봉)는 항상 보여주는데 모바일엔 없었다(사용자
+          지적: "차트누르면 바닥 반등인지 그런거 안뜨잖아"). 신용정보 배지 바로 위 줄에 배치한다. */}
+      <div className="flex justify-start mb-1.5">
+        <span className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold border ${disparateInfo.badgeStyle}`}>
+          {disparateInfo.badge}
+        </span>
+      </div>
       {/* 신용정보 배지 */}
       {stockInfo?.isCreditAvailable !== undefined && (
         <div className="flex justify-end mb-1.5">
