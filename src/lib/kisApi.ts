@@ -4528,26 +4528,50 @@ export async function fetchKis3mCandlesFullDay(
       return slotTotalMinutes < nowTotalMinutes + 30; // 현재 진행 중인 30분 슬롯까지만 요청 (분 단위 선형 비교)
     });
 
+    // 🚨 [버그 수정 - 근본 원인] 원래 이 14개 슬롯을 Promise.all로 완전 병렬 fetch했다 - 이 코드베이스의
+    // 다른 모든 KIS 호출 함수가 이미 겪고 kisQueue.enqueue()로 고친 "레이트리밋(EGW00201) 초과로 인한
+    // hang" 문제를 이 함수만 그대로 갖고 있었다(주석 506/683/799/1281/1533/1769번 줄 등 참고). 실측으로
+    // 확인됨: 프로덕션에서 종목 상세를 열 때마다(모바일 prefetch로 호출 빈도가 늘면서) 여러 종목이 겹쳐
+    // KIS 실시간 조회 큐가 밀려 3분봉 API 응답이 30초+ 안 오는 회귀가 발생했다(다른 API는 0.25~4초로
+    // 정상 응답해 KIS 앱키 전체 차단이 아니라 이 함수 특유의 문제임을 확인). kisQueue로 감싸 다른 모든
+    // KIS 호출과 동일하게 전역 200ms 간격 직렬화를 적용하고, fetch 자체에도 AbortController 타임아웃을
+    // 추가해 KIS가 응답을 안 주더라도(레이트리밋 등) 8초 뒤엔 반드시 풀려나도록 한다(기존엔 타임아웃이
+    // 전혀 없어 hang되면 Vercel 함수 자체 시간제한까지 무한정 걸려있었다).
     const responses = await Promise.all(
       timeSlots.map(async (slotHour) => {
         try {
-          const url = `${baseUrl}/uapi/domestic-stock/v1/quotations/inquire-time-itemchartprice?FID_COND_MRKT_DIV_CODE=J&FID_INPUT_ISCD=${symbol}&FID_INPUT_HOUR_1=${slotHour}&FID_PW_DATA_INCU_YN=Y&FID_ETC_CLS_CODE=`;
-          const res = await fetch(url, {
-            method: 'GET',
-            headers: {
-              'content-type': 'application/json; charset=utf-8',
-              authorization: `Bearer ${token}`,
-              appkey: appKey,
-              appsecret: appSecret,
-              tr_id: 'FHKST03010200',
-              custtype: 'P',
-            },
-            cache: 'no-store',
-          });
-          if (!res.ok) return [];
-          const json = await res.json();
-          return Array.isArray(json.output2) ? json.output2 : [];
-        } catch (e) {
+          return await kisQueue.enqueue(
+            () =>
+              fetchWithRetry(async () => {
+                const url = `${baseUrl}/uapi/domestic-stock/v1/quotations/inquire-time-itemchartprice?FID_COND_MRKT_DIV_CODE=J&FID_INPUT_ISCD=${symbol}&FID_INPUT_HOUR_1=${slotHour}&FID_PW_DATA_INCU_YN=Y&FID_ETC_CLS_CODE=`;
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 8000);
+                try {
+                  const res = await fetch(url, {
+                    method: 'GET',
+                    headers: {
+                      'content-type': 'application/json; charset=utf-8',
+                      authorization: `Bearer ${token}`,
+                      appkey: appKey,
+                      appsecret: appSecret,
+                      tr_id: 'FHKST03010200',
+                      custtype: 'P',
+                    },
+                    cache: 'no-store',
+                    signal: controller.signal,
+                  });
+                  if (!res.ok) throw new Error(`3분봉 슬롯(${slotHour}) 조회 HTTP ${res.status}`);
+                  const json = await res.json();
+                  return Array.isArray(json.output2) ? json.output2 : [];
+                } finally {
+                  clearTimeout(timeoutId);
+                }
+              }),
+            'HIGH', // 사용자가 직접 3분봉 탭을 눌러서 발생하는 요청 - 기존 index-trend와 동일한 우선순위 관례
+            `3m-slot-${symbol}-${timeUnit}-${slotHour}` // 동일 종목/슬롯 동시 요청은 kisQueue의 Single-Flight로 중복 제거
+          );
+        } catch (e: any) {
+          console.warn(`[3분봉 슬롯 조회 실패] ${symbol} ${slotHour}: ${e?.message || e}`);
           return [];
         }
       })
