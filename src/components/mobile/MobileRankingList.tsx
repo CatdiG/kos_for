@@ -190,7 +190,7 @@ function RankingCard({ item, activeTab, overlapMode, isExpanded, onClick }: { it
           {activeTab === 'overlap'
             ? buildOverlapSubLine(item, overlapMode)
             : activeTab === 'surging'
-            ? `${item.surgingBadge ? `${item.surgingBadge} · ` : ''}거래대금 ${(item.amountEok || 0).toLocaleString()}억`
+            ? (item.surgingBadge || `거래량 ${item.volume?.toLocaleString() || '-'}`)
             : activeTab === 'comprehensive'
             ? `종합점수 ${item.scoreBreakdown?.totalScore ?? '-'}점`
             : `순매수 ${formatEok(item.netBuyAmtEok)}`}
@@ -202,6 +202,15 @@ function RankingCard({ item, activeTab, overlapMode, isExpanded, onClick }: { it
           <div className={`text-[11px] font-mono font-semibold ${isUp ? 'text-red-600 dark:text-red-500' : 'text-blue-600 dark:text-blue-500'}`}>
             {isUp ? '+' : ''}{item.changeRate?.toFixed(2)}%
           </div>
+          {/* 🚨 [UI 수정] 급등주 탭 거래대금을 작은 회색 서브라인에 끼워 넣었더니 사용자가 "매매 판단에
+              써야 하는 값인데 안 보인다"고 지적했다 - 현재가/등락률과 동일하게 오른쪽 상단 눈에 띄는
+              자리에 굵게 세 번째 줄로 노출한다(데스크톱 1827~1830번 줄의 "거래대금 (억원) - 빨간색
+              포맷팅" 강조 방식과 동일 취지). */}
+          {activeTab === 'surging' && (
+            <div className="text-[11px] font-mono font-bold text-amber-600 dark:text-amber-400">
+              {(item.amountEok || 0).toLocaleString()}억
+            </div>
+          )}
         </div>
         {isExpanded ? <ChevronUp className="w-3.5 h-3.5 text-blue-500 shrink-0" /> : <ChevronDown className="w-3.5 h-3.5 text-slate-300 dark:text-slate-600 shrink-0" />}
       </div>

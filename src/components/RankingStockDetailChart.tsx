@@ -191,11 +191,11 @@ export default function RankingStockDetailChart({
     return day >= 1 && day <= 5 && timeNum >= 900 && timeNum < 1530;
   }, []);
 
-  // 🚨 [기능 추가] 원래 activeTab==='3m'일 때만 enabled라 3분봉 탭을 눌러야 그 순간부터 fetch가
-  // 시작돼 매번 몇 초씩 기다려야 했다(사용자 지적: "3분봉이 너무 느리게 떠" - 모바일에서 먼저 prefetch로
-  // 고친 것과 동일하게 데스크톱도 반영). 일간 탭이 열리는 즉시(activeTab과 무관하게) 백그라운드로 미리
-  // 당겨두고, 자동 재조회(refetchInterval)만 실제로 3분봉 탭을 보고 있을 때로 한정해 불필요한 폴링을
-  // 막는다.
+  // 🚨 [되돌림] 일간 탭이 열리는 즉시 3분봉을 백그라운드로 prefetch하도록 바꿨다가(3분봉 탭 클릭 대기
+  // 단축 목적) 프로덕션에서 하루치 3분봉 전체를 조회하는 무거운 함수(fetchKis3mCandlesFullDay)가 종목
+  // 상세를 열 때마다 자동 호출되면서 여러 종목이 겹쳐 KIS 실시간 조회 큐가 밀려 응답 자체가 안 오는
+  // 회귀를 유발했다(실측: curl 30초+ 타임아웃, index-trend 등 다른 API는 0.25초로 정상 - intraday-chart만
+  // 멈춤). 사용자 판단으로 원래대로(3분봉 탭을 실제로 눌렀을 때만 조회) 되돌린다.
   const intraday3mQuery = useQuery<any>({
     queryKey: ['intraday3mCandles', safeSymbol],
     queryFn: async () => {
@@ -203,9 +203,9 @@ export default function RankingStockDetailChart({
       if (!res.ok) throw new Error('3분봉 데이터를 불러오는데 실패했습니다.');
       return res.json();
     },
-    enabled: Boolean(safeSymbol),
+    enabled: activeTab === '3m' && Boolean(safeSymbol),
     staleTime: 30 * 1000,
-    refetchInterval: activeTab === '3m' && isMarketOpen ? 30 * 1000 : false,
+    refetchInterval: isMarketOpen ? 30 * 1000 : false,
     refetchOnMount: false,
   });
 

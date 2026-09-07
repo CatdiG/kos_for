@@ -8,8 +8,7 @@
 // 와 거래량 비율(computeRecentVolumeRatio)·KRX 호가단위 반올림(roundToKrxTick)은 RankingStockDetailChart.tsx가
 // 쓰는 mockData.ts의 기존 함수를 그대로 재사용한다 - 새 계산 로직을 만들지 않는다.
 
-import React, { useEffect, useState } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
+import React, { useState } from 'react';
 import {
   ResponsiveContainer,
   ComposedChart,
@@ -27,7 +26,7 @@ import { useTheme } from '@/providers/ThemeProvider';
 import { PRICE_CHART_CONFIG, CandlestickBar, CustomCandleTooltip, getTrendBadgeInfo } from '@/components/chart/CandlestickPrimitives';
 import { findSplitSafeStartIndex, roundToKrxTick, computeRecentVolumeRatio } from '@/lib/mockData';
 import { ShieldCheck, ShieldOff } from 'lucide-react';
-import MobileIntraday3mChart, { fetchIntraday3m } from './MobileIntraday3mChart';
+import MobileIntraday3mChart from './MobileIntraday3mChart';
 
 interface MobileStockDetailChartProps {
   trend: InvestorTrendDay[];
@@ -59,7 +58,6 @@ function calculatePriceAxis(minRaw: number, maxRaw: number, targetTicks = 6) {
 
 export default function MobileStockDetailChart({ trend, stockInfo, isLoading }: MobileStockDetailChartProps) {
   const { theme } = useTheme();
-  const queryClient = useQueryClient();
   const isDark = theme === 'dark';
   const gridColor = isDark ? '#334155' : '#cbd5e1';
   const axisColor = isDark ? '#94a3b8' : '#475569';
@@ -74,19 +72,11 @@ export default function MobileStockDetailChart({ trend, stockInfo, isLoading }: 
   const [showVolumeProfile, setShowVolumeProfile] = useState(true);
   const [showDisparate, setShowDisparate] = useState(false);
 
-  // 🚨 [기능 추가] 이전엔 "3분봉" 탭을 실제로 눌러야만 MobileIntraday3mChart가 마운트되면서 그때부터
-  // fetch가 시작돼 매번 몇 초씩 기다려야 했다(사용자 지적: "3분봉이 너무 느리게 떠"). 일간 차트가 열리는
-  // 즉시(activeTab과 무관하게) 백그라운드로 미리 당겨둔다 - 무거운 3분봉 차트 컴포넌트를 이중 마운트하지
-  // 않고 데이터만 프리페치하며, MobileIntraday3mChart의 useQuery와 동일한 queryKey를 써서 나중에 탭을
-  // 누르면 이미 채워진 캐시를 그대로 재사용한다(react-query 표준 prefetchQuery 패턴).
-  useEffect(() => {
-    if (!stockInfo?.symbol) return;
-    queryClient.prefetchQuery({
-      queryKey: ['m-intraday3m', stockInfo.symbol],
-      queryFn: () => fetchIntraday3m(stockInfo.symbol),
-      staleTime: 30 * 1000,
-    });
-  }, [stockInfo?.symbol, queryClient]);
+  // 🚨 [되돌림] 일간 차트가 열리는 즉시 3분봉을 prefetchQuery로 미리 당겨오게 했다가, 프로덕션에서
+  // 하루치 3분봉 전체를 조회하는 무거운 함수(fetchKis3mCandlesFullDay)가 종목 상세를 열 때마다 자동
+  // 호출되면서 여러 종목이 겹쳐 KIS 실시간 조회 큐가 밀려 응답 자체가 안 오는 회귀를 유발했다(실측: curl
+  // 30초+ 타임아웃). 사용자 판단으로 원래대로(3분봉 탭을 실제로 눌러야 MobileIntraday3mChart가 마운트되며
+  // 그때부터 조회) 되돌린다.
 
   const rawTrend = trend || [];
 
