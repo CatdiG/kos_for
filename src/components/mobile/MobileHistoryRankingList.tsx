@@ -5,7 +5,7 @@
 // 데스크톱과 동일하게 포함한다. 데이터/계산은 새로 만들지 않고 부모(MobileHistoryPage)가 이미 재계산한
 // displayItems를 그대로 받아 렌더링만 담당한다.
 
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { Search } from 'lucide-react';
 import { RankingItem, RankingType } from '@/lib/types';
 

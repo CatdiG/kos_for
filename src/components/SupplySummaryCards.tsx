@@ -1,8 +1,7 @@
 'use client';
 
-import React from 'react';
-import { SupplySummary, ProgramTradeSummary, RankingItem } from '@/lib/types';
-import { Globe2, Landmark, Coins, Cpu, Zap, Clock } from 'lucide-react';
+import { SupplySummary, ProgramTradeSummary } from '@/lib/types';
+import { Globe2, Landmark, Cpu } from 'lucide-react';
 import { getSupplyDirection } from '@/lib/supplyUtils';
 import { getSettledAsOfDateLabel } from '@/lib/mockData';
 
@@ -16,7 +15,6 @@ interface SupplySummaryCardsProps {
     change: number;
     changeRate: number;
   };
-  selectedStockItem?: RankingItem;
   isLoading?: boolean;
 }
 
@@ -24,7 +22,6 @@ export default function SupplySummaryCards({
   summary,
   programTrade,
   stockInfo,
-  selectedStockItem,
   isLoading,
 }: SupplySummaryCardsProps) {
   if (isLoading || !summary) {

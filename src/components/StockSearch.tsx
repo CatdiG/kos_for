@@ -8,7 +8,6 @@ import { buildSearchStockList, getStockName, resolveSymbolOrName } from '@/lib/s
 import StockBadgeStrip from './StockBadgeStrip';
 
 interface StockSearchProps {
-  currentSymbol: string;
   stockInfo?: StockInfo;
   onSelectSymbol: (symbol: string) => void;
   onRefresh?: () => void;
@@ -21,7 +20,6 @@ interface StockSearchProps {
 }
 
 export default function StockSearch({
-  currentSymbol,
   stockInfo,
   onSelectSymbol,
   onRefresh,

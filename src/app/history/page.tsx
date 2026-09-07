@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import Link from 'next/link';
 import { HistoryRankingTable } from '@/components/history/HistoryRankingTable';
 import { RankingType, RankingPeriod, MarketType, RankingDirection, RankingItem } from '@/lib/types';
@@ -469,8 +469,6 @@ export default function HistoryPage() {
           <HistoryRankingTable
             items={displayItems}
             type={activeTab}
-            period={period}
-            market={market}
             isLoading={isLoading}
             selectedDate={selectedDate}
             surgingMode={activeTab === 'surging' ? surgingMode : undefined}

@@ -4,7 +4,6 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   InvestorRankingResponse,
-  InvestorTrendResponse,
   MarketType,
   RankingDirection,
   RankingItem,
@@ -12,7 +11,7 @@ import {
   RankingType,
   SurgingMode,
 } from '@/lib/types';
-import { getStockName, registerRuntimeStockName, resolveStockPriceAndChange, updateRuntimeStockPrice, TOP_50_STOCKS, resolveMarketType, getSettledAsOfDateLabel, getKrxEstimateSlotInfo } from '@/lib/mockData';
+import { getStockName, registerRuntimeStockName, resolveStockPriceAndChange, updateRuntimeStockPrice, resolveMarketType, getSettledAsOfDateLabel, getKrxEstimateSlotInfo } from '@/lib/mockData';
 import RankingStockDetailChart from './RankingStockDetailChart';
 import {
   Globe2,
@@ -33,12 +32,10 @@ import {
   Trophy,
   ChevronDown,
   ChevronUp,
-  Activity,
 } from 'lucide-react';
 
 interface InvestorRankingTableProps {
   selectedSymbol?: string;
-  chartData?: InvestorTrendResponse;
   onSelectSymbol?: (symbol: string, item?: RankingItem) => void;
 }
 
@@ -60,36 +57,7 @@ async function fetchRanking(
   return res.json();
 }
 
-function getIntradaySnapshotNoticeText(hasRealData: boolean): string {
-  const now = new Date();
-  const hours = now.getHours();
-  const minutes = now.getMinutes();
-  const timeNum = hours * 100 + minutes;
-
-  let snapshotLabel = '4차(14:30)';
-  let targetTimeStr = '내일 오전 09시 30분';
-
-  if (timeNum < 930) {
-    snapshotLabel = '1차 미반영';
-    targetTimeStr = '오전 09시 30분';
-  } else if (timeNum >= 930 && timeNum < 1120) {
-    snapshotLabel = '1차(09:30)';
-    targetTimeStr = '오전 11시 20분';
-  } else if (timeNum >= 1120 && timeNum < 1320) {
-    snapshotLabel = '2차(11:20)';
-    targetTimeStr = '오후 1시 20분';
-  } else if (timeNum >= 1320 && timeNum < 1430) {
-    snapshotLabel = '3차(13:20)';
-    targetTimeStr = '오후 2시 30분';
-  } else {
-    snapshotLabel = '4차(14:30)';
-    targetTimeStr = '내일 오전 09시 30분';
-  }
-
-  return `ℹ️ [수급 시점 안내] 🟢 외국인 · 기관: 당일 가집계 (${snapshotLabel}) | 🔵 프로그램: 장중 실시간 연동 (다음 갱신: ${targetTimeStr})`;
-}
-
-export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbol, chartData, onSelectSymbol }: InvestorRankingTableProps) {
+export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbol, onSelectSymbol }: InvestorRankingTableProps) {
   const [market, setMarket] = useState<MarketType>('ALL');
   const [activeTab, setActiveTab] = useState<RankingType>('surging');
   const [direction, setDirection] = useState<RankingDirection>('buy');
@@ -109,7 +77,6 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
 
   // Selected Stock for Right Chart (Single Source of Truth)
   const [internalSymbol, setInternalSymbol] = useState<string>('005930');
-  const [selectedRank, setSelectedRank] = useState<number>(1);
   const tableContainerRef = useRef<HTMLDivElement>(null);
 
   const selectedSymbol = propSelectedSymbol || internalSymbol;
@@ -317,7 +284,6 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
         type: activeTab,
       };
       setInternalSymbol(sym);
-      setSelectedRank(item?.rank || 1);
       // Auto-toggle expand state (ONLY 1 stock expanded at a time across all tabs)
       setExpandedSymbols((prev) => (prev[sym] ? {} : { [sym]: true }));
       if (onSelectSymbol) {
@@ -517,11 +483,6 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
       }));
   }
 
-  const hasRealData = useMemo(() => {
-    if (!displayList || displayList.length === 0) return false;
-    return displayList.some((item) => (item.netBuyAmt || 0) !== 0 || (item.netBuyQty || 0) !== 0);
-  }, [displayList]);
-
   // Track context key (activeTab, direction, period, overlapMode, overlapLimit, market, creditOnly, entryReadyOnly)
   const contextKey = `${activeTab}-${direction}-${period}-${overlapMode}-${overlapLimit}-${market}-${creditOnly}-${entryReadyOnly}`;
   const prevContextKey = useRef('');
@@ -533,7 +494,6 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
       prevContextKey.current = contextKey;
       const firstItem = displayList[0];
       setInternalSymbol(firstItem.symbol);
-      setSelectedRank(firstItem.rank || 1);
       if (onSelectSymbol) {
         onSelectSymbol(firstItem.symbol, { ...firstItem, type: activeTab });
       }
@@ -615,19 +575,6 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
   ];
 
   const activeTabLabel = tabs.find((t) => t.id === activeTab)?.label || '순위';
-
-  const getOverlapBadgeStyle = (count: number) => {
-    if (count >= 3) {
-      return {
-        label: '3주체 일치',
-        bg: 'bg-gradient-to-r from-purple-600 to-pink-600 text-white font-black shadow-xs',
-      };
-    }
-    return {
-      label: '2주체 중복',
-      bg: 'bg-blue-100 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800 font-bold',
-    };
-  };
 
   const getInvestorRankBadge = (type: string) => {
     switch (type) {
@@ -1426,7 +1373,7 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
                           <tr className="bg-slate-50/90 dark:bg-[#181c27]/90 border-b border-purple-200/60 dark:border-purple-900/40">
                             <td colSpan={6} className="p-3.5">
                               <div className="bg-white dark:bg-[#131722] border border-purple-100 dark:border-purple-900/40 rounded-2xl p-4 shadow-inner">
-                                <RankingStockDetailChart symbol={d.symbol} rank={rank} rankingTypeLabel="이탈 종목" />
+                                <RankingStockDetailChart symbol={d.symbol} />
                               </div>
                             </td>
                           </tr>
@@ -1571,7 +1518,6 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
                       : resolveStockPriceAndChange(item.symbol, item.currentPrice, item.change, item.changeRate);
                     const isPriceUp = priceInfo.changeRate > 0;
                     const isPriceDown = priceInfo.changeRate < 0;
-                    const badgeStyle = getOverlapBadgeStyle(item.overlapCount || 0);
                     const isSelected = selectedSymbol === item.symbol;
 
                     return (
@@ -2123,11 +2069,7 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
 
                               {/* Integrated In-Place Stock Detail Chart (Candlestick + Cumulative Investor Supply Flow) */}
                               <div className={isComprehensive ? "mt-3 pt-3 border-t border-slate-200/80 dark:border-[#2a2e39] w-full" : "w-full"}>
-                                <RankingStockDetailChart
-                                  symbol={item.symbol}
-                                  rank={item.rank}
-                                  rankingTypeLabel={activeTabLabel}
-                                />
+                                <RankingStockDetailChart symbol={item.symbol} />
                               </div>
                             </div>
                           </td>

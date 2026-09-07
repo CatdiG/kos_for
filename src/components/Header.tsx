@@ -1,8 +1,8 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { Activity, ShieldCheck, Database, Clock, TrendingUp, Sun, Moon, History } from 'lucide-react';
+import { Activity, ShieldCheck, Clock, TrendingUp, Sun, Moon, History } from 'lucide-react';
 import { useTheme } from '@/providers/ThemeProvider';
 
 export default function Header() {

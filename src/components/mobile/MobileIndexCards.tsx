@@ -6,7 +6,6 @@
 // 🚨 [기능 추가] Phase 1에서는 비대화형이었으나, MobileIndexDetailChart 연결에 맞춰 데스크톱
 // IndexCards.tsx와 동일하게 탭하면 선택 상태가 되도록 selected/onSelect props를 추가한다.
 
-import React from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { IndexTrendResponse } from '@/lib/types';
 import { TrendingUp, TrendingDown } from 'lucide-react';

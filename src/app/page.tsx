@@ -1,7 +1,7 @@
 // Next.js Main Page
 'use client';
 
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import Header from '@/components/Header';
 import StockSearch from '@/components/StockSearch';
@@ -10,8 +10,8 @@ import InvestorRankingTable from '@/components/InvestorRankingTable';
 import RankingStockDetailChart from '@/components/RankingStockDetailChart';
 import IndexCards from '@/components/IndexCards';
 import IndexDetailChart from '@/components/IndexDetailChart';
-import { InvestorTrendResponse, RankingItem, TrendPeriod } from '@/lib/types';
-import { AlertCircle, RefreshCw, X } from 'lucide-react';
+import { InvestorTrendResponse, TrendPeriod } from '@/lib/types';
+import { AlertCircle, RefreshCw } from 'lucide-react';
 
 async function fetchInvestorTrend(symbol: string, period: TrendPeriod, signal?: AbortSignal): Promise<InvestorTrendResponse> {
   const res = await fetch(`/api/stock/investor-trend?symbol=${symbol}&period=${period}`, { signal });
@@ -25,7 +25,6 @@ async function fetchInvestorTrend(symbol: string, period: TrendPeriod, signal?: 
 export default function DashboardPage() {
   const [symbol, setSymbol] = useState<string>('');
   const [period, setPeriod] = useState<TrendPeriod>('60d');
-  const [selectedStockItem, setSelectedStockItem] = useState<RankingItem | undefined>();
   const [isSearchedStockOpen, setIsSearchedStockOpen] = useState<boolean>(false);
   const [selectedIndex, setSelectedIndex] = useState<'KOSPI' | 'KOSDAQ' | null>(null);
   // 종목 검색창 강제 초기화 신호 - 매매순위 테이블에서 다른 종목을 클릭하거나 코스피/코스닥 지수 카드를
@@ -63,11 +62,9 @@ export default function DashboardPage() {
 
         {/* Stock Search & Preset Selector */}
         <StockSearch
-          currentSymbol={symbol}
           stockInfo={data?.stockInfo}
           onSelectSymbol={(newSym) => {
             setSymbol(newSym);
-            setSelectedStockItem(undefined);
             setIsSearchedStockOpen(true);
             setSelectedIndex(null);
           }}
@@ -103,7 +100,6 @@ export default function DashboardPage() {
           summary={data?.summary}
           programTrade={data?.programTrade}
           stockInfo={data?.stockInfo}
-          selectedStockItem={selectedStockItem}
           isLoading={isLoading || !data}
         />
 
@@ -124,10 +120,8 @@ export default function DashboardPage() {
         {/* Investor Type Ranking Table & Side-by-side Unified Main Stock Detail Chart */}
         <InvestorRankingTable
           selectedSymbol={symbol}
-          chartData={data}
-          onSelectSymbol={(sym, item) => {
+          onSelectSymbol={(sym) => {
             setSymbol(sym);
-            setSelectedStockItem(item);
             setIsSearchedStockOpen(false);
             setSelectedIndex(null);
             setClearSearchSignal((n) => n + 1);

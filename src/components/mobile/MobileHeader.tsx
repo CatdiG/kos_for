@@ -7,7 +7,7 @@
 // 링크는 지금 보고 있는 화면(홈/히스토리)에 맞는 데스크톱 페이지로 가야 하므로 desktopHref prop으로
 // 받는다(middleware.ts의 view=desktop 처리와 동일한 매핑 - 수칙 1-6).
 
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { Activity, TrendingUp, Sun, Moon, History } from 'lucide-react';
 import { useTheme } from '@/providers/ThemeProvider';

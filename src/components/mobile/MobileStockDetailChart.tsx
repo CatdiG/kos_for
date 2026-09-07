@@ -24,7 +24,7 @@ import {
 import { InvestorTrendDay, StockInfo } from '@/lib/types';
 import { useTheme } from '@/providers/ThemeProvider';
 import { PRICE_CHART_CONFIG, CandlestickBar, CustomCandleTooltip, getTrendBadgeInfo } from '@/components/chart/CandlestickPrimitives';
-import { findSplitSafeStartIndex, roundToKrxTick, computeRecentVolumeRatio } from '@/lib/mockData';
+import { findSplitSafeStartIndex, roundToKrxTick } from '@/lib/mockData';
 import { ShieldCheck, ShieldOff } from 'lucide-react';
 import MobileIntraday3mChart from './MobileIntraday3mChart';
 

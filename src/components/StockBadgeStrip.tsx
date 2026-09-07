@@ -4,7 +4,6 @@
 // 단타종합랭킹/외국인/기관/프로그램/수급교집합 당일·2일연속·3일연속)의 어디에 떠 있는지 한 줄로 모아
 // 보여준다. 뱃지 문구/스타일은 각 탭에서 이미 쓰던 것을 그대로 재사용한다(새로 디자인하지 않음).
 
-import React from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { StockBadgeSummaryResponse } from '@/lib/types';
 

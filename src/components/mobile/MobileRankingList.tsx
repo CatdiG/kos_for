@@ -6,26 +6,42 @@
 // 데스크톱과 동일 기능을 카드형 레이아웃으로 재구현했다. API 엔드포인트/계산 공식은 데스크톱과 완전히
 // 동일(/api/stock/ranking, /api/stock/surging, /api/stock/consecutive-overlap-dropouts) - 새 백엔드
 // 불필요, 가중치 재계산 공식도 InvestorRankingTable.tsx 380~443번 줄을 그대로 이식했다(수칙 1-6).
+//
+// 🚨 [기능 보강] 사용자가 "데스크탑이랑 다른거 다 확인해"라고 지적한 뒤 InvestorRankingTable.tsx를 다시
+// 정독해 아래 항목이 빠져있었음을 확인하고 추가했다:
+//   1. 종목 카드를 탭하면 그 카드 바로 아래에 상세가 펼쳐져야 하는데(데스크톱 2006번 줄 expandedSymbols
+//      아코디언), 지난 수정에서는 잘못 짐작해서 위쪽 검색창을 강제로 여는 방식으로 만들었다 - 폐기하고
+//      MobileStockDetailPanel을 카드 바로 아래에 렌더링하는 진짜 아코디언으로 교체.
+//   2. 급등주 탭 서브탭(등락률/거래량/거래대금/교집합, 데스크톱 900~953번 줄) - surgingMode state 자체가
+//      없어서 항상 등락률 고정이었다. 신규 추가.
+//   3. 기간 필터(당일/1주일/1개월, 데스크톱 843~863번 줄) - period가 '1d'로 하드코딩돼 있었다. 신규 추가.
+//   4. 수급교집합 "진입가능만" 필터(entryReadyOnly, 데스크톱 505~518번 줄, 1248~1263번 줄) - 신규 추가.
+//   5. 수급교집합 카드의 AI Pick 별 마크(aiPickRank, 데스크톱 1597번 줄) - 신규 추가(모바일 카드 폭에
+//      맞춰 이모지로 단순화).
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
   InvestorRankingResponse,
   MarketType,
   RankingDirection,
   RankingItem,
+  RankingPeriod,
   RankingType,
+  SurgingMode,
 } from '@/lib/types';
-import { Rocket, Trophy, Globe2, Landmark, Cpu, Flame, ShieldCheck, ArrowUpDown, TrendingDown, RotateCcw } from 'lucide-react';
+import { Rocket, Trophy, Globe2, Landmark, Cpu, Flame, ShieldCheck, ArrowUpDown, TrendingDown, RotateCcw, TrendingUp, Coins, Filter, ChevronDown, ChevronUp } from 'lucide-react';
+import MobileStockDetailPanel from './MobileStockDetailPanel';
 
 async function fetchRanking(
   type: RankingType,
   direction: RankingDirection,
+  period: RankingPeriod,
   mode: 'daily' | 'consecutive2d' | 'consecutive3d',
   market: MarketType
 ): Promise<InvestorRankingResponse> {
   const res = await fetch(
-    `/api/stock/ranking?type=${type}&direction=${direction}&period=1d&mode=${mode}&limit=50&market=${market}`
+    `/api/stock/ranking?type=${type}&direction=${direction}&period=${period}&mode=${mode}&limit=50&market=${market}`
   );
   if (!res.ok) {
     const errJson = await res.json().catch(() => null);
@@ -73,6 +89,14 @@ const TABS: { id: RankingType; label: string; icon: any; badge?: string }[] = [
   { id: 'organ', label: '기관', icon: Landmark },
   { id: 'program', label: '프로그램', icon: Cpu },
   { id: 'overlap', label: '수급교집합', icon: Flame, badge: 'HOT' },
+];
+
+// 데스크톱 InvestorRankingTable.tsx 908~950번 줄과 동일한 4개 서브탭.
+const SURGING_MODES: { id: SurgingMode; label: string; icon: any }[] = [
+  { id: 'fluctuation', label: '등락률', icon: Rocket },
+  { id: 'volume', label: '거래량', icon: TrendingUp },
+  { id: 'amount', label: '거래대금', icon: Coins },
+  { id: 'overlap', label: '급등주 교집합', icon: Flame },
 ];
 
 // InvestorRankingTable.tsx 354~364번 줄과 동일한 기본 프리셋(합계 100%).
@@ -123,14 +147,39 @@ function formatEok(v: number | undefined) {
   return `${sign}${v.toLocaleString()}억`;
 }
 
-function RankingCard({ item, activeTab, onClick }: { item: RankingItem; activeTab: RankingType; onClick?: () => void }) {
+// 데스크톱 1597~1668번 줄의 AI Pick 별 배지를 모바일 카드 폭에 맞춰 이모지 한 글자로 단순화.
+const AI_PICK_EMOJI: Record<number, string> = { 1: '🥇', 2: '🥈', 3: '🥉', 4: '⭐', 5: '⭐' };
+
+// 수급교집합 카드 서브라인 - 데스크톱 1721~1783번 줄(statusBadge + ranksByType)을 한 줄로 압축.
+function buildOverlapSubLine(item: RankingItem, overlapMode: 'daily' | 'consecutive2d' | 'consecutive3d'): string {
+  const parts: string[] = [];
+  if (item.statusBadge) parts.push(item.statusBadge);
+  (item.ranksByType || []).forEach((r) => {
+    const text = overlapMode !== 'daily'
+      ? (r.consecutiveText || (r.consecutiveDays && r.consecutiveDays >= 2 ? `${r.consecutiveDays}일연속` : '당일'))
+      : (r.isRanked === false || !r.rank || r.rank <= 0 ? '순위밖' : `${r.rank}위`);
+    parts.push(`${r.label} ${text}`);
+  });
+  return parts.join(' · ') || item.investorBadge || '-';
+}
+
+function RankingCard({ item, activeTab, overlapMode, isExpanded, onClick }: { item: RankingItem; activeTab: RankingType; overlapMode: 'daily' | 'consecutive2d' | 'consecutive3d'; isExpanded: boolean; onClick?: () => void }) {
   const isUp = item.change >= 0;
   return (
     <div
       onClick={onClick}
-      className="flex items-center gap-2.5 px-3 py-2.5 bg-white dark:bg-[#131722] border border-slate-200 dark:border-[#2a2e39] rounded-xl active:bg-slate-50 dark:active:bg-[#1a1e2a] cursor-pointer transition-colors"
+      className={`flex items-center gap-2.5 px-3 py-2.5 bg-white dark:bg-[#131722] border rounded-xl active:bg-slate-50 dark:active:bg-[#1a1e2a] cursor-pointer transition-colors ${
+        isExpanded ? 'border-blue-400 dark:border-blue-600 ring-1 ring-blue-400/40' : 'border-slate-200 dark:border-[#2a2e39]'
+      }`}
     >
-      <div className="w-6 shrink-0 text-center text-xs font-bold text-slate-400 dark:text-slate-500">{item.rank}</div>
+      <div className="w-6 shrink-0 text-center text-xs font-bold text-slate-400 dark:text-slate-500 relative">
+        {activeTab === 'overlap' && item.aiPickRank && item.aiPickRank <= 5 && (
+          <span className="absolute -top-2 -left-1.5 text-[10px] leading-none" title={`AI 수급 추천 ${item.aiPickRank}위`}>
+            {AI_PICK_EMOJI[item.aiPickRank]}
+          </span>
+        )}
+        {item.rank}
+      </div>
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-1.5">
           <span className="text-sm font-bold text-slate-900 dark:text-white truncate">{item.name}</span>
@@ -139,7 +188,7 @@ function RankingCard({ item, activeTab, onClick }: { item: RankingItem; activeTa
         </div>
         <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate mt-0.5">
           {activeTab === 'overlap'
-            ? (item.investorBadge || item.statusBadge || '-')
+            ? buildOverlapSubLine(item, overlapMode)
             : activeTab === 'surging'
             ? (item.surgingBadge || `거래량 ${item.volume?.toLocaleString() || '-'}`)
             : activeTab === 'comprehensive'
@@ -147,11 +196,14 @@ function RankingCard({ item, activeTab, onClick }: { item: RankingItem; activeTa
             : `순매수 ${formatEok(item.netBuyAmtEok)}`}
         </div>
       </div>
-      <div className="text-right shrink-0">
-        <div className="text-sm font-mono font-bold text-slate-900 dark:text-white">{item.currentPrice?.toLocaleString()}</div>
-        <div className={`text-[11px] font-mono font-semibold ${isUp ? 'text-red-600 dark:text-red-500' : 'text-blue-600 dark:text-blue-500'}`}>
-          {isUp ? '+' : ''}{item.changeRate?.toFixed(2)}%
+      <div className="text-right shrink-0 flex items-center gap-1.5">
+        <div>
+          <div className="text-sm font-mono font-bold text-slate-900 dark:text-white">{item.currentPrice?.toLocaleString()}</div>
+          <div className={`text-[11px] font-mono font-semibold ${isUp ? 'text-red-600 dark:text-red-500' : 'text-blue-600 dark:text-blue-500'}`}>
+            {isUp ? '+' : ''}{item.changeRate?.toFixed(2)}%
+          </div>
         </div>
+        {isExpanded ? <ChevronUp className="w-3.5 h-3.5 text-blue-500 shrink-0" /> : <ChevronDown className="w-3.5 h-3.5 text-slate-300 dark:text-slate-600 shrink-0" />}
       </div>
     </div>
   );
@@ -181,34 +233,34 @@ function DropoutCard({ item, rank }: { item: DropoutItem; rank: number }) {
   );
 }
 
-interface MobileRankingListProps {
-  // 카드를 탭했을 때 어떤 종목을 열지 상위(page.tsx)에 알려주는 콜백 - 데스크톱
-  // InvestorRankingTable.tsx의 onSelectSymbol과 동일한 역할(수칙 1-6).
-  onSelectSymbol?: (symbol: string, item: RankingItem) => void;
-}
-
-export default function MobileRankingList({ onSelectSymbol }: MobileRankingListProps) {
+export default function MobileRankingList() {
   const [activeTab, setActiveTab] = useState<RankingType>('surging');
   const [direction, setDirection] = useState<RankingDirection>('buy');
+  const [period, setPeriod] = useState<RankingPeriod>('1d');
+  const [surgingMode, setSurgingMode] = useState<SurgingMode>('fluctuation');
   const [overlapMode, setOverlapMode] = useState<'daily' | 'consecutive2d' | 'consecutive3d'>('daily');
   const [market, setMarket] = useState<MarketType>('ALL');
   const [creditOnly, setCreditOnly] = useState(false);
+  const [entryReadyOnly, setEntryReadyOnly] = useState(false);
   const [weights, setWeights] = useState<Weights>(DEFAULT_WEIGHTS);
   const [showWeightPanel, setShowWeightPanel] = useState(false);
   const [showDropouts, setShowDropouts] = useState(false);
   const [dropoutScope, setDropoutScope] = useState<'today' | 'yesterday'>('today');
+  // 카드를 탭하면 그 카드 바로 아래에 상세를 펼친다(데스크톱 InvestorRankingTable.tsx의 expandedSymbols
+  // 아코디언과 동일하게 한 번에 1개만 펼침).
+  const [expandedSymbol, setExpandedSymbol] = useState<string>('');
 
   const isSurging = activeTab === 'surging' || activeTab === 'comprehensive';
   const isComprehensive = activeTab === 'comprehensive';
 
   const { data, isLoading, isError } = useQuery<InvestorRankingResponse>({
     queryKey: isSurging
-      ? ['m-surging', activeTab === 'comprehensive' ? 'comprehensive' : 'fluctuation', market]
-      : ['m-ranking', activeTab, direction, overlapMode, market],
+      ? ['m-surging', activeTab === 'comprehensive' ? 'comprehensive' : surgingMode, market]
+      : ['m-ranking', activeTab, direction, period, overlapMode, market],
     queryFn: () =>
       isSurging
-        ? fetchSurging(activeTab === 'comprehensive' ? 'comprehensive' : 'fluctuation', market)
-        : fetchRanking(activeTab, direction, overlapMode, market),
+        ? fetchSurging(activeTab === 'comprehensive' ? 'comprehensive' : surgingMode, market)
+        : fetchRanking(activeTab, direction, period, overlapMode, market),
     staleTime: 30 * 1000,
     refetchInterval: (query) => {
       const d = query.state.data as InvestorRankingResponse | undefined;
@@ -224,8 +276,29 @@ export default function MobileRankingList({ onSelectSymbol }: MobileRankingListP
     refetchInterval: showDropouts ? 30 * 1000 : false,
   });
 
+  // 탭/서브모드/시장/방향/기간이 바뀌면 펼쳐둔 카드와 필터를 초기화한다(데스크톱 543~601번 줄의
+  // handleTabChange 등과 동일한 정책 - 다른 목록으로 전환됐는데 이전 필터가 그대로 남아있으면 혼란스럽다).
+  useEffect(() => {
+    setExpandedSymbol('');
+    setCreditOnly(false);
+    setEntryReadyOnly(false);
+  }, [activeTab, surgingMode, market, direction, period, overlapMode]);
+
   let list = data?.list || [];
-  if (creditOnly) list = list.filter((i) => i.isCreditAvailable);
+  // 데스크톱 494~503번 줄과 동일: 필터로 걸러진 뒤에는 순위를 1,2,3...으로 다시 매긴다(원래 순위가
+  // 듬성듬성 남아있으면 "3위 다음이 7위"처럼 보여 혼란스럽다).
+  if (creditOnly) {
+    list = list.filter((i) => i.isCreditAvailable).map((item, idx) => ({ ...item, rank: idx + 1 }));
+  }
+  // 데스크톱 505~518번 줄과 동일: 이격도 배지가 단기과열 또는 역배열인 종목을 교집합 탭에서 제외.
+  if (activeTab === 'overlap' && entryReadyOnly) {
+    list = list
+      .filter((i) => {
+        const badge = i.statusBadge || '';
+        return !badge.includes('단기과열') && !badge.includes('역배열');
+      })
+      .map((item, idx) => ({ ...item, rank: idx + 1 }));
+  }
   if (isComprehensive) list = applyWeights(list, weights);
 
   return (
@@ -253,7 +326,33 @@ export default function MobileRankingList({ onSelectSymbol }: MobileRankingListP
         })}
       </div>
 
-      {/* 시장 필터 + 신용가능 + (수급주체 탭이면) 매수/매도 */}
+      {/* 급등주 서브탭(등락률/거래량/거래대금/교집합) */}
+      {activeTab === 'surging' && (
+        <div className="flex gap-1.5 overflow-x-auto pb-1 -mx-1 px-1">
+          {SURGING_MODES.map((m) => {
+            const Icon = m.icon;
+            const isActive = surgingMode === m.id;
+            return (
+              <button
+                key={m.id}
+                onClick={() => setSurgingMode(m.id)}
+                className={`flex items-center gap-1 shrink-0 px-2.5 py-1 rounded-lg text-[11px] font-bold border transition ${
+                  isActive
+                    ? m.id === 'overlap'
+                      ? 'bg-gradient-to-r from-red-600 to-amber-600 text-white border-transparent'
+                      : 'bg-red-50 dark:bg-red-950/50 text-red-700 dark:text-red-300 border-red-300 dark:border-red-800'
+                    : 'bg-white dark:bg-[#131722] text-slate-500 dark:text-slate-400 border-slate-200 dark:border-[#2a2e39]'
+                }`}
+              >
+                <Icon className="w-3 h-3" />
+                {m.label}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {/* 시장 필터 + 기간 필터 + 신용가능 + (수급주체 탭이면) 매수/매도 */}
       <div className="flex items-center gap-1.5 flex-wrap">
         <div className="flex bg-slate-100 dark:bg-[#1e222d] p-0.5 rounded-lg">
           {(['ALL', 'KOSPI', 'KOSDAQ'] as MarketType[]).map((m) => (
@@ -268,6 +367,22 @@ export default function MobileRankingList({ onSelectSymbol }: MobileRankingListP
             </button>
           ))}
         </div>
+        {/* 기간 필터(당일/1주일/1개월) - 데스크톱 843~863번 줄과 동일하게 급등주/단타종합 탭에서는 숨김 */}
+        {!isSurging && (
+          <div className="flex bg-slate-100 dark:bg-[#1e222d] p-0.5 rounded-lg">
+            {(['1d', '1w', '1m'] as RankingPeriod[]).map((p) => (
+              <button
+                key={p}
+                onClick={() => setPeriod(p)}
+                className={`px-2 py-1 rounded-md text-[11px] font-bold transition ${
+                  period === p ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-500 dark:text-slate-400'
+                }`}
+              >
+                {p === '1d' ? '당일' : p === '1w' ? '1주일' : '1개월'}
+              </button>
+            ))}
+          </div>
+        )}
         {!isSurging && (
           <button
             onClick={() => setDirection((d) => (d === 'buy' ? 'sell' : 'buy'))}
@@ -285,6 +400,19 @@ export default function MobileRankingList({ onSelectSymbol }: MobileRankingListP
             }`}
           >
             신용가능만
+          </button>
+        )}
+        {/* 진입가능만 필터 - 데스크톱 1248~1263번 줄과 동일, 교집합 탭 전용 */}
+        {activeTab === 'overlap' && !showDropouts && (
+          <button
+            onClick={() => setEntryReadyOnly((v) => !v)}
+            title="이격도 배지가 '단기과열' 또는 '역배열'인 종목을 목록에서 제외합니다"
+            className={`flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-bold border transition ${
+              entryReadyOnly ? 'bg-emerald-600 text-white border-transparent' : 'bg-slate-50 dark:bg-[#131722] text-slate-400 border-slate-200 dark:border-[#2a2e39]'
+            }`}
+          >
+            <Filter className="w-3 h-3" />
+            진입가능만
           </button>
         )}
       </div>
@@ -427,14 +555,25 @@ export default function MobileRankingList({ onSelectSymbol }: MobileRankingListP
         <div className="py-10 text-center text-slate-400 text-xs">조건에 맞는 종목이 없습니다.</div>
       ) : (
         <div className="flex flex-col gap-2">
-          {list.map((item) => (
-            <RankingCard
-              key={item.symbol}
-              item={item}
-              activeTab={activeTab}
-              onClick={() => onSelectSymbol?.(item.symbol, item)}
-            />
-          ))}
+          {list.map((item) => {
+            const isExpanded = expandedSymbol === item.symbol;
+            return (
+              <React.Fragment key={item.symbol}>
+                <RankingCard
+                  item={item}
+                  activeTab={activeTab}
+                  overlapMode={overlapMode}
+                  isExpanded={isExpanded}
+                  onClick={() => setExpandedSymbol((prev) => (prev === item.symbol ? '' : item.symbol))}
+                />
+                {isExpanded && (
+                  <div className="pl-1 pr-0.5 -mt-1">
+                    <MobileStockDetailPanel symbol={item.symbol} />
+                  </div>
+                )}
+              </React.Fragment>
+            );
+          })}
         </div>
       )}
     </div>

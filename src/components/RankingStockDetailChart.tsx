@@ -8,7 +8,6 @@ import {
   Line,
   Bar,
   Cell,
-  Area,
   XAxis,
   YAxis,
   Tooltip,
@@ -16,15 +15,13 @@ import {
   ReferenceLine,
 } from 'recharts';
 import { InvestorTrendResponse, TrendPeriod } from '@/lib/types';
-import { getStockName, resolveStockPriceAndChange, findSplitSafeStartIndex, roundToKrxTick, computeRecentVolumeRatio } from '@/lib/mockData';
-import { TrendingUp, TrendingDown, Calendar, Activity, RefreshCw, AlertCircle, X } from 'lucide-react';
+import { findSplitSafeStartIndex, roundToKrxTick, computeRecentVolumeRatio } from '@/lib/mockData';
+import { Calendar, Activity, RefreshCw, AlertCircle, X } from 'lucide-react';
 import { useTheme } from '@/providers/ThemeProvider';
 import { PRICE_CHART_CONFIG, CandlestickBar, CustomCandleTooltip, getTrendBadgeInfo } from '@/components/chart/CandlestickPrimitives';
 
 interface RankingStockDetailChartProps {
   symbol: string;
-  rank?: number;
-  rankingTypeLabel?: string;
   data?: InvestorTrendResponse;
   isLoading?: boolean;
   period?: TrendPeriod;
@@ -122,8 +119,6 @@ const CustomDailyVolumeTooltip = ({ active, payload, label }: any) => {
 
 export default function RankingStockDetailChart({
   symbol,
-  rank,
-  rankingTypeLabel = '선택 종목',
   data: propData,
   isLoading: propIsLoading,
   period: propPeriod,
@@ -223,7 +218,6 @@ export default function RankingStockDetailChart({
   const gridColor = isDark ? '#334155' : '#cbd5e1';
   const axisColor = isDark ? '#94a3b8' : '#475569';
 
-  const stockInfo = data?.stockInfo;
   const trend = data?.trend || [];
 
   // Daily Trend Data with 5/20/60 MA and Cumulative Supply
@@ -372,7 +366,7 @@ function getKrxTickSize(price: number): number {
  * 2. 현재 뷰포트 최저/최고가 기준 상하단 위아래 2 * tickSize 타이트 여백만 추가
  * 3. 4~8개의 촘촘한 호가단위 정수배 눈금 산출 (상하단 낭비 공간 최소화)
  */
-function calculateUltraTightKrxPriceAxis(minRaw: number, maxRaw: number, targetTickCount = 6) {
+function calculateUltraTightKrxPriceAxis(minRaw: number, maxRaw: number) {
   if (!minRaw || !maxRaw || minRaw <= 0 || maxRaw <= 0) {
     return { minPrice: 0, maxPrice: 100, priceDomain: [0, 100] as [number, number], priceTicks: [0, 25, 50, 75, 100], tickStep: 25 };
   }
@@ -578,7 +572,7 @@ function calculateUltraTightKrxPriceAxis(minRaw: number, maxRaw: number, targetT
       return { minPrice: 0, maxPrice: 100, priceDomain: [0, 100] as any, priceTicks: [0, 25, 50, 75, 100] };
     }
 
-    return calculateUltraTightKrxPriceAxis(min, max, 6);
+    return calculateUltraTightKrxPriceAxis(min, max);
   }, [displayTrend, showDisparate, disparateInfo]);
 
   // 매물대(가격대별 누적 거래량) - 하루의 대표가(고가+저가+종가)/3에 그날 실거래량을 배정해
@@ -810,15 +804,6 @@ function findActiveSwingLow(candles: any[]): SwingLowPoint | null {
 
     return bins.map((b, i) => ({ ...b, ratio: b.volume / maxBinVolume, isPoc: i === pocIdx && b.volume > 0 }));
   }, [show3mVolumeProfile, candles3m, intraday3mPriceAxis]);
-
-  const latest = displayTrend[displayTrend.length - 1];
-
-  const priceInfo = resolveStockPriceAndChange(
-    symbol,
-    data?.stockInfo?.currentPrice || latest?.closePrice,
-    data?.stockInfo?.change || latest?.priceChange,
-    data?.stockInfo?.changeRate || latest?.changeRate
-  );
 
   const formatYPrice = (val: number) => {
     if (val >= 10000) return `${(val / 10000).toFixed(1)}만`;

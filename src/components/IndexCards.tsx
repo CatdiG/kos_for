@@ -2,7 +2,6 @@
 
 // 종목 검색 위에 표시되는 KOSPI/KOSDAQ 지수 요약 카드 2개. 클릭하면 IndexDetailChart가 열린다.
 
-import React from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { IndexTrendResponse } from '@/lib/types';
 import { TrendingUp, TrendingDown } from 'lucide-react';

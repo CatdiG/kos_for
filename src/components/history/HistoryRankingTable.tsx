@@ -1,14 +1,11 @@
 'use client';
 
 import React, { useState } from 'react';
-import { RankingItem, RankingType, RankingPeriod, MarketType } from '@/lib/types';
-import Link from 'next/link';
+import { RankingItem, RankingType } from '@/lib/types';
 
 interface HistoryRankingTableProps {
   items: RankingItem[];
   type: RankingType;
-  period: RankingPeriod;
-  market: MarketType;
   isLoading: boolean;
   selectedDate: string;
   onStockClick?: (symbol: string) => void;
@@ -19,8 +16,6 @@ interface HistoryRankingTableProps {
 export const HistoryRankingTable: React.FC<HistoryRankingTableProps> = ({
   items,
   type,
-  period,
-  market,
   isLoading,
   selectedDate,
   onStockClick,

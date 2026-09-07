@@ -2,7 +2,7 @@
 // 패턴을 따른다. 데스크톱 page.tsx/컴포넌트는 전혀 건드리지 않았다.
 'use client';
 
-import React, { useState } from 'react';
+import { useState } from 'react';
 import MobileHeader from '@/components/mobile/MobileHeader';
 import MobileIndexCards from '@/components/mobile/MobileIndexCards';
 import MobileIndexDetailChart from '@/components/mobile/MobileIndexDetailChart';
@@ -12,16 +12,6 @@ import MobileRankingList from '@/components/mobile/MobileRankingList';
 export default function MobileDashboardPage() {
   // 지수 카드 선택 상태 - 데스크톱 page.tsx의 selectedIndex와 동일한 패턴(수칙 1-6).
   const [selectedIndex, setSelectedIndex] = useState<'KOSPI' | 'KOSDAQ' | null>(null);
-  // 🚨 [버그 수정] 매매순위 리스트에서 종목을 눌러도 반응이 없던 문제 - symbol을 이 최상위 컴포넌트로
-  // 끌어올려(데스크톱 page.tsx의 symbol state와 동일 패턴, 수칙 1-6) 랭킹 리스트와 검색창을 연결한다.
-  const [rankingSelectedSymbol, setRankingSelectedSymbol] = useState('');
-
-  // 랭킹 카드를 탭하면 검색창에 종목을 강제로 연다. 자동 스크롤은 MobileStockSearch 내부에서 상세
-  // 데이터 로딩이 실제로 끝난 뒤에 실행한다(여기서 즉시 스크롤하면 아직 비어있는 상세 영역 기준으로
-  // 계산되어 위치가 어긋난다 - 실측으로 확인한 버그, MobileStockSearch.tsx 주석 참고).
-  const handleSelectFromRanking = (symbol: string) => {
-    setRankingSelectedSymbol(symbol);
-  };
 
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-[#0b0e14] flex flex-col font-sans text-slate-900 dark:text-[#e0e3eb] transition-colors duration-200">
@@ -35,11 +25,11 @@ export default function MobileDashboardPage() {
         {selectedIndex && (
           <MobileIndexDetailChart market={selectedIndex} onClose={() => setSelectedIndex(null)} />
         )}
-        <MobileStockSearch
-          externalSymbol={rankingSelectedSymbol}
-          onSymbolChange={setRankingSelectedSymbol}
-        />
-        <MobileRankingList onSelectSymbol={handleSelectFromRanking} />
+        {/* 검색으로 연 종목 상세는 이 검색창 바로 아래에 표시된다. 매매순위 리스트에서 종목을 탭했을 때는
+            (데스크톱 InvestorRankingTable.tsx와 동일하게) 그 카드 바로 아래에 별도로 펼쳐지므로 여기와
+            연결할 필요가 없다 - MobileRankingList.tsx가 자체적으로 처리한다. */}
+        <MobileStockSearch />
+        <MobileRankingList />
       </main>
 
       <footer className="border-t border-slate-200 dark:border-[#2a2e39] py-3 px-4 text-center text-[10px] text-slate-400 dark:text-slate-500">

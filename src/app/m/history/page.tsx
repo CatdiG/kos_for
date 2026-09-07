@@ -5,7 +5,7 @@
 // 100% 동일)이다.
 'use client';
 
-import React, { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import MobileHeader from '@/components/mobile/MobileHeader';
 import MobileHistoryRankingList from '@/components/mobile/MobileHistoryRankingList';
 import { RankingType, RankingPeriod, MarketType, RankingDirection, RankingItem } from '@/lib/types';

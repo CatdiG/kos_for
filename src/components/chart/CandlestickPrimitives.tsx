@@ -5,7 +5,6 @@
 // 종목 차트에서 그대로 옮겨온 코드이며, 종목/지수 어느 쪽이든 재사용 가능하도록 종목 전용 필드(수급 등)에는
 // 의존하지 않는다.
 
-import React from 'react';
 import { computeUnifiedStatusBadge } from '@/lib/mockData';
 
 export const PRICE_CHART_CONFIG = {
