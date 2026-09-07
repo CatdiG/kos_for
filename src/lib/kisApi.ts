@@ -443,7 +443,8 @@ export function getDynamicRankingTtl(): number {
 // 📈 [신규 독립 모듈] KOSPI/KOSDAQ 지수 일봉 차트 (현재지수 + 일자별 시세)
 // ============================================================================
 const indexTrendMemoryCache = new Map<string, { data: IndexTrendResponse; timestamp: number }>();
-const INDEX_TREND_CACHE_TTL_MS = 30 * 1000; // 30초 - 여러 사용자가 동시에 볼 수 있어 캐시 필요
+// 🚨 [버그 수정] 고정 30초 TTL 상수는 폐기 - 아래 fetchKisIndexDailyTrend에서 다른 랭킹과 동일하게
+// getDynamicRankingTtl()(장중 60초 / 장마감 후 익일 개장까지)을 쓴다.
 
 const INDEX_CODE_MAP: Record<'KOSPI' | 'KOSDAQ', { code: '0001' | '1001'; name: string }> = {
   KOSPI: { code: '0001', name: '코스피' },
@@ -468,8 +469,13 @@ export async function fetchKisIndexDailyTrend(
   // (최대 199일치)를 반환하므로(위 함수 주석 참고), period별로 캐시를 나누면 같은 데이터를 3배로
   // 중복 저장/재조회하게 된다 - summaryOnly가 아닐 때는 캐시 키를 period 무관 'full'로 통일한다.
   const cacheKey = summaryOnly ? `index-${code}-summary` : `index-${code}-full`;
+  // 🚨 [버그 수정 - 근본 원인] 캐시 TTL이 30초로 고정돼 있었다 - 외국인/기관/프로그램 등 다른 모든
+  // 랭킹이 이미 쓰는 동적 TTL(getDynamicRankingTtl: 장중 60초 / 장마감 후 익일 개장까지)과 정책이
+  // 달랐고, 그 결과 장중에도 30초마다, 장마감 후에도 30초마다 아래의 무거운 3연속 KIS 호출(현재가+
+  // 일봉 2페이지, 순차 실행 시 실측 14.6초)이 반복 실행됐다 - 정책을 통일한다.
+  const dynamicTtl = getDynamicRankingTtl();
   const cached = indexTrendMemoryCache.get(cacheKey);
-  if (cached && Date.now() - cached.timestamp < INDEX_TREND_CACHE_TTL_MS) {
+  if (cached && Date.now() - cached.timestamp < dynamicTtl) {
     return cached.data;
   }
 
@@ -479,6 +485,24 @@ export async function fetchKisIndexDailyTrend(
     throw new Error('[KIS API 인증 오류] .env.local에 KIS_APPKEY 또는 KIS_APPSECRET이 설정되지 않았습니다.');
   }
 
+  // 🚨 [버그 수정 - 근본 원인: 서버리스 인스턴스 간 캐시 불일치] 위 indexTrendMemoryCache는 프로세스
+  // 로컬이라 Vercel이 새 인스턴스로 요청을 라우팅하면 매번 비어있는 채로 시작해, 다른 인스턴스가 방금
+  // 끝낸 계산을 몰라보고 또 14초 넘는 3연속 호출을 반복한다(오늘 프로그램매매/당일교집합/2·3일연속
+  // 교집합에서 이미 고친 것과 동일한 계열의 버그, 수칙 1-6). summaryOnly(카드용, 호출 1회로 이미 가벼움)는
+  // 그대로 두고, 무거운 전체 히스토리 조회에만 공유 캐시를 추가한다. upsertSharedRankCache/
+  // fetchSharedRankCacheBatch는 RankingItem[] 저장용으로 만들어졌지만 list 컬럼은 범용 JSONB라 - 새
+  // 스키마 없이 응답 전체를 1개짜리 배열로 감싸 재사용한다(수칙 1-6).
+  if (!summaryOnly) {
+    const sharedMap = await fetchSharedRankCacheBatch([`full:${cacheKey}`], dynamicTtl).catch(() => new Map<string, any[]>());
+    const sharedWrapped = sharedMap.get(`full:${cacheKey}`);
+    if (sharedWrapped && sharedWrapped.length > 0) {
+      console.log(`[Shared Rank Cache Hit] full:${cacheKey} - 다른 인스턴스가 이미 계산해둔 지수 차트 데이터를 Supabase에서 재사용`);
+      const shared = sharedWrapped[0] as IndexTrendResponse;
+      indexTrendMemoryCache.set(cacheKey, { data: shared, timestamp: Date.now() });
+      return shared;
+    }
+  }
+
   const response = await kisQueue.enqueue(
     () => fetchWithRetry(() => executeKisIndexDailyTrendFetch(code, name, period, summaryOnly)),
     'HIGH',
@@ -486,6 +510,9 @@ export async function fetchKisIndexDailyTrend(
   );
 
   indexTrendMemoryCache.set(cacheKey, { data: response, timestamp: Date.now() });
+  if (!summaryOnly) {
+    upsertSharedRankCache(`full:${cacheKey}`, [response]).catch(() => {});
+  }
   return response;
 }
 
@@ -518,14 +545,22 @@ async function executeKisIndexDailyTrendFetch(
   // 1. 지수 현재가
   // 🚨 [버그 수정 - 근본 원인] 이 함수(executeKisIndexDailyTrendFetch)도 kisQueue.enqueue(HIGH 우선순위,
   // 473번 줄)로 감싸진다 - 타임아웃 없이 hang되면 동일하게 전체 큐가 마비된다(1211번 줄 참고).
-  const priceUrl = `${baseUrl}/uapi/domestic-stock/v1/quotations/inquire-index-price?FID_COND_MRKT_DIV_CODE=U&FID_INPUT_ISCD=${indexCode}`;
-  const priceRes = await fetch(priceUrl, { headers: buildHeaders('FHPUP02100000'), cache: 'no-store', signal: AbortSignal.timeout(8000) });
-  if (!priceRes.ok) throw new Error(`[KIS FHPUP02100000 HTTP ${priceRes.status}] ${indexName} 현재지수 조회 실패`);
-  const priceJson = await priceRes.json();
-  if (priceJson.rt_cd !== '0') throw new Error(`[KIS FHPUP02100000] ${priceJson.msg1 || '알 수 없는 오류'}`);
-  const p = priceJson.output || {};
-  const priceSign = p.prdy_vrss_sign || '3';
-  const priceChange = Number(p.bstp_nmix_prdy_vrss || 0) * (priceSign === '4' || priceSign === '5' ? -1 : 1);
+  // 🚨 [성능 수정 - 근본 원인] 원래 이 조회를 끝낸 뒤에야 아래 일봉 조회를 시작했다 - 서로 독립된
+  // 데이터인데 순차로 기다릴 이유가 없다. 함수로 분리해 아래(전체 히스토리 경로)에서 일봉 1페이지와
+  // Promise.all로 병렬 실행한다(실측: 순차 실행 시 차트 최초 로딩 14.6초로 "무한로딩"처럼 느껴진다는
+  // 사용자 지적 - 이 병렬화 하나로 최소 1회 왕복분을 절약한다).
+  const fetchPriceInfo = async (): Promise<any> => {
+    const priceUrl = `${baseUrl}/uapi/domestic-stock/v1/quotations/inquire-index-price?FID_COND_MRKT_DIV_CODE=U&FID_INPUT_ISCD=${indexCode}`;
+    const priceRes = await fetch(priceUrl, { headers: buildHeaders('FHPUP02100000'), cache: 'no-store', signal: AbortSignal.timeout(8000) });
+    if (!priceRes.ok) throw new Error(`[KIS FHPUP02100000 HTTP ${priceRes.status}] ${indexName} 현재지수 조회 실패`);
+    const priceJson = await priceRes.json();
+    if (priceJson.rt_cd !== '0') throw new Error(`[KIS FHPUP02100000] ${priceJson.msg1 || '알 수 없는 오류'}`);
+    return priceJson.output || {};
+  };
+  const buildPriceChange = (p: any): number => {
+    const priceSign = p.prdy_vrss_sign || '3';
+    return Number(p.bstp_nmix_prdy_vrss || 0) * (priceSign === '4' || priceSign === '5' ? -1 : 1);
+  };
 
   // 2. 지수 일자별(일봉) 시세 - KIS는 최신순(내림차순)으로 내려주므로 오름차순으로 뒤집는다
   // 🚨 [성능 수정] 코스피/코스닥 카드(요약용)는 현재가만 필요하고 일봉 배열은 안 쓰는데, 예전엔 카드
@@ -533,6 +568,8 @@ async function executeKisIndexDailyTrendFetch(
   // summaryOnly면 이 두 번째 KIS 호출 자체를 생략한다(카드 컴포넌트가 매 페이지 로드마다 부담하던 지수당
   // 2회 → 1회로 절반 감소, KOSPI+KOSDAQ 합쳐 4회 → 2회).
   if (summaryOnly) {
+    const p = await fetchPriceInfo();
+    const priceChange = buildPriceChange(p);
     return {
       indexInfo: {
         code: indexCode,
@@ -571,7 +608,10 @@ async function executeKisIndexDailyTrendFetch(
   };
 
   const todayStr = getKstTodayStr();
-  const page1 = await fetchDailyPage(todayStr); // 최신순, 최대 100건
+  // 지수현재가와 일봉 1페이지를 동시에 요청한다(위 fetchPriceInfo 분리 주석 참고) - 2페이지는 1페이지의
+  // 가장 오래된 날짜가 있어야 요청 가능하므로 그대로 순차 유지한다.
+  const [p, page1] = await Promise.all([fetchPriceInfo(), fetchDailyPage(todayStr)]); // page1: 최신순, 최대 100건
+  const priceChange = buildPriceChange(p);
   let combined = page1;
   if (page1.length > 0) {
     const oldestDate = page1[page1.length - 1].stck_bsop_date;
@@ -3320,7 +3360,17 @@ async function finalizeConsecutiveOverlapResult(
 
   if (masterData.list && masterData.list.length > 0) {
     consecutiveOverlapMemoryCache.set(cacheKey, { data: masterData, timestamp: Date.now() });
-    syncSharedRankCache(cacheKey, masterData.list);
+    // 🚨 [버그 수정 - 근본 원인] isPartial(우선순위 15종목 단계)일 때도 그대로 공유 캐시에 썼었다 - 다른
+    // 서버리스 인스턴스가 이 부분판(5종목 등)을 완전판으로 오인해 반환할 위험이 있었다. 완전판일 때만
+    // 인스턴스 간 공유 캐시에 올린다(당일교집합/프로그램매매와 동일 원칙, 수칙 1-6).
+    if (!isPartial) {
+      // syncSharedRankCache: 뱃지 요약 전용 경량 캐시(symbol/rank/statusBadge 등 일부 필드만) -
+      // getStockBadgeSummary가 계속 쓰므로 그대로 유지한다.
+      syncSharedRankCache(cacheKey, masterData.list);
+      // 완전한 RankingItem 전체(트림 없음)는 별도의 cache_key('full:' 접두사)에 따로 저장한다 - 뱃지
+      // 요약 캐시와 절대 충돌하지 않는다(같은 shared_rank_cache 테이블 재사용, 새 스키마 불필요).
+      upsertSharedRankCache(`full:${cacheKey}`, masterData.list).catch(() => {});
+    }
   }
 
   return masterData;
@@ -3358,6 +3408,36 @@ export async function fetchConsecutiveNDaysOverlapRankingData(
   // 돌려준다 - 완전판이 끝나면 그 백그라운드 작업이 알아서 캐시를 갱신한다.
   if (consecutiveOverlapBackgroundInFlight.get(cacheKey) && cached) {
     return cached.data;
+  }
+
+  // 🚨 [버그 수정 - 근본 원인: 서버리스 인스턴스 간 캐시 불일치] 이 인메모리 캐시(consecutiveOverlapMemoryCache)는
+  // 프로세스 로컬이라, Vercel이 새 서버리스 인스턴스로 요청을 라우팅하면 완전히 비어있는 채로 시작한다 -
+  // 다른 인스턴스가 이미 백그라운드로 완전판(우선순위 15종목 + 나머지 후보 전부)을 다 계산해놔도 그 사실을
+  // 전혀 모르고 처음부터 다시 우선순위 15종목짜리 부분판(isPartial:true)을 계산한다(실측: 사용자가
+  // 프로덕션에서 "2일연속 5종목"만 반복해서 봄 - 로컬 단일 프로세스로 재현하니 실제 완전판은 23종목이었고,
+  // 매 프로덕션 요청마다 updatedAt이 달라져 매번 처음부터 재계산되고 있었음을 확인). 라이브 계산을 시작하기
+  // 전에, 다른 인스턴스가 이미 Supabase에 올려둔 완전판이 있는지 먼저 확인한다(당일교집합/프로그램매매와
+  // 동일 패턴, 수칙 1-6).
+  // maxAgeMs: 이 컴포넌트는 당일교집합/프로그램매매(다음 영업일까지 사실상 영구)와 달리 자체 로컬 TTL이
+  // CONSECUTIVE_OVERLAP_CACHE_TTL_MS(180초)로 짧게 설계돼 있다 - 이탈 종목 추적(watch)이 몇 분 단위로
+  // 갱신돼야 하기 때문. 공유 캐시도 이 설계 의도를 깨지 않도록 동일하게 180초까지만 신선하다고 인정한다
+  // (24시간처럼 길게 잡으면 장중 몇 시간 전 스냅샷을 "지금 값"인 것처럼 돌려주는 새로운 회귀를 만들게 된다).
+  if (!cached) {
+    const sharedMap = await fetchSharedRankCacheBatch([`full:${cacheKey}`], CONSECUTIVE_OVERLAP_CACHE_TTL_MS).catch(() => new Map<string, any[]>());
+    const sharedList = sharedMap.get(`full:${cacheKey}`);
+    if (sharedList && sharedList.length > 0) {
+      console.log(`[Shared Rank Cache Hit] full:${cacheKey} - 다른 인스턴스가 이미 계산해둔 ${targetDays}일연속 교집합 완전판을 Supabase에서 재사용`);
+      const hydrated: InvestorRankingResponse = {
+        type: 'overlap',
+        direction,
+        period: `consecutive${targetDays}d` as any,
+        list: sharedList,
+        updatedAt: new Date().toISOString(),
+        isPartial: false,
+      };
+      consecutiveOverlapMemoryCache.set(cacheKey, { data: hydrated, timestamp: Date.now() });
+      return hydrated;
+    }
   }
 
   const isBuy = direction === 'buy';
