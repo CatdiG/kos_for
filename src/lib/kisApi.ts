@@ -811,65 +811,23 @@ async function executeKisInvestorTrendFetch(
   const url = `${baseUrl}/uapi/domestic-stock/v1/quotations/inquire-investor?FID_COND_MRKT_DIV_CODE=J&FID_INPUT_ISCD=${symbol}`;
   const dailyChartUrl = `${baseUrl}/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice?FID_COND_MRKT_DIV_CODE=J&FID_INPUT_ISCD=${symbol}&FID_INPUT_DATE_1=${startDate}&FID_INPUT_DATE_2=${endDate}&FID_PERIOD_DIV_CODE=D&FID_ORG_ADJ_PRC=0`;
 
-  const json = await fetchWithRetry(async () => {
-    await enforceRateLimit();
-    // 🚨 [버그 수정 - 근본 원인] 이 함수(executeKisInvestorTrendFetch)는 fetchKisInvestorTrend가
-    // kisQueue.enqueue()로 감싸는 핵심 함수다(625번 줄) - 타임아웃 없이 fetch가 hang되면 kisQueue 전체가
-    // 영구히 마비된다(1211번 줄 fetchKisProgramTrade와 동일한 근본 원인, 실측으로 확인됨). 다른 곳과
-    // 동일하게 8초 타임아웃을 추가한다.
-    const res = await fetch(url, {
-      method: 'GET',
-      headers: {
-        'content-type': 'application/json; charset=utf-8',
-        authorization: `Bearer ${token}`,
-        appkey: appKey,
-        appsecret: appSecret,
-        tr_id: 'FHKST01010900',
-        custtype: 'P',
-      },
-      cache: 'no-store',
-      signal: AbortSignal.timeout(8000),
-    });
-
-    const text = await res.text();
-    let parsed: any;
-    try {
-      parsed = JSON.parse(text);
-    } catch {
-      throw new Error(`[KIS API Format Error] ${text}`);
-    }
-
-    if (parsed.msg_cd === 'EGW00201' || parsed.msg_cd === 'EGW00202' || parsed.msg_cd === 'EGW00133' || parsed.msg1?.includes('초당') || parsed.msg1?.includes('초과')) {
-      throw new Error(`[KIS Rate Limit] ${parsed.msg1 || 'EGW00201'}`);
-    }
-
-    if (!res.ok || parsed.rt_cd !== '0' || !Array.isArray(parsed.output)) {
-      throw new Error(`[KIS API 응답 오류] ${parsed.msg1 || '응답 데이터 포맷 불일치'}`);
-    }
-
-    return parsed;
-  }, 4, 800);
-
-  const investorMap = new Map<string, any>();
-  if (Array.isArray(json.output)) {
-    json.output.forEach((item: any) => {
-      const date = item.stck_bsop_date || item.bsop_date;
-      if (date) investorMap.set(date, item);
-    });
-  }
-
-  let dpJson: any = null;
-  try {
-    dpJson = await fetchWithRetry(async () => {
+  // 🚨 [성능 개선 - 종목 검색이 3분봉보다 느린 이유] investor(수급) 조회와 daily(일봉) 1페이지 조회는
+  // 서로의 결과에 전혀 의존하지 않는 완전히 독립적인 KIS 호출인데, 지금까지 순차(await 순서대로)로
+  // 실행하고 있었다 - 3분봉은 14개 슬롯을 Promise.all로 동시에 쏘는데(그래서 병목이 "가장 느린 1개"),
+  // 종목 검색은 이 둘을 하나씩 기다리니 병목이 "둘의 합"이었다. 진단으로 KIS 자체는 동시 요청에 문제
+  // 없음을 이미 확인했으므로(kisQueue 제거 커밋 참고), 안전하게 병렬화한다 - 각각 이미 자체적으로
+  // fetchWithRetry(4회 재시도)+8초 타임아웃을 갖고 있어 병렬로 묶어도 에러 처리는 그대로 독립적이다.
+  const [json, dpJson] = await Promise.all([
+    fetchWithRetry(async () => {
       await enforceRateLimit();
-      const res = await fetch(dailyChartUrl, {
+      const res = await fetch(url, {
         method: 'GET',
         headers: {
           'content-type': 'application/json; charset=utf-8',
           authorization: `Bearer ${token}`,
           appkey: appKey,
           appsecret: appSecret,
-          tr_id: 'FHKST03010100',
+          tr_id: 'FHKST01010900',
           custtype: 'P',
         },
         cache: 'no-store',
@@ -888,14 +846,62 @@ async function executeKisInvestorTrendFetch(
         throw new Error(`[KIS Rate Limit] ${parsed.msg1 || 'EGW00201'}`);
       }
 
-      if (!res.ok || parsed.rt_cd !== '0' || !Array.isArray(parsed.output2)) {
-        throw new Error(`[KIS API Chart Error] ${parsed.msg1 || '차트 데이터 오류'}`);
+      if (!res.ok || parsed.rt_cd !== '0' || !Array.isArray(parsed.output)) {
+        throw new Error(`[KIS API 응답 오류] ${parsed.msg1 || '응답 데이터 포맷 불일치'}`);
       }
 
       return parsed;
-    }, 4, 800);
-  } catch (e) {
-    dpJson = null;
+    }, 4, 800),
+    (async () => {
+      try {
+        return await fetchWithRetry(async () => {
+          await enforceRateLimit();
+          const res = await fetch(dailyChartUrl, {
+            method: 'GET',
+            headers: {
+              'content-type': 'application/json; charset=utf-8',
+              authorization: `Bearer ${token}`,
+              appkey: appKey,
+              appsecret: appSecret,
+              tr_id: 'FHKST03010100',
+              custtype: 'P',
+            },
+            cache: 'no-store',
+            signal: AbortSignal.timeout(8000),
+          });
+
+          const text = await res.text();
+          let parsed: any;
+          try {
+            parsed = JSON.parse(text);
+          } catch {
+            throw new Error(`[KIS API Format Error] ${text}`);
+          }
+
+          if (parsed.msg_cd === 'EGW00201' || parsed.msg_cd === 'EGW00202' || parsed.msg_cd === 'EGW00133' || parsed.msg1?.includes('초당') || parsed.msg1?.includes('초과')) {
+            throw new Error(`[KIS Rate Limit] ${parsed.msg1 || 'EGW00201'}`);
+          }
+
+          if (!res.ok || parsed.rt_cd !== '0' || !Array.isArray(parsed.output2)) {
+            throw new Error(`[KIS API Chart Error] ${parsed.msg1 || '차트 데이터 오류'}`);
+          }
+
+          return parsed;
+        }, 4, 800);
+      } catch (e) {
+        // 원래 동작과 동일: daily 조회가 끝내 실패해도 investor 조회(json)는 별개로 성공할 수 있으므로
+        // 여기서만 null로 흡수하고, 아래 fullDailyItems 폴백(json.output 재사용) 경로로 넘긴다.
+        return null;
+      }
+    })(),
+  ]);
+
+  const investorMap = new Map<string, any>();
+  if (Array.isArray(json.output)) {
+    json.output.forEach((item: any) => {
+      const date = item.stck_bsop_date || item.bsop_date;
+      if (date) investorMap.set(date, item);
+    });
   }
 
   let fullDailyItems: any[] = [];
