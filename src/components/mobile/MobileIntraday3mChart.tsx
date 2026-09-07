@@ -93,11 +93,11 @@ function isMarketOpenNowKst(): boolean {
   return day >= 1 && day <= 5 && timeNum >= 900 && timeNum < 1530;
 }
 
-// 🚨 [되돌림] 한때 MobileStockDetailChart.tsx가 일간 탭이 열리자마자 이 함수로 prefetchQuery를 걸어
-// 3분봉을 미리 당겨오게 했었는데, 프로덕션에서 하루치 3분봉 전체를 조회하는 무거운 백엔드 함수가 종목
-// 상세를 열 때마다 자동 호출되며 KIS 실시간 조회 큐가 밀려 응답 자체가 안 오는 회귀를 유발해서 되돌렸다
-// (사용자 판단). export는 프리페치 호출부가 없어졌으므로 다시 로컬 함수로 되돌린다.
-async function fetchIntraday3m(symbol: string): Promise<IntradayChartResponse> {
+// 🚨 [재도입] MobileStockDetailChart.tsx가 일간 탭이 열리자마자 이 함수로 prefetchQuery를 걸어 3분봉을
+// 백그라운드에서 미리 당겨둔다. 한 번 껐다가(fetchKis3mCandlesFullDay의 kisQueue 미사용 결함으로 인한
+// 프로덕션 회귀) 그 결함을 근본 수정한 뒤 다시 켰다 - queryKey(['m-intraday3m', symbol])를 여기
+// useQuery와 반드시 동일하게 맞춰야 캐시가 재사용된다.
+export async function fetchIntraday3m(symbol: string): Promise<IntradayChartResponse> {
   const res = await fetch(`/api/stock/intraday-chart?symbol=${symbol}&timeUnit=3m&t=${Date.now()}`);
   if (!res.ok) throw new Error('3분봉 데이터를 불러오는데 실패했습니다.');
   return res.json();

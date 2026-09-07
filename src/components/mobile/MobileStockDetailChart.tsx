@@ -8,7 +8,8 @@
 // 와 거래량 비율(computeRecentVolumeRatio)·KRX 호가단위 반올림(roundToKrxTick)은 RankingStockDetailChart.tsx가
 // 쓰는 mockData.ts의 기존 함수를 그대로 재사용한다 - 새 계산 로직을 만들지 않는다.
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import {
   ResponsiveContainer,
   ComposedChart,
@@ -26,7 +27,7 @@ import { useTheme } from '@/providers/ThemeProvider';
 import { PRICE_CHART_CONFIG, CandlestickBar, CustomCandleTooltip, getTrendBadgeInfo } from '@/components/chart/CandlestickPrimitives';
 import { findSplitSafeStartIndex, roundToKrxTick, computeRecentVolumeRatio } from '@/lib/mockData';
 import { ShieldCheck, ShieldOff } from 'lucide-react';
-import MobileIntraday3mChart from './MobileIntraday3mChart';
+import MobileIntraday3mChart, { fetchIntraday3m } from './MobileIntraday3mChart';
 
 interface MobileStockDetailChartProps {
   trend: InvestorTrendDay[];
@@ -72,11 +73,22 @@ export default function MobileStockDetailChart({ trend, stockInfo, isLoading }: 
   const [showVolumeProfile, setShowVolumeProfile] = useState(true);
   const [showDisparate, setShowDisparate] = useState(false);
 
-  // 🚨 [되돌림] 일간 차트가 열리는 즉시 3분봉을 prefetchQuery로 미리 당겨오게 했다가, 프로덕션에서
-  // 하루치 3분봉 전체를 조회하는 무거운 함수(fetchKis3mCandlesFullDay)가 종목 상세를 열 때마다 자동
-  // 호출되면서 여러 종목이 겹쳐 KIS 실시간 조회 큐가 밀려 응답 자체가 안 오는 회귀를 유발했다(실측: curl
-  // 30초+ 타임아웃). 사용자 판단으로 원래대로(3분봉 탭을 실제로 눌러야 MobileIntraday3mChart가 마운트되며
-  // 그때부터 조회) 되돌린다.
+  // 🚨 [재도입] 한 번 prefetch를 추가했다가, fetchKis3mCandlesFullDay가 14개 슬롯을 kisQueue 없이
+  // 완전 병렬 호출하던 근본 결함 때문에 프로덕션 회귀가 나서 되돌렸었다. 이제 그 함수 자체를 kisQueue
+  // 직렬화 + 8초 타임아웃으로 고쳤고(kisApi.ts:4531), investor-trend 페이지네이션의 동일 계열 타임아웃
+  // 누락도 고쳤다(kisApi.ts:908) - 여러 종목을 빠르게 연달아 열어도 hang 없이 안정적임을 재현 테스트로
+  // 확인한 뒤 다시 켠다. 무거운 3분봉 차트 컴포넌트를 이중 마운트하지 않고 데이터만 prefetchQuery로
+  // 미리 당겨두며, MobileIntraday3mChart의 useQuery와 동일한 queryKey를 써서 나중에 탭을 누르면 이미
+  // 채워진 캐시를 그대로 재사용한다.
+  const queryClient = useQueryClient();
+  useEffect(() => {
+    if (!stockInfo?.symbol) return;
+    queryClient.prefetchQuery({
+      queryKey: ['m-intraday3m', stockInfo.symbol],
+      queryFn: () => fetchIntraday3m(stockInfo.symbol),
+      staleTime: 30 * 1000,
+    });
+  }, [stockInfo?.symbol, queryClient]);
 
   const rawTrend = trend || [];
 

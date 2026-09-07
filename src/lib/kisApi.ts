@@ -904,6 +904,12 @@ async function executeKisInvestorTrendFetch(
 
       const pUrl = `${baseUrl}/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice?FID_COND_MRKT_DIV_CODE=J&FID_INPUT_ISCD=${symbol}&FID_INPUT_DATE_1=${pStartDate}&FID_INPUT_DATE_2=${pEndDate}&FID_PERIOD_DIV_CODE=D&FID_ORG_ADJ_PRC=0`;
 
+      // 🚨 [버그 수정 - 근본 원인] 3분봉(fetchKis3mCandlesFullDay)에서 발견한 것과 동일한 패턴 - 이
+      // 페이지네이션 루프의 fetch 2곳(원본 요청 + 레이트리밋 재시도)엔 타임아웃이 전혀 없었다. 이
+      // executeKisInvestorTrendFetch 함수 전체가 kisQueue.enqueue()로 감싸져 있어서(683번 줄), 여기서
+      // KIS 응답이 지연되면 함수가 안 끝나고 kisQueue 전체를 점유해 다른 모든 요청(다른 종목 검색,
+      // 랭킹 조회 등)까지 줄줄이 밀린다(실측: symbol=009540&period=60d가 40초+ 응답 없음, curl status=000).
+      // 이 함수 안의 다른 두 fetch(802/847번 줄)와 동일하게 8초 타임아웃을 추가한다.
       await new Promise((r) => setTimeout(r, 250));
       let pRes = await fetch(pUrl, {
         method: 'GET',
@@ -916,6 +922,7 @@ async function executeKisInvestorTrendFetch(
           custtype: 'P',
         },
         cache: 'no-store',
+        signal: AbortSignal.timeout(8000),
       }).catch(() => null);
 
       if (pRes && pRes.ok) {
@@ -933,6 +940,7 @@ async function executeKisInvestorTrendFetch(
               custtype: 'P',
             },
             cache: 'no-store',
+            signal: AbortSignal.timeout(8000),
           }).catch(() => null);
           if (retryRes && retryRes.ok) pJson = await retryRes.json().catch(() => null);
         }
