@@ -2139,7 +2139,13 @@ async function enrichRankingWithRawInvestorData(
 
     // 하드코딩 개수 제한 없이 list 전체 동적 전수 조회 (30개, 50개, N개 모두 적용)
     const targetItems = list;
-    const CHUNK_SIZE = 5;
+    // 🚨 [버그 수정 - 오늘 3분봉/종목검색과 동일 계열] 이 fetch에 타임아웃이 전혀 없었다 - 이 함수는
+    // !isMarketOpen(장마감)일 때 외국인/기관/단타종합 랭킹 요청마다 항상 실행되는데, 청크 하나라도
+    // KIS 응답이 지연되면 그 Promise.all이 안 끝나 함수 전체가 hang될 위험이 있었다(오늘 고친 다른
+    // 두 사례와 동일 원인). 8초 타임아웃을 추가하고, KIS가 동시 요청에 문제없음을 실측으로 확인했으므로
+    // (kisQueue 제거 커밋 참고) 청크 크기를 5→10으로 늘려 50종목 기준 청크 수를 10개→5개로 줄인다
+    // (실측: 외국인 랭킹 콜드 9.27초 → 청크 절반으로 대략 그 절반 수준 기대).
+    const CHUNK_SIZE = 10;
 
     for (let i = 0; i < targetItems.length; i += CHUNK_SIZE) {
       const chunk = targetItems.slice(i, i + CHUNK_SIZE);
@@ -2161,6 +2167,7 @@ async function enrichRankingWithRawInvestorData(
                   custtype: 'P',
                 },
                 cache: 'no-store',
+                signal: AbortSignal.timeout(8000),
               });
 
               if (!res.ok) {
