@@ -18,13 +18,12 @@ import {
   Cell,
   XAxis,
   YAxis,
-  Tooltip,
   CartesianGrid,
   ReferenceLine,
 } from 'recharts';
 import { IntradayChartResponse } from '@/lib/types';
 import { useTheme } from '@/providers/ThemeProvider';
-import { PRICE_CHART_CONFIG, CandlestickBar, CustomCandleTooltip } from '@/components/chart/CandlestickPrimitives';
+import { PRICE_CHART_CONFIG, CandlestickBar } from '@/components/chart/CandlestickPrimitives';
 import MobileLoadingSpinner from './MobileLoadingSpinner';
 
 // 🚨 [버그 수정] 사용자 지적("3분봉이 너무 좁아서 겹쳐보여", "피봇/단기지지선 정보가 다 없어졌다") 실측 확인:
@@ -38,7 +37,7 @@ import MobileLoadingSpinner from './MobileLoadingSpinner';
 const PRICE_CHART_HEIGHT = 208;
 const PRICE_TOP_PADDING = 10;
 const PRICE_PLOT_HEIGHT = PRICE_CHART_HEIGHT - PRICE_TOP_PADDING;
-const MIN_CANDLE_PX = 5; // 캔들 1개당 최소 폭(몸통+꼬리가 구분되는 최소치, 실측 기반)
+const MIN_CANDLE_PX = 8; // 캔들 1개당 최소 폭 - 사용자 요청으로 5→8 확대(어차피 가로 스크롤하니 더 크게 봐도 됨)
 
 interface MobileIntraday3mChartProps {
   symbol: string;
@@ -130,6 +129,24 @@ export default function MobileIntraday3mChart({ symbol }: MobileIntraday3mChartP
   const [showPivot, setShowPivot] = useState(true);
   const [showFibo, setShowFibo] = useState(true);
   const [showVolumeProfile, setShowVolumeProfile] = useState(true);
+
+  // 🚨 [사용자 요청] Recharts 기본 Tooltip은 마우스 이동/이탈 기준으로 뜨고 닫히는데, 모바일 터치엔
+  // "벗어남" 이벤트가 없어서 한 번 탭하면 안 닫히고 차트를 계속 가렸다("팝업 뜨면 차트를 볼 수 없다").
+  // Recharts에 맡기지 않고 직접 상태로 관리한다 - 캔들 탭 → 그 캔들 정보를 차트 밖 고정 바에 표시,
+  // 차트 컴포넌트 바깥을 탭 → 무조건 닫힘(기본 상태로 복귀). 팝업이 차트 위에 뜨는 게 아니라 항상
+  // 차트 밖 같은 자리에 표시되므로 애초에 캔들을 가릴 일이 없다.
+  const [selectedCandle, setSelectedCandle] = useState<any | null>(null);
+  const containerRef = React.useRef<HTMLDivElement>(null);
+
+  React.useEffect(() => {
+    const handleOutsideTap = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setSelectedCandle(null);
+      }
+    };
+    document.addEventListener('click', handleOutsideTap);
+    return () => document.removeEventListener('click', handleOutsideTap);
+  }, []);
 
   const isMarketOpen = React.useMemo(() => isMarketOpenNowKst(), []);
 
@@ -233,7 +250,7 @@ export default function MobileIntraday3mChart({ symbol }: MobileIntraday3mChartP
   }
 
   return (
-    <div>
+    <div ref={containerRef}>
       {data?.statusNotice && (
         <div className="mb-2 px-2 py-1 rounded-md bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20 text-[10px]">
           {data.statusNotice}
@@ -321,18 +338,65 @@ export default function MobileIntraday3mChart({ symbol }: MobileIntraday3mChartP
         </div>
       )}
 
+      {/* 🚨 [사용자 요청] 캔들 탭 정보를 차트 위에 뜨는 팝업이 아니라 차트 "밖" 고정 자리에 표시한다 -
+          그래서 정보가 떠 있어도 캔들이 하나도 안 가려진다. 탭 안 했을 때는 가장 최근(맨 오른쪽) 캔들
+          기준으로 기본 표시, 캔들을 탭하면 그 캔들 값으로 바뀌고, 차트 컴포넌트 바깥을 탭하면(위
+          useEffect의 document 리스너) 다시 최근 캔들 기준으로 돌아온다. */}
+      {(() => {
+        const info = selectedCandle || candles[candles.length - 1];
+        if (!info) return null;
+        const openPrice = info.openPrice ?? info.closePrice;
+        const highPrice = info.highPrice ?? info.closePrice;
+        const lowPrice = info.lowPrice ?? info.closePrice;
+        const closePrice = info.closePrice;
+        const isUp = closePrice >= openPrice;
+        const rate = openPrice > 0 ? ((closePrice - openPrice) / openPrice) * 100 : 0;
+        return (
+          <div className="flex items-center justify-between gap-1 px-2 py-1.5 mb-2 rounded-lg bg-slate-50 dark:bg-[#131722] border border-slate-200 dark:border-[#2a2e39] text-[10px] font-mono">
+            <span className="font-bold text-slate-500 dark:text-slate-400 shrink-0">
+              {selectedCandle ? info.time : `최근(${info.time})`}
+            </span>
+            <span className="text-slate-400">시 <b className="text-slate-700 dark:text-slate-200">{Math.round(openPrice).toLocaleString()}</b></span>
+            <span className="text-red-500">고 <b>{Math.round(highPrice).toLocaleString()}</b></span>
+            <span className="text-blue-500">저 <b>{Math.round(lowPrice).toLocaleString()}</b></span>
+            <span className="text-slate-400">종 <b className="text-slate-900 dark:text-white">{Math.round(closePrice).toLocaleString()}</b></span>
+            <span className={isUp ? 'text-red-500 font-bold' : 'text-blue-500 font-bold'}>{isUp ? '+' : ''}{rate.toFixed(2)}%</span>
+          </div>
+        );
+      })()}
+
       {/* 캔들스틱 + 매물대 오버레이 + 거래량 - 전부 하나의 가로 스크롤 영역 안에서 같은 폭(chartWidth)을
           공유해야 캔들/매물대/거래량 막대가 스크롤해도 서로 어긋나지 않는다. 세로 스크롤은 페이지가,
           가로 스크롤은 이 영역만 담당(overflow-x-auto)해서 서로 충돌하지 않는다. */}
-      <div ref={scrollRef} className="overflow-x-auto">
+      {/* 🚨 [사용자 요청] "가로 스크롤하면 y축 가격도 같이 스크롤돼서 얼마인지 안 보인다" - 캔들 영역만
+          overflow-x-auto로 스크롤시키고, 가격 눈금은 그 왼쪽에 완전히 별도의(스크롤 안 되는) 고정
+          컬럼으로 뺀다. 내부 Recharts YAxis는 폭(52px)만 그대로 유지한 채 눈금 렌더링만 끄고(레이아웃/
+          CandlestickBar·매물대 오버레이의 기존 좌표 계산은 전혀 안 건드림), 화면에 보이는 실제 숫자는
+          이 고정 컬럼의 순수 HTML 라벨이 담당 - 스크롤과 무관하게 항상 왼쪽에 그대로 보인다. */}
+      <div className="flex">
+      <div className="shrink-0 relative" style={{ width: 52, height: PRICE_CHART_HEIGHT }}>
+        {priceTicks.map((t) => (
+          <div
+            key={`fixed-ytick-${t}`}
+            className="absolute text-[9px] font-mono"
+            style={{ top: PRICE_TOP_PADDING + (1 - (t - minPrice) / (maxPrice - minPrice)) * PRICE_PLOT_HEIGHT - 6, left: 2, color: axisColor }}
+          >
+            {formatYPrice(t)}
+          </div>
+        ))}
+      </div>
+      <div ref={scrollRef} className="overflow-x-auto flex-1 min-w-0">
       <div style={{ width: chartWidth }}>
       <div className="relative">
       <ResponsiveContainer width="100%" height={PRICE_CHART_HEIGHT}>
-        <ComposedChart data={candles} margin={{ top: PRICE_TOP_PADDING, right: 10, left: -10, bottom: 0 }}>
+        <ComposedChart
+          data={candles}
+          margin={{ top: PRICE_TOP_PADDING, right: 10, left: -10, bottom: 0 }}
+        >
           <CartesianGrid strokeDasharray="3 3" stroke={gridColor} opacity={0.7} />
           <XAxis dataKey="time" hide={true} />
-          <YAxis stroke={axisColor} tickFormatter={formatYPrice} tick={{ fontSize: 9 }} width={52} domain={priceDomain} ticks={priceTicks} allowDataOverflow={true} />
-          <Tooltip content={<CustomCandleTooltip />} cursor={{ stroke: '#94a3b8', strokeWidth: 1, strokeDasharray: '3 3' }} />
+          <YAxis stroke={axisColor} tick={false} axisLine={false} tickLine={false} width={52} domain={priceDomain} ticks={priceTicks} allowDataOverflow={true} />
+          {selectedCandle && <ReferenceLine x={selectedCandle.time} stroke="#94a3b8" strokeWidth={1} strokeDasharray="3 3" />}
           <Bar dataKey="closePrice" name="캔들스틱" shape={(props: any) => <CandlestickBar {...props} minPrice={minPrice} maxPrice={maxPrice} topPadding={PRICE_TOP_PADDING} plotHeight={PRICE_PLOT_HEIGHT} />} isAnimationActive={false} />
           {showMA5 && <Line type="monotone" dataKey="ma5" stroke="#f97316" strokeDasharray="3 3" strokeWidth={1} dot={false} isAnimationActive={false} name="5선" />}
           {showMA20 && <Line type="monotone" dataKey="ma20" stroke="#eab308" strokeDasharray="3 3" strokeWidth={2} dot={false} isAnimationActive={false} name="20선" />}
@@ -375,6 +439,23 @@ export default function MobileIntraday3mChart({ symbol }: MobileIntraday3mChartP
         </ComposedChart>
       </ResponsiveContainer>
 
+      {/* 🚨 [버그 수정] Recharts 3.x는 onClick 콜백 시그니처가 (activePayload 등을 넘겨주던 2.x와 달리)
+          activeIndex/activeCoordinate 중심의 완전히 다른 내부 Redux 이벤트 체계로 바뀌었는데, 실제
+          브라우저 터치/클릭으로 이 프로젝트에서 재현 테스트해보니 신뢰도 있게 안 뜨는 경우가 있었다
+          (node_modules/recharts/es6/chart/RechartsWrapper.js 실사용 코드로 확인). Recharts 내부에
+          기대지 않고, 캔들 영역 위에 순수 HTML 오버레이를 얹어 탭 위치→캔들 인덱스를 직접 계산한다 -
+          일반 DOM 클릭이라 확실하게 동작한다. */}
+      <div
+        className="absolute left-[52px] right-[10px] top-0 bottom-0 cursor-pointer"
+        onClick={(e) => {
+          const rect = e.currentTarget.getBoundingClientRect();
+          const relX = e.clientX - rect.left;
+          const idx = Math.round((relX / rect.width) * (candles.length - 1));
+          const clamped = Math.max(0, Math.min(candles.length - 1, idx));
+          if (candles[clamped]) setSelectedCandle(candles[clamped]);
+        }}
+      />
+
       {/* 매물대 반투명 오버레이 - 일간 차트(MobileStockDetailChart.tsx)와 동일 패턴 */}
       {showVolumeProfile && volumeProfileBins.length > 0 && (
         <div className="absolute left-[52px] right-[10px] top-2 bottom-0 pointer-events-none">
@@ -398,10 +479,13 @@ export default function MobileIntraday3mChart({ symbol }: MobileIntraday3mChartP
       {/* 거래량 - 캔들 차트와 동일한 chartWidth 컨테이너 안에 있어야 가로 스크롤 시 x축이 어긋나지 않는다 */}
       <div className="mt-1">
         <ResponsiveContainer width="100%" height={70}>
-          <ComposedChart data={candles} margin={{ top: 5, right: 10, left: -10, bottom: 0 }}>
+          <ComposedChart
+            data={candles}
+            margin={{ top: 5, right: 10, left: -10, bottom: 0 }}
+          >
             <XAxis dataKey="time" stroke={axisColor} tick={{ fontSize: 8 }} interval="preserveStartEnd" />
             <YAxis stroke={axisColor} tickFormatter={formatYVol} tick={{ fontSize: 8 }} width={52} />
-            <Tooltip formatter={(v: any) => [Number(v).toLocaleString(), '거래량']} contentStyle={{ fontSize: 11, borderRadius: 8 }} />
+            {selectedCandle && <ReferenceLine x={selectedCandle.time} stroke="#94a3b8" strokeWidth={1} strokeDasharray="3 3" />}
             <Bar dataKey="volume" name="거래량" radius={[2, 2, 0, 0]}>
               {candles.map((c, i) => (
                 <Cell key={`vol3m-${i}`} fill={c.closePrice >= (c.openPrice ?? c.closePrice) ? '#ef4444' : '#3b82f6'} fillOpacity={0.6} />
@@ -409,6 +493,7 @@ export default function MobileIntraday3mChart({ symbol }: MobileIntraday3mChartP
             </Bar>
           </ComposedChart>
         </ResponsiveContainer>
+      </div>
       </div>
       </div>
       </div>
