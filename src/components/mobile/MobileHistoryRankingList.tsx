@@ -8,6 +8,7 @@
 import { useState } from 'react';
 import { Search } from 'lucide-react';
 import { RankingItem, RankingType } from '@/lib/types';
+import MobileLoadingSpinner from './MobileLoadingSpinner';
 
 interface MobileHistoryRankingListProps {
   items: RankingItem[];
@@ -91,7 +92,7 @@ export default function MobileHistoryRankingList({ items, type, isLoading, selec
       </div>
 
       {isLoading ? (
-        <div className="py-10 text-center text-slate-400 text-xs">과거 확정 데이터를 불러오는 중입니다...</div>
+        <MobileLoadingSpinner label="과거 확정 데이터를 불러오는 중입니다..." />
       ) : filtered.length === 0 ? (
         <div className="py-10 text-center text-slate-400 text-xs">해당 날짜({selectedDate})의 확정 데이터가 없습니다.</div>
       ) : (

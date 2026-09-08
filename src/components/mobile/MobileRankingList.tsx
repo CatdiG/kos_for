@@ -32,6 +32,7 @@ import {
 } from '@/lib/types';
 import { Rocket, Trophy, Globe2, Landmark, Cpu, Flame, ShieldCheck, ArrowUpDown, TrendingDown, RotateCcw, TrendingUp, Coins, Filter, ChevronDown, ChevronUp } from 'lucide-react';
 import MobileStockDetailPanel from './MobileStockDetailPanel';
+import MobileLoadingSpinner from './MobileLoadingSpinner';
 
 async function fetchRanking(
   type: RankingType,
@@ -563,7 +564,7 @@ export default function MobileRankingList() {
           </div>
         )
       ) : isLoading ? (
-        <div className="py-10 text-center text-slate-400 text-xs">불러오는 중...</div>
+        <MobileLoadingSpinner label="불러오는 중..." />
       ) : isError ? (
         <div className="py-10 text-center text-red-500 text-xs">데이터를 가져오지 못했습니다.</div>
       ) : list.length === 0 ? (

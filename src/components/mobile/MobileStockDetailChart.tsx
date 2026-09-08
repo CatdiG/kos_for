@@ -28,6 +28,7 @@ import { PRICE_CHART_CONFIG, CandlestickBar, CustomCandleTooltip, getTrendBadgeI
 import { findSplitSafeStartIndex, roundToKrxTick, computeRecentVolumeRatio } from '@/lib/mockData';
 import { ShieldCheck, ShieldOff } from 'lucide-react';
 import MobileIntraday3mChart, { fetchIntraday3m } from './MobileIntraday3mChart';
+import MobileLoadingSpinner from './MobileLoadingSpinner';
 
 interface MobileStockDetailChartProps {
   trend: InvestorTrendDay[];
@@ -247,10 +248,10 @@ export default function MobileStockDetailChart({ trend, stockInfo, isLoading }: 
         stockInfo?.symbol ? (
           <MobileIntraday3mChart symbol={stockInfo.symbol} />
         ) : (
-          <div className="py-10 text-center text-slate-400 text-xs">종목 정보를 불러오는 중입니다...</div>
+          <MobileLoadingSpinner label="종목 정보를 불러오는 중입니다..." />
         )
       ) : isLoading ? (
-        <div className="py-10 text-center text-slate-400 text-xs">차트 데이터를 불러오는 중입니다...</div>
+        <MobileLoadingSpinner label="차트 데이터를 불러오는 중입니다..." />
       ) : displayTrend.length === 0 ? (
         <div className="py-10 text-center text-slate-400 text-xs">표시할 차트 데이터가 없습니다.</div>
       ) : (

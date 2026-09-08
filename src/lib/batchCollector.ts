@@ -225,6 +225,9 @@ export async function runTop50BatchCollector(
       }
 
       const hasRemaining = returnEarly && i < targetList.length;
+      if (!hasRemaining) {
+        await enrichDisplayTopDummies(programBuyList);
+      }
       await buildAndCacheRankings('program', programBuyList, now, hasRemaining);
       if (hasRemaining) {
         console.log(`[Program Batch Priority Completed] 우선순위 ${programBuyList.length}종목 완료(isPartial:true) - 나머지 ${targetList.length - i}종목은 백그라운드에서 이어서 처리`);
@@ -275,6 +278,7 @@ export async function runTop50BatchCollector(
                 await sleep(delayMs);
               }
             }
+            await enrichDisplayTopDummies(programBuyList);
             await buildAndCacheRankings('program', programBuyList, now, false);
             console.log(`[Program Batch Background Completed] 전체 수집 완료: count=${programBuyList.length}`);
             await runTrendWarmup();
@@ -420,6 +424,53 @@ async function buildAndCacheRankings(type: 'program', rawList: RankingItem[], ti
       upsertSharedRankCache(`full:${type}_sell_${period}`, sellRes.list).catch(() => {});
     }
   }
+}
+
+/**
+ * 🚨 [버그 수정 - 근본 원인] "완전판(isPartial:false)"으로 캐시된 뒤에도 stillWarming이 절대 안 풀리는
+ * 현상을 프로덕션에서 130초 넘게 관찰해 확정했다(scratch/diagnose_program_stillwarming.js 실측: 50개 중
+ * 44개가 시간이 지나도 계속 더미 시그니처로 고정). 원인: change/changeRate/volume을 채우는
+ * getCached5dTrend(trend5dBatchStore)는 TREND_WARM_SIZE(25종목)씩만 순환 예열되는데, 300종목을 다
+ * 돌려면 실행이 12번(=여러 날) 걸리고 게다가 trend5dBatchStore는 인스턴스별 메모리라 콜드 인스턴스마다
+ * 0부터 다시 시작한다 - "화면에 실제로 뜨는 top-50"이 그 25종목 안에 들 확률이 낮아 사실상 영원히
+ * 안 풀렸다. 순환 예열과는 별개로, 실제 화면에 뜰 buy/sell 상위 후보 중 더미 시그니처인 것만 콕 집어
+ * 즉시 실데이터로 보강한다 - 300종목을 다 덮을 필요 없이 보여지는 상위 종목만 확실히 고치면 충분하다
+ * (수칙 1-3: 가짜 수식 대신 이미 검증된 fetchKisInvestorTrend 실데이터 경로 재사용, 수칙 1-6: 빌드
+ * 시점(runTop50BatchCollector)과 서빙 시점(getBatchRankingDataAsync) 양쪽에서 이 함수 하나를 공유한다 -
+ * 빌드 시점 픽스만으로는 이미 Supabase에 더미가 섞인 채로 저장된 과거 'full:' 캐시까지는 못 고치므로,
+ * 서빙 시점에도 한 번 더 걸어야 오래된 캐시를 물려받은 요청까지 100% 커버된다).
+ */
+async function enrichDisplayTopDummies(list: RankingItem[], topN: number = 60): Promise<void> {
+  const isDummy = (item: RankingItem) => item.changeRate === 0 && item.volume === 1000000;
+  const buyTop = [...list].sort((a, b) => b.netBuyAmt - a.netBuyAmt).slice(0, topN);
+  const sellTop = [...list].sort((a, b) => a.netBuyAmt - b.netBuyAmt).slice(0, topN);
+  const targets = new Map<string, RankingItem>();
+  [...buyTop, ...sellTop].forEach((item) => {
+    if (isDummy(item)) targets.set(item.symbol, item);
+  });
+  if (targets.size === 0) return;
+
+  console.log(`[Program Display-Top Dummy Enrichment] 화면 노출권 더미 종목 ${targets.size}개 즉시 실데이터 보강 시작`);
+  await Promise.all(
+    [...targets.values()].map(async (item) => {
+      try {
+        const trendRes = await kisQueue.enqueue(() => fetchKisInvestorTrend(item.symbol, '5d', 'LOW'), 'NORMAL', `program-enrich-${item.symbol}`);
+        setCached5dTrend(item.symbol, trendRes);
+        const trendList = trendRes?.trend || [];
+        const latest = trendList.length > 0 ? trendList[trendList.length - 1] : null;
+        if (latest) {
+          // 참조 공유 객체를 직접 변형(mutate) - buyTop/sellTop은 list와 동일 객체를 가리키므로
+          // 호출부가 넘긴 원본 배열의 항목에도 그대로 반영된다.
+          item.currentPrice = latest.closePrice || item.currentPrice;
+          item.change = latest.priceChange ?? item.change;
+          item.changeRate = latest.changeRate ?? item.changeRate;
+          item.volume = latest.volume ?? item.volume;
+        }
+      } catch (e: any) {
+        console.warn(`[Program Display-Top Dummy Enrichment Skip] ${item.symbol}:`, e?.message || e);
+      }
+    })
+  );
 }
 
 /**
@@ -571,6 +622,15 @@ export async function getBatchRankingDataAsync(
 
     if (limit && limit > 0) {
       list = list.slice(0, limit);
+    }
+    // 🚨 [버그 수정] 빌드 시점(runTop50BatchCollector)에 이미 enrichDisplayTopDummies를 걸어도, Supabase
+    // 'full:' 캐시에 그 수정 전에 저장된 오래된 더미 스냅샷이 남아있으면(예: 이번에 버그 발견 과정에서
+    // 실측 진단으로 이미 그런 스냅샷이 하나 만들어짐) 그걸 그대로 물려받는다. 실제로 화면에 나가는 이
+    // 최종 리스트(최대 limit개)에 더미가 남아있으면 서빙 시점에도 한 번 더 즉시 보강한다 - 빌드/서빙
+    // 양쪽에서 같은 함수를 재사용(수칙 1-6). 목록이 이미 limit개로 줄어든 상태라 topN=list.length로
+    // 넘기면 buy/sell 상위 필터링 없이 이 안의 더미 항목 전부를 대상으로 삼는다.
+    if (list.some((item) => item.changeRate === 0 && item.volume === 1000000)) {
+      await enrichDisplayTopDummies(list, list.length);
     }
     // 프론트 화면에 실제로 나가는 이 리스트 안에 더미 시그니처가 하나라도 남아있으면, 아직 트렌드
     // 예열(after() 백그라운드 25종목/사이클)이 덜 끝난 상태다 - 프론트가 이 값으로 짧은 간격 재조회 여부를 판단한다.

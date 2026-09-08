@@ -24,6 +24,7 @@ import { IndexTrendResponse, TrendPeriod } from '@/lib/types';
 import { useTheme } from '@/providers/ThemeProvider';
 import { PRICE_CHART_CONFIG, CandlestickBar, CustomCandleTooltip, getTrendBadgeInfo } from '@/components/chart/CandlestickPrimitives';
 import { TrendingUp, TrendingDown, X, RefreshCw } from 'lucide-react';
+import MobileLoadingSpinner from './MobileLoadingSpinner';
 
 interface MobileIndexDetailChartProps {
   market: 'KOSPI' | 'KOSDAQ';
@@ -270,7 +271,7 @@ export default function MobileIndexDetailChart({ market, onClose }: MobileIndexD
       </div>
 
       {isLoading ? (
-        <div className="py-10 text-center text-slate-400 text-xs">지수 데이터를 불러오는 중입니다...</div>
+        <MobileLoadingSpinner label="지수 데이터를 불러오는 중입니다..." />
       ) : displayTrend.length === 0 ? (
         <div className="py-10 text-center text-slate-400 text-xs">표시할 데이터가 없습니다.</div>
       ) : (
