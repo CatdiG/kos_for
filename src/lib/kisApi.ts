@@ -1797,6 +1797,27 @@ export async function fetchKisForeignInstitutionRanking(
     }
   }
 
+  // 🚨 [모바일 콜드스타트 지연 수정] 수급교집합(fetchOverlapRankingData, 위 2419번 줄)만 이 Supabase
+  // "완전판"(full: 접두사) 24시간 캐시가 있어서 콜드 인스턴스에서도 0.5초대였는데, 외국인/기관은
+  // 인메모리 캐시(rankingCacheStore)뿐이라 새 서버리스 인스턴스에 걸릴 때마다 KIS 실시간 API를
+  // 처음부터 다시 타서 실측 42초까지 걸렸다(scratch/diagnose_mobile_tab_speed.js 프로덕션 실측,
+  // 사용자 지적 "교집합탭 빼고는 왤케 다 느려?"의 실제 원인). 동일 패턴을 그대로 적용한다.
+  const sharedMap = await fetchSharedRankCacheBatch([`full:${cacheKey}`], 24 * 60 * 60 * 1000).catch(() => new Map<string, any[]>());
+  const sharedList = sharedMap.get(`full:${cacheKey}`);
+  if (sharedList && sharedList.length > 0) {
+    console.log(`[Shared Rank Cache Hit] full:${cacheKey} - 다른 인스턴스가 이미 계산해둔 ${type} 랭킹을 Supabase에서 재사용`);
+    const sharedRes: InvestorRankingResponse = {
+      type,
+      direction,
+      period,
+      list: sharedList,
+      isMock: false,
+      updatedAt: new Date().toISOString(),
+    };
+    rankingCacheStore.set(cacheKey, sharedRes);
+    return sharedRes;
+  }
+
   try {
     const res = await kisQueue.enqueue(
       () => fetchWithRetry(() => executeKisForeignInstitutionRankingFetch(type, direction, period, market, limit)),
@@ -1806,6 +1827,9 @@ export async function fetchKisForeignInstitutionRanking(
     if (res && res.list && res.list.length > 0) {
       rankingCacheStore.set(cacheKey, res);
       syncSharedRankCache(cacheKey, res.list);
+      // 뱃지 요약 경량본(syncSharedRankCache)과 별개로, 완전한 RankingItem 전체를 'full:' 접두사에 저장 -
+      // 위 콜드스타트 읽기 폴백이 실제로 쓸 수 있는 유일한 소스다.
+      upsertSharedRankCache(`full:${cacheKey}`, res.list).catch(() => {});
     }
     return res;
   } catch (err: any) {
@@ -3882,6 +3906,26 @@ export async function fetchKisSurgingStocks(
     }
   }
 
+  // 🚨 [모바일 콜드스타트 지연 수정] 수급교집합과 동일한 Supabase "완전판"(full:) 24시간 캐시 폴백 -
+  // 급등주는 surgingCacheStore 인메모리 캐시(60초 TTL)뿐이라 콜드 인스턴스마다 KIS 라이브 API를
+  // 재호출해 실측 3.7~5.5초, 이를 3중 호출하는 단타종합(comprehensive)은 37초까지 걸렸다
+  // (scratch/diagnose_mobile_tab_speed.js 프로덕션 실측). foreign/organ과 동일 패턴 적용.
+  const sharedMap = await fetchSharedRankCacheBatch([`full:${cacheKey}`], 24 * 60 * 60 * 1000).catch(() => new Map<string, any[]>());
+  const sharedList = sharedMap.get(`full:${cacheKey}`);
+  if (sharedList && sharedList.length > 0) {
+    console.log(`[Shared Rank Cache Hit] full:${cacheKey} - 다른 인스턴스가 이미 계산해둔 급등주(${mode}) 랭킹을 Supabase에서 재사용`);
+    const sharedRes: InvestorRankingResponse = {
+      type: 'surging',
+      direction: 'buy',
+      period: '1d',
+      list: sharedList,
+      isMock: false,
+      updatedAt: new Date().toISOString(),
+    };
+    surgingCacheStore.set(cacheKey, sharedRes);
+    return sharedRes;
+  }
+
   try {
     const res = await kisQueue.enqueue(
       () => fetchWithRetry(() => executeKisSurgingStocksFetch(mode, market), 3, 300),
@@ -3891,6 +3935,8 @@ export async function fetchKisSurgingStocks(
     if (res && res.list && res.list.length > 0) {
       surgingCacheStore.set(cacheKey, res);
       syncSharedRankCache(cacheKey, res.list);
+      // 뱃지 요약 경량본과 별개로 완전한 RankingItem 전체를 'full:' 접두사에 저장(콜드스타트 읽기 폴백용).
+      upsertSharedRankCache(`full:${cacheKey}`, res.list).catch(() => {});
     }
     return res;
   } catch (err: any) {
