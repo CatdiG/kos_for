@@ -356,17 +356,13 @@ export default function MobileStockDetailChart({ trend, stockInfo, isLoading }: 
         <div className="py-10 text-center text-slate-400 text-xs">표시할 차트 데이터가 없습니다.</div>
       ) : (
       <>
-      {/* 이격도 상태 배지(바닥 반등/단기과열/정배열/이평선 수렴 등) - 데스크톱
-          RankingStockDetailChart.tsx:1325(일간)/942(3분봉)는 항상 보여주는데 모바일엔 없었다(사용자
-          지적: "차트누르면 바닥 반등인지 그런거 안뜨잖아"). 신용정보 배지 바로 위 줄에 배치한다. */}
-      <div className="flex justify-start mb-1.5">
+      {/* 🚨 [버그 수정 - 사용자 지적] 단기과열 배지와 신용정보 배지가 각자 자기 줄을 차지해서 그 사이에
+          불필요한 빈 공간이 생겼다 - 한 줄에 같이 놓는다(왼쪽 단기과열, 오른쪽 신용정보). */}
+      <div className="flex items-center justify-between mb-1.5">
         <span className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold border ${disparateInfo.badgeStyle}`}>
           {disparateInfo.badge}
         </span>
-      </div>
-      {/* 신용정보 배지 */}
-      {stockInfo?.isCreditAvailable !== undefined && (
-        <div className="flex justify-end mb-1.5">
+        {stockInfo?.isCreditAvailable !== undefined && (
           <span
             className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold border ${
               stockInfo.isCreditAvailable
@@ -377,33 +373,92 @@ export default function MobileStockDetailChart({ trend, stockInfo, isLoading }: 
             {stockInfo.isCreditAvailable ? <ShieldCheck className="w-3 h-3" /> : <ShieldOff className="w-3 h-3" />}
             {stockInfo.isCreditAvailable ? '신용가능' : '신용불가'}
           </span>
-        </div>
-      )}
+        )}
+      </div>
 
-      {/* 이격도 헤더 카드 (20일 / 60일·120일 통합) */}
-      {showDisparate && (
-        <div className="flex flex-col gap-1.5 mb-2">
-          <div className="flex flex-col gap-1 bg-slate-50/90 dark:bg-[#161a25]/90 p-2 rounded-lg border border-slate-200/80 dark:border-[#2a2e39]">
-            <div className="flex items-center gap-1.5 text-[11px] font-mono flex-wrap">
-              <span className="font-bold text-amber-600 dark:text-amber-400">20일:</span>
+      {/* 🚨 [버그 수정 - 사용자 지적] 이격도 헤더 카드(20일 / 60일·120일)가 데스크톱(RankingStockDetailChart.tsx
+          805-882번 줄)과 완전히 다른 축소판이었다 - 데스크톱은 이격도%·과열/반등 배지·기준 안내 문구·
+          과열가/1차지지/2차지지/침체가 2x2 그리드까지 다 보여주는데, 모바일은 이격도%+과열가/침체가만
+          한 줄로 보여주고 1차지지/2차지지는 아예 빠져 있었다. 게다가 데스크톱은 이 카드를 "이격도" 토글과
+          무관하게 항상 보여주는데(토글은 차트 위 기준선 표시 여부만 결정), 모바일은 이 카드 자체를
+          showDisparate 토글 뒤에 숨겨놨었다 - 데스크톱과 완전히 동일하게: 항상 표시 + 2x2 그리드 전부
+          이식한다(수칙 1-6). */}
+      <div className="flex flex-col gap-1.5 mb-2">
+        {/* 20일 카드 */}
+        <div className="flex flex-col gap-1 bg-slate-50/90 dark:bg-[#161a25]/90 p-2 rounded-lg border border-slate-200/80 dark:border-[#2a2e39]">
+          <div className="flex flex-wrap items-center justify-between gap-1.5 text-[11px] pb-1 border-b border-slate-100 dark:border-slate-800/60">
+            <div className="flex items-center gap-1.5 font-mono flex-wrap">
+              <span className="font-bold text-amber-600 dark:text-amber-400 text-[11px]">📊 20일선 이격도:</span>
               <strong className={`font-black text-[13px] ${disparateInfo.disparate20 >= 105 ? 'text-rose-600 dark:text-rose-400' : 'text-slate-800 dark:text-slate-100'}`}>{disparateInfo.disparate20}%</strong>
-              <span className="text-[10px] text-slate-500">과열가 {disparateInfo.overbought20Price.toLocaleString()} · 침체가 {disparateInfo.oversold20Price.toLocaleString()}</span>
+              <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400">
+                {disparateInfo.disparate20 >= 105 ? '(⚠️ 과열)' : disparateInfo.disparate20 <= 95 ? '(🔵 반등)' : ''}
+              </span>
+            </div>
+            <div className="text-[9px] text-slate-500 dark:text-slate-400 flex items-center gap-x-2 flex-wrap">
+              <span>• <strong>95% 이하</strong>: 반등</span>
+              <span>• <strong>105% 이상</strong>: 과열</span>
             </div>
           </div>
-          <div className="flex flex-col gap-1 bg-slate-50/90 dark:bg-[#161a25]/90 p-2 rounded-lg border border-slate-200/80 dark:border-[#2a2e39]">
-            <div className="flex items-center gap-1.5 text-[11px] font-mono flex-wrap">
-              <span className="font-bold text-cyan-600 dark:text-cyan-400">60일:</span>
-              <strong className={`font-black text-[13px] ${disparateInfo.disparate60 <= 90 ? 'text-blue-600 dark:text-blue-400' : disparateInfo.disparate60 >= 110 ? 'text-rose-600 dark:text-rose-400' : 'text-slate-800 dark:text-slate-100'}`}>{disparateInfo.disparate60}%</strong>
-              <span className="text-[10px] text-slate-500">과열가 {disparateInfo.overbought60Price.toLocaleString()} · 침체가 {disparateInfo.oversold60Price.toLocaleString()}</span>
+          <div className="grid grid-cols-2 gap-x-0 gap-y-1 text-[11px] pt-1 whitespace-nowrap">
+            <div className="flex items-center justify-center text-center text-red-600 dark:text-red-400 border-r border-slate-200/80 dark:border-slate-800/80 pr-1">
+              🔴 과열가: <strong className="font-bold font-mono">{disparateInfo.overbought20Price > 0 ? `${disparateInfo.overbought20Price.toLocaleString()}원` : '-'}</strong>
             </div>
-            <div className="flex items-center gap-1.5 text-[11px] font-mono flex-wrap">
-              <span className="font-bold text-fuchsia-600 dark:text-fuchsia-400">120일:</span>
-              <strong className={`font-black text-[13px] ${disparateInfo.disparate120 <= 90 ? 'text-blue-600 dark:text-blue-400' : disparateInfo.disparate120 >= 110 ? 'text-rose-600 dark:text-rose-400' : 'text-slate-800 dark:text-slate-100'}`}>{disparateInfo.disparate120}%</strong>
-              <span className="text-[10px] text-slate-500">과열가 {disparateInfo.overbought120Price.toLocaleString()} · 침체가 {disparateInfo.oversold120Price.toLocaleString()}</span>
+            <div className="flex items-center justify-center text-center text-orange-600 dark:text-orange-400 pl-1">
+              🟠 1차지지: <strong className="font-bold font-mono">{disparateInfo.support1Price > 0 ? `${disparateInfo.support1Price.toLocaleString()}원` : '-'}</strong>
+            </div>
+            <div className="flex items-center justify-center text-center text-purple-600 dark:text-purple-400 border-r border-t border-slate-200/80 dark:border-slate-800/80 pr-1 pt-1">
+              🟣 2차지지: <strong className="font-bold font-mono">{disparateInfo.recentLowPrice > 0 ? `${disparateInfo.recentLowPrice.toLocaleString()}원` : '-'}</strong>
+            </div>
+            <div className="flex items-center justify-center text-center text-blue-600 dark:text-blue-400 border-t border-slate-200/80 dark:border-slate-800/80 pl-1 pt-1">
+              🔵 침체가: <strong className="font-bold font-mono">{disparateInfo.oversold20Price > 0 ? `${disparateInfo.oversold20Price.toLocaleString()}원` : '-'}</strong>
             </div>
           </div>
         </div>
-      )}
+
+        {/* 60일·120일 통합 카드 */}
+        <div className="flex flex-col gap-1 bg-slate-50/90 dark:bg-[#161a25]/90 p-2 rounded-lg border border-slate-200/80 dark:border-[#2a2e39]">
+          {/* 🚨 [버그 수정 - 사용자 지적] 기준 안내 문구를 따로 한 줄 더 빼지 말고, 60일 줄 오른쪽엔
+              "90% 이하: 반등" 기준을, 120일 줄 오른쪽엔 "110% 이상: 과열" 기준을 붙여서 줄 수를 줄인다. */}
+          <div className="flex flex-col gap-1 pb-1 border-b border-slate-100 dark:border-slate-800/60">
+            <div className="flex items-center justify-between gap-1.5 text-[11px] font-mono">
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="font-bold text-slate-500 dark:text-slate-400 text-[11px]">📈 이격도:</span>
+                <span className="text-[11px] font-bold text-cyan-600 dark:text-cyan-400">60일</span>
+                <strong className={`font-black text-[13px] ${disparateInfo.disparate60 <= 90 ? 'text-blue-600 dark:text-blue-400' : disparateInfo.disparate60 >= 110 ? 'text-rose-600 dark:text-rose-400' : 'text-slate-800 dark:text-slate-100'}`}>{disparateInfo.disparate60}%</strong>
+                <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400">
+                  {disparateInfo.disparate60 >= 110 ? '(⚠️ 과열)' : disparateInfo.disparate60 <= 90 ? '(🔵 반등)' : ''}
+                </span>
+              </div>
+              <span className="text-[9px] text-slate-500 dark:text-slate-400 shrink-0">• <strong>90% 이하</strong>: 반등</span>
+            </div>
+            <div className="flex items-center justify-between gap-1.5 text-[11px] font-mono">
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="font-bold text-slate-500 dark:text-slate-400 text-[11px] invisible">📈 이격도:</span>
+                <span className="text-[11px] font-bold text-fuchsia-600 dark:text-fuchsia-400">120일</span>
+                <strong className={`font-black text-[13px] ${disparateInfo.disparate120 <= 90 ? 'text-blue-600 dark:text-blue-400' : disparateInfo.disparate120 >= 110 ? 'text-rose-600 dark:text-rose-400' : 'text-slate-800 dark:text-slate-100'}`}>{disparateInfo.disparate120}%</strong>
+                <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400">
+                  {disparateInfo.disparate120 >= 110 ? '(⚠️ 과열)' : disparateInfo.disparate120 <= 90 ? '(🔵 반등)' : ''}
+                </span>
+              </div>
+              <span className="text-[9px] text-slate-500 dark:text-slate-400 shrink-0">• <strong>110% 이상</strong>: 과열</span>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-x-0 gap-y-1 text-[11px] pt-1 whitespace-nowrap">
+            <div className="flex items-center justify-center text-center text-red-600 dark:text-red-400 border-r border-slate-200/80 dark:border-slate-800/80 pr-1">
+              🔴 60일 과열가: <strong className="font-bold font-mono">{disparateInfo.overbought60Price > 0 ? `${disparateInfo.overbought60Price.toLocaleString()}원` : '-'}</strong>
+            </div>
+            <div className="flex items-center justify-center text-center text-red-600 dark:text-red-400 pl-1">
+              🔴 120일 과열가: <strong className="font-bold font-mono">{disparateInfo.overbought120Price > 0 ? `${disparateInfo.overbought120Price.toLocaleString()}원` : '-'}</strong>
+            </div>
+            <div className="flex items-center justify-center text-center text-blue-600 dark:text-blue-400 border-r border-t border-slate-200/80 dark:border-slate-800/80 pr-1 pt-1">
+              🔵 60일 침체가: <strong className="font-bold font-mono">{disparateInfo.oversold60Price > 0 ? `${disparateInfo.oversold60Price.toLocaleString()}원` : '-'}</strong>
+            </div>
+            <div className="flex items-center justify-center text-center text-blue-600 dark:text-blue-400 border-t border-slate-200/80 dark:border-slate-800/80 pl-1 pt-1">
+              🔵 120일 침체가: <strong className="font-bold font-mono">{disparateInfo.oversold120Price > 0 ? `${disparateInfo.oversold120Price.toLocaleString()}원` : '-'}</strong>
+            </div>
+          </div>
+        </div>
+      </div>
 
       {/* 기간 & 지표 토글 */}
       <div className="flex flex-wrap items-center gap-1.5 mb-2">
