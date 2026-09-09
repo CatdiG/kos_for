@@ -1798,11 +1798,27 @@ export async function fetchKisForeignInstitutionRanking(
   }
 
   // 🚨 [모바일 콜드스타트 지연 수정] 수급교집합(fetchOverlapRankingData, 위 2419번 줄)만 이 Supabase
-  // "완전판"(full: 접두사) 24시간 캐시가 있어서 콜드 인스턴스에서도 0.5초대였는데, 외국인/기관은
+  // "완전판"(full: 접두사) 캐시가 있어서 콜드 인스턴스에서도 0.5초대였는데, 외국인/기관은
   // 인메모리 캐시(rankingCacheStore)뿐이라 새 서버리스 인스턴스에 걸릴 때마다 KIS 실시간 API를
   // 처음부터 다시 타서 실측 42초까지 걸렸다(scratch/diagnose_mobile_tab_speed.js 프로덕션 실측,
   // 사용자 지적 "교집합탭 빼고는 왤케 다 느려?"의 실제 원인). 동일 패턴을 그대로 적용한다.
-  const sharedMap = await fetchSharedRankCacheBatch([`full:${cacheKey}`], 24 * 60 * 60 * 1000).catch(() => new Map<string, any[]>());
+  // 🚨 [버그 수정 - 근본 원인] 처음엔 수급교집합과 똑같이 maxAge=24시간을 그대로 복사해왔는데, 수급교집합은
+  // "당일 하루 종일 사실상 고정"이 의도된 설계(getDynamicRankingTtl 주석 참고)라 24시간이 맞지만,
+  // 외국인/기관은 정반대로 "장중 60초마다 실시간 가집계 반영"이 의도된 설계다(같은 함수의 다른 분기).
+  // 24시간을 그대로 쓰면 한 번 라이브로 받아온 스냅샷이 최대 24시간 동안 계속 재사용되면서 실시간
+  // 가집계가 사실상 멈출 수 있었다("어제랑 똑같아 보인다"는 사용자 의심 계기로 발견).
+  // 🚨 [2차 재발 - 버그 수정] 그래서 인메모리 캐시와 똑같이 dynamicTtl(장중 60초)로 맞췄었는데, 이게
+  // 3479~3485번 줄의 2일/3일연속 교집합에서 이미 한 번 겪었던 것과 똑같은 설계 실수였다 - "이 프로세스가
+  // 얼마나 자주 재계산할지"(로컬 TTL)와 "다른 인스턴스/환경이 얼마나 오래된 공유 캐시를 믿고 재사용해도
+  // 되는지"(Supabase 폴백 유효기간)는 서로 다른 질문인데 같은 값으로 묶어버렸다. 60초는 인스턴스가 여러
+  // 개 떠서 서로 자주 갱신해주는 프로덕션 고트래픽 환경에서나 겨우 맞아떨어지고, 사용자 로컬 개발 서버처럼
+  // 트래픽이 뜸한 환경에서는 "누군가 60초 이내에 이미 계산해뒀을" 확률이 거의 0이라 매번 라이브 재계산을
+  // 그대로 겪는다(실측: 사용자 로컬에서 foreign 25.8초, organ 24.9초, 이를 내부적으로 또 호출하는 급등주
+  // 교집합(overlap)은 106초). 외국인/기관 누적 순매수는 몇 분 단위로는 급변하지 않는 지표라, 이미 이
+  // 파일에 존재하는 동일 취지의 선례(OVERLAP_CACHE_TTL_MS=5분, 위 2419번 줄)를 그대로 재사용해
+  // 5분으로 맞춘다 - 24시간(하루 종일 고정 위험)과 60초(사실상 무의미) 사이, 실사용 트래픽 패턴에서도
+  // 실제로 콜드스타트 가속 효과를 내면서 데이터가 눈에 띄게 낡지는 않는 균형점이다.
+  const sharedMap = await fetchSharedRankCacheBatch([`full:${cacheKey}`], 5 * 60 * 1000).catch(() => new Map<string, any[]>());
   const sharedList = sharedMap.get(`full:${cacheKey}`);
   if (sharedList && sharedList.length > 0) {
     console.log(`[Shared Rank Cache Hit] full:${cacheKey} - 다른 인스턴스가 이미 계산해둔 ${type} 랭킹을 Supabase에서 재사용`);
@@ -3906,11 +3922,22 @@ export async function fetchKisSurgingStocks(
     }
   }
 
-  // 🚨 [모바일 콜드스타트 지연 수정] 수급교집합과 동일한 Supabase "완전판"(full:) 24시간 캐시 폴백 -
+  // 🚨 [모바일 콜드스타트 지연 수정] 수급교집합과 동일한 Supabase "완전판"(full:) 캐시 폴백 -
   // 급등주는 surgingCacheStore 인메모리 캐시(60초 TTL)뿐이라 콜드 인스턴스마다 KIS 라이브 API를
   // 재호출해 실측 3.7~5.5초, 이를 3중 호출하는 단타종합(comprehensive)은 37초까지 걸렸다
   // (scratch/diagnose_mobile_tab_speed.js 프로덕션 실측). foreign/organ과 동일 패턴 적용.
-  const sharedMap = await fetchSharedRankCacheBatch([`full:${cacheKey}`], 24 * 60 * 60 * 1000).catch(() => new Map<string, any[]>());
+  // 🚨 [버그 수정 - 근본 원인] maxAge를 24시간으로 뒀었는데, 급등주는 위 인메모리 캐시와 똑같이 "60초마다
+  // 실시간 반영"이 의도된 데이터라 24시간짜리 스냅샷이 계속 재사용되면 사실상 갱신이 멈출 수 있는
+  // 잠재 결함이었다("어제랑 똑같아 보인다"는 사용자 의심으로 발견).
+  // 🚨 [2차 재발 - 버그 수정] 그래서 인메모리와 똑같이 60초로 맞췄었는데, 이게 3479~3485번 줄의 2일/3일
+  // 연속 교집합에서 이미 한 번 겪었던 것과 동일한 설계 실수였다 - "이 프로세스의 재계산 주기"(로컬 TTL)와
+  // "다른 인스턴스/환경의 공유 캐시를 얼마나 오래 믿을지"(Supabase 폴백 유효기간)는 다른 질문인데 같은
+  // 값으로 묶었다. 60초는 트래픽이 뜸한 환경(사용자 로컬 개발 서버 등)에서는 "누군가 60초 이내에 이미
+  // 계산해뒀을" 확률이 거의 0이라 매번 라이브 재계산을 그대로 겪는다(실측: 급등주 교집합(overlap, 내부적
+  // 으로 이 함수를 3번 호출)이 사용자 로컬에서 106초). 등락률/거래량/거래대금 상위는 몇 분 단위로는 크게
+  // 안 바뀌는 지표라, 이미 이 파일에 있는 동일 취지의 선례(OVERLAP_CACHE_TTL_MS=5분, 위 2419번 줄)를
+  // 그대로 재사용해 5분으로 맞춘다.
+  const sharedMap = await fetchSharedRankCacheBatch([`full:${cacheKey}`], 5 * 60 * 1000).catch(() => new Map<string, any[]>());
   const sharedList = sharedMap.get(`full:${cacheKey}`);
   if (sharedList && sharedList.length > 0) {
     console.log(`[Shared Rank Cache Hit] full:${cacheKey} - 다른 인스턴스가 이미 계산해둔 급등주(${mode}) 랭킹을 Supabase에서 재사용`);
