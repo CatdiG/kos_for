@@ -442,6 +442,53 @@ export function getDynamicRankingTtl(): number {
   return remainingMs > 0 ? remainingMs : 30 * 1000;
 }
 
+/**
+ * Supabase 공유 랭킹 캐시(shared_rank_cache)의 `full:` 항목이 "지금 이 순간" 신선하다고 믿을 수
+ * 있는 최대 나이(ms)를 계산한다. fetchSharedRankCacheBatch(keys, maxAgeMs)는 단순히
+ * `now - updated_at < maxAgeMs`만 검사하므로, 여기서 maxAgeMs = "now - 가장 최근 시장 경계 시각"을
+ * 돌려주면 결과적으로 "updated_at이 그 경계 이후에 기록됐는가"와 동치가 된다.
+ *
+ * 🚨 [버그 수정 - 수칙 1-6] 당일교집합(fetchOverlapRankingData)/N일연속 교집합
+ * (fetchConsecutiveNDaysOverlapRankingData)/지수 일봉(fetchKisIndexDailyTrend) 3곳 모두, 위
+ * getDynamicRankingTtl()의 "다음 영업일 08:30까지" duration을 그대로 Supabase maxAge로 재사용하고
+ * 있었다. 이건 "어제 캐시가 오늘로 넘어오는 것"은 막아도, "오늘 장중 특정 시점(예: 10:02)에 기록된
+ * 캐시가 그날 장마감(15:30) 이후까지 그대로 최종값처럼 쓰이는 것"은 못 막는다 - duration은 "몇 시간
+ * 안 지났나"만 볼 뿐 "장마감을 한 번이라도 거쳤는가"는 모르기 때문이다(실측: 삼성E&A 028050 - 3일연속
+ * 탭이 오전 10:02 스냅샷 가격 49150원을 장마감 후 17시대까지 그대로 씀 - 실제로는 그 사이 5시간 반
+ * 더 거래돼 종가 50800원까지 오름). 장마감 후엔 "가장 최근에 지난 15:30 마감 시각 이후에 기록됐는가"를
+ * 봐야 정확하다 - 이 함수가 그 경계를 역산한다.
+ */
+export function getSharedCacheMaxAgeMs(): number {
+  const now = new Date();
+  const utc = now.getTime() + now.getTimezoneOffset() * 60000;
+  const kstDate = new Date(utc + 9 * 60 * 60000);
+  const hour = kstDate.getHours();
+  const minute = kstDate.getMinutes();
+  const timeNum = hour * 100 + minute;
+  const dayOfWeek = kstDate.getDay();
+  const isMarketOpen = dayOfWeek >= 1 && dayOfWeek <= 5 && timeNum >= 900 && timeNum < 1530;
+
+  // 1. 장중: 위 getDynamicRankingTtl()과 동일하게 60초 - 경계 계산이 필요 없다.
+  if (isMarketOpen) {
+    return 60 * 1000;
+  }
+
+  // 2. 장마감 후(평일 저녁/주말/개장 전 새벽): 가장 최근에 지난 15:30 마감 시각을 역산한다.
+  const lastCloseDate = new Date(kstDate);
+  lastCloseDate.setHours(15, 30, 0, 0);
+  if (dayOfWeek === 0) {
+    lastCloseDate.setDate(kstDate.getDate() - 2); // 일요일 ➔ 지난 금요일 마감
+  } else if (dayOfWeek === 6) {
+    lastCloseDate.setDate(kstDate.getDate() - 1); // 토요일 ➔ 어제(금요일) 마감
+  } else if (timeNum < 900) {
+    // 평일 개장 전(00:00~08:59) - 가장 최근 마감은 전 영업일
+    lastCloseDate.setDate(kstDate.getDate() - (dayOfWeek === 1 ? 3 : 1)); // 월요일 새벽 ➔ 지난 금요일, 그 외 ➔ 어제
+  }
+  // else: 평일 15:30 이후 - 오늘 15:30 마감이 그대로 가장 최근 경계 (lastCloseDate 그대로 사용)
+
+  return Math.max(60 * 1000, kstDate.getTime() - lastCloseDate.getTime());
+}
+
 // ============================================================================
 // 📈 [신규 독립 모듈] KOSPI/KOSDAQ 지수 일봉 차트 (현재지수 + 일자별 시세)
 // ============================================================================
@@ -496,7 +543,9 @@ export async function fetchKisIndexDailyTrend(
   // fetchSharedRankCacheBatch는 RankingItem[] 저장용으로 만들어졌지만 list 컬럼은 범용 JSONB라 - 새
   // 스키마 없이 응답 전체를 1개짜리 배열로 감싸 재사용한다(수칙 1-6).
   if (!summaryOnly) {
-    const sharedMap = await fetchSharedRankCacheBatch([`full:${cacheKey}`], dynamicTtl).catch(() => new Map<string, any[]>());
+    // 🚨 [버그 수정 - 수칙 1-6] dynamicTtl(duration)을 그대로 쓰면 장중 특정 시점 스냅샷이 장마감 후까지
+    // 최종값처럼 굳는 문제가 있다 - getSharedCacheMaxAgeMs()(위 함수 주석 참고)로 교체한다.
+    const sharedMap = await fetchSharedRankCacheBatch([`full:${cacheKey}`], getSharedCacheMaxAgeMs()).catch(() => new Map<string, any[]>());
     const sharedWrapped = sharedMap.get(`full:${cacheKey}`);
     if (sharedWrapped && sharedWrapped.length > 0) {
       console.log(`[Shared Rank Cache Hit] full:${cacheKey} - 다른 인스턴스가 이미 계산해둔 지수 차트 데이터를 Supabase에서 재사용`);
@@ -2453,10 +2502,21 @@ export async function fetchOverlapRankingData(
   // 8초 타임아웃 추가로, (3)은 완전히 별도의 cache_key('full:' 접두사, 아래 executeAsyncOverlapCalculation
   // 안에서 저장)로 각각 해소됐다 - program 배치(batchCollector.ts)에서 이미 재검증 완료
   // (21대 검증 + 골든 스냅샷 모두 PASS, 필드 누락 0건 확인)했으므로 동일 패턴을 여기도 적용한다.
-  // maxAgeMs=24시간: 당일교집합도 "다음 영업일 08:30까지 사실상 영구" 정책(getDynamicRankingTtl)이라
-  // 짧은 TTL은 의미가 없다.
+  // 🚨 [버그 수정 - 수칙 1-6] maxAgeMs를 24시간 고정값으로 뒀었다 - 위 인메모리 캐시(line 2444)는
+  // "다음 영업일 08:30까지"를 날짜 경계까지 계산하는 dynamicTtl을 쓰는데, 여기 Supabase 캐시는 그냥
+  // 시계로 24시간만 셌다. 그 결과 장마감 후(예: 전날 20:45)에 저장된 캐시가 "아직 24시간 안 지났다"는
+  // 이유만으로 다음날 09:00~15:30 장이 통째로 열렸다 닫혀도 계속 "신선하다"고 오판되어, 어제 저녁
+  // 시점의 현재가/등락률/추세배지(statusBadge)가 오늘 하루 종일 그대로 나가는 회귀가 있었다(실측:
+  // 삼성E&A 028050 - 차트는 9/9 종가 50800원 기준 "단기과열"인데 당일교집합/3일연속 탭은 9/8 종가
+  // 49150원이 "(9/9 기준)"이라고 잘못 라벨된 채 "정배열"로 나옴 - Supabase 조회 결과 해당 캐시가
+  // 20.6시간 전인 9/8 20:45에 쓰인 뒤 한 번도 재계산 안 됐음을 확인). 처음엔 인메모리와 똑같이
+  // dynamicTtl(duration)을 그대로 재사용했는데, 그러자 이번엔 "오늘 장중 10:02에 기록된 스냅샷이
+  // 장마감 후에도 duration이 안 지났다는 이유로 계속 신선하다고 오판"되는 2차 회귀가 실측으로 확인됐다
+  // (삼성E&A 028050 - 3일연속 탭이 10:02 스냅샷 가격 49150원을 17시대까지 그대로 씀, 실제 종가는
+  // 50800원). duration이 아니라 "가장 최근 마감(15:30) 이후에 기록됐는가"를 보는
+  // getSharedCacheMaxAgeMs()로 교체한다 - 위 getDynamicRankingTtl() 바로 아래 정의, 수칙 1-6.
   if (!masterData) {
-    const sharedMap = await fetchSharedRankCacheBatch([`full:${masterCacheKey}`], 24 * 60 * 60 * 1000).catch(() => new Map<string, any[]>());
+    const sharedMap = await fetchSharedRankCacheBatch([`full:${masterCacheKey}`], getSharedCacheMaxAgeMs()).catch(() => new Map<string, any[]>());
     const sharedList = sharedMap.get(`full:${masterCacheKey}`);
     if (sharedList && sharedList.length > 0) {
       console.log(`[Shared Rank Cache Hit] full:${masterCacheKey} - 다른 인스턴스가 이미 계산해둔 당일교집합 결과를 Supabase에서 재사용`);
@@ -3491,8 +3551,21 @@ export async function fetchConsecutiveNDaysOverlapRankingData(
   // 며칠 단위로 움직이는 지표라 몇 분~몇십 분 정도 오래된 값을 재사용해도 실질적 문제가 없다 - 당일교집합/
   // 프로그램매매와 동일하게 24시간으로 맞춘다. 로컬 프로세스 자체 재계산 주기(180초, 이탈 종목 추적 정확도
   // 목적)는 그대로 유지 - 이건 아래 CONSECUTIVE_OVERLAP_CACHE_TTL_MS 로컬 캐시 체크에만 계속 쓰인다.
+  // 🚨 [버그 수정 - 수칙 1-6] "24시간"이 위 문단 판단(연속매수 멤버십 자체는 며칠 단위로 안 바뀜)으로는
+  // 맞았지만, 시계로 고정 24시간을 세는 방식이라 영업일 경계를 몰랐다 - 이 캐시 안에는 멤버십뿐 아니라
+  // 그 시점의 현재가/추세배지(statusBadge)도 같이 박제되는데, 전날 장마감 후(예: 20:45)에 쓰인 캐시가
+  // "아직 24시간 안 지났다"는 이유만으로 다음날 09:00~15:30 장이 통째로 열렸다 닫혀도 계속 재사용되어
+  // 어제 저녁 가격 기준 배지가 하루 종일 나가는 회귀로 이어졌다(fetchOverlapRankingData의 동일 버그를
+  // 삼성E&A 028050 실측으로 먼저 확인 - 위 2459번 줄 부근 주석 참고). 인메모리 캐시(line 3469)와
+  // 완전히 별개 정책이던 것을 dynamicTtl로 한 번 통일했더니, 이번엔 "오늘 장중 10:02에 기록된
+  // 스냅샷이 duration이 안 지났다는 이유로 장마감 후에도 계속 신선하다고 오판"되는 2차 회귀가 실측으로
+  // 확인됐다(삼성E&A 028050 3일연속 탭 - 10:02 스냅샷 가격 49150원을 17시대까지 그대로 씀, 실제
+  // 종가는 50800원). duration이 아니라 "가장 최근 마감(15:30) 이후에 기록됐는가"를 보는
+  // getSharedCacheMaxAgeMs()로 다시 교체한다 - 인메모리 캐시 쪽은 그대로 dynamicTtl 유지(그쪽은 이
+  // 프로세스가 언제 마지막으로 "직접" 계산했는지만 보므로 duration으로 충분하다).
+  const dynamicTtl = getDynamicRankingTtl();
   if (!cached) {
-    const sharedMap = await fetchSharedRankCacheBatch([`full:${cacheKey}`], 24 * 60 * 60 * 1000).catch(() => new Map<string, any[]>());
+    const sharedMap = await fetchSharedRankCacheBatch([`full:${cacheKey}`], getSharedCacheMaxAgeMs()).catch(() => new Map<string, any[]>());
     const sharedList = sharedMap.get(`full:${cacheKey}`);
     if (sharedList && sharedList.length > 0) {
       console.log(`[Shared Rank Cache Hit] full:${cacheKey} - 다른 인스턴스가 이미 계산해둔 ${targetDays}일연속 교집합 완전판을 Supabase에서 재사용`);
