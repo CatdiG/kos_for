@@ -18,7 +18,7 @@ import { InvestorTrendResponse, TrendPeriod } from '@/lib/types';
 import { findSplitSafeStartIndex, roundToKrxTick, computeRecentVolumeRatio } from '@/lib/mockData';
 import { Calendar, Activity, RefreshCw, AlertCircle, X } from 'lucide-react';
 import { useTheme } from '@/providers/ThemeProvider';
-import { PRICE_CHART_CONFIG, CandlestickBar, CustomCandleTooltip, CustomDailyVolumeTooltip, getTrendBadgeInfo } from '@/components/chart/CandlestickPrimitives';
+import { PRICE_CHART_CONFIG, CandlestickBar, CustomCandleTooltip, CustomSupplyTooltip, CustomDailyVolumeTooltip, getTrendBadgeInfo } from '@/components/chart/CandlestickPrimitives';
 
 interface RankingStockDetailChartProps {
   symbol: string;
@@ -36,44 +36,6 @@ async function fetchTrend(symbol: string, period: TrendPeriod): Promise<Investor
   }
   return res.json();
 }
-
-const CustomSupplyTooltip = ({ active, payload, label }: any) => {
-  if (!active || !payload || !payload.length) return null;
-  const dataPoint = payload[0]?.payload;
-  if (!dataPoint) return null;
-
-  const fmt = (v: number) => {
-    const sign = v >= 0 ? '+' : '';
-    if (Math.abs(v) >= 100) return `${sign}${(v / 100).toFixed(1)}억`;
-    return `${sign}${v.toLocaleString()}백만`;
-  };
-
-  const fAmt = dataPoint.foreignNetBuyAmt ?? (payload.find((p: any) => p.dataKey === 'foreignNetBuyAmt')?.value || 0);
-  const oAmt = dataPoint.organNetBuyAmt ?? (payload.find((p: any) => p.dataKey === 'organNetBuyAmt')?.value || 0);
-  const prAmt = dataPoint.programNetBuyAmt ?? (payload.find((p: any) => p.dataKey === 'programNetBuyAmt')?.value || 0);
-
-  return (
-    <div className="bg-white/95 dark:bg-[#1e222d]/95 backdrop-blur-md p-2.5 rounded-xl border border-slate-200 dark:border-[#2a2e39] shadow-xl text-xs space-y-1 z-50">
-      <div className="font-bold text-slate-700 dark:text-slate-200 pb-1 border-b border-slate-100 dark:border-slate-800">
-        {label} 수급 동향
-      </div>
-      <div className="space-y-0.5">
-        <div className="flex justify-between gap-1">
-          <span className="text-orange-500 font-bold flex items-center gap-1">🟠 외국인:</span>
-          <span className={`font-mono font-bold ${fAmt >= 0 ? 'text-red-500' : 'text-blue-500'}`}>{fmt(fAmt)}</span>
-        </div>
-        <div className="flex justify-between gap-1">
-          <span className="text-teal-500 font-bold flex items-center gap-1">🟢 기관:</span>
-          <span className={`font-mono font-bold ${oAmt >= 0 ? 'text-red-500' : 'text-blue-500'}`}>{fmt(oAmt)}</span>
-        </div>
-        <div className="flex justify-between gap-1">
-          <span className="text-amber-500 font-bold flex items-center gap-1">🟡 프로그램:</span>
-          <span className={`font-mono font-bold ${prAmt >= 0 ? 'text-red-500' : 'text-blue-500'}`}>{fmt(prAmt)}</span>
-        </div>
-      </div>
-    </div>
-  );
-};
 
 // 일별 거래량 서브플롯 전용 커스텀 툴팁 - 기존 기본 Recharts Tooltip(formatter만 지정)이 스타일 없는
 // 밋밋한 흰 박스로 나오던 걸, 위 CustomSupplyTooltip과 동일한 카드 스타일(둥근 모서리/블러/그림자)로 맞췄다.

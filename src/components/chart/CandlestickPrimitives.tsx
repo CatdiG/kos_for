@@ -148,6 +148,46 @@ export const CustomCandleTooltip = ({ active, payload, label, priceLabel = '원'
   );
 };
 
+// 4대 주체(외국인/기관/프로그램) 일별 순매수 차트 공용 팝업 - RankingStockDetailChart.tsx에만
+// 로컬로 있던 걸 모바일도 똑같이 쓸 수 있게 공통 모듈로 옮겼다(수칙 1-6).
+export const CustomSupplyTooltip = ({ active, payload, label }: any) => {
+  if (!active || !payload || !payload.length) return null;
+  const dataPoint = payload[0]?.payload;
+  if (!dataPoint) return null;
+
+  const fmt = (v: number) => {
+    const sign = v >= 0 ? '+' : '';
+    if (Math.abs(v) >= 100) return `${sign}${(v / 100).toFixed(1)}억`;
+    return `${sign}${v.toLocaleString()}백만`;
+  };
+
+  const fAmt = dataPoint.foreignNetBuyAmt ?? (payload.find((p: any) => p.dataKey === 'foreignNetBuyAmt')?.value || 0);
+  const oAmt = dataPoint.organNetBuyAmt ?? (payload.find((p: any) => p.dataKey === 'organNetBuyAmt')?.value || 0);
+  const prAmt = dataPoint.programNetBuyAmt ?? (payload.find((p: any) => p.dataKey === 'programNetBuyAmt')?.value || 0);
+
+  return (
+    <div className="bg-white/95 dark:bg-[#1e222d]/95 backdrop-blur-md p-2.5 rounded-xl border border-slate-200 dark:border-[#2a2e39] shadow-xl text-xs space-y-1 z-50">
+      <div className="font-bold text-slate-700 dark:text-slate-200 pb-1 border-b border-slate-100 dark:border-slate-800">
+        {label} 수급 동향
+      </div>
+      <div className="space-y-0.5">
+        <div className="flex justify-between gap-1">
+          <span className="text-orange-500 font-bold flex items-center gap-1">🟠 외국인:</span>
+          <span className={`font-mono font-bold ${fAmt >= 0 ? 'text-red-500' : 'text-blue-500'}`}>{fmt(fAmt)}</span>
+        </div>
+        <div className="flex justify-between gap-1">
+          <span className="text-teal-500 font-bold flex items-center gap-1">🟢 기관:</span>
+          <span className={`font-mono font-bold ${oAmt >= 0 ? 'text-red-500' : 'text-blue-500'}`}>{fmt(oAmt)}</span>
+        </div>
+        <div className="flex justify-between gap-1">
+          <span className="text-amber-500 font-bold flex items-center gap-1">🟡 프로그램:</span>
+          <span className={`font-mono font-bold ${prAmt >= 0 ? 'text-red-500' : 'text-blue-500'}`}>{fmt(prAmt)}</span>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 // 일간 거래량 차트 공용 팝업 - RankingStockDetailChart.tsx에만 있던 걸 모바일도 똑같이 쓸 수 있게
 // 공통 모듈로 옮겼다(수칙 1-6, 데스크톱은 이 안에 로컬로 중복 구현돼 있던 것을 이걸로 대체).
 export const CustomDailyVolumeTooltip = ({ active, payload, label }: any) => {

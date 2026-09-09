@@ -24,7 +24,7 @@ import {
 } from 'recharts';
 import { InvestorTrendDay, StockInfo } from '@/lib/types';
 import { useTheme } from '@/providers/ThemeProvider';
-import { PRICE_CHART_CONFIG, CandlestickBar, CustomCandleTooltip, CustomDailyVolumeTooltip, getTrendBadgeInfo } from '@/components/chart/CandlestickPrimitives';
+import { PRICE_CHART_CONFIG, CandlestickBar, CustomCandleTooltip, CustomSupplyTooltip, CustomDailyVolumeTooltip, getTrendBadgeInfo } from '@/components/chart/CandlestickPrimitives';
 import { findSplitSafeStartIndex, roundToKrxTick, computeRecentVolumeRatio } from '@/lib/mockData';
 import { ShieldCheck, ShieldOff } from 'lucide-react';
 import MobileIntraday3mChart, { fetchIntraday3m } from './MobileIntraday3mChart';
@@ -73,6 +73,11 @@ export default function MobileStockDetailChart({ trend, stockInfo, isLoading }: 
   const [showMA120, setShowMA120] = useState(false);
   const [showVolumeProfile, setShowVolumeProfile] = useState(true);
   const [showDisparate, setShowDisparate] = useState(false);
+  // 🚨 [기능 추가] 데스크톱(RankingStockDetailChart.tsx)엔 있는 "4대 주체 일별 순매수/순매도 수급"
+  // 막대그래프가 모바일엔 아예 없었다(사용자 지적) - 토글 상태부터 동일하게 이식(수칙 1-6).
+  const [showForeign, setShowForeign] = useState(true);
+  const [showOrgan, setShowOrgan] = useState(true);
+  const [showProgram, setShowProgram] = useState(true);
 
   // 🚨 [재도입] 한 번 prefetch를 추가했다가, fetchKis3mCandlesFullDay가 14개 슬롯을 kisQueue 없이
   // 완전 병렬 호출하던 근본 결함 때문에 프로덕션 회귀가 나서 되돌렸었다. 이제 그 함수 자체를 kisQueue
@@ -280,6 +285,32 @@ export default function MobileStockDetailChart({ trend, stockInfo, isLoading }: 
 
   const formatYPrice = (v: number) => v.toLocaleString(undefined, { maximumFractionDigits: 0 });
   const formatYVol = (v: number) => (v >= 100000000 ? `${Math.round(v / 100000000)}억` : v >= 10000 ? `${Math.round(v / 10000)}만` : v.toLocaleString());
+  const formatYAmt = (v: number) => (Math.abs(v) >= 100 ? `${(v / 100).toFixed(0)}억` : `${v}백만`);
+
+  // 4대 주체(외국인/기관/프로그램) 일별 순매수 - 데스크톱(RankingStockDetailChart.tsx:599)과 동일한
+  // 0-baseline 그룹 막대 도메인 계산(수칙 1-6, 새 공식 만들지 않음).
+  const supplyDomain = React.useMemo(() => {
+    if (!displayTrend || displayTrend.length === 0) return ['auto', 'auto'] as [any, any];
+    let min = 0;
+    let max = 0;
+    displayTrend.forEach((d: any) => {
+      if (showForeign && d.foreignNetBuyAmt !== undefined) {
+        min = Math.min(min, d.foreignNetBuyAmt);
+        max = Math.max(max, d.foreignNetBuyAmt);
+      }
+      if (showOrgan && d.organNetBuyAmt !== undefined) {
+        min = Math.min(min, d.organNetBuyAmt);
+        max = Math.max(max, d.organNetBuyAmt);
+      }
+      if (showProgram && d.programNetBuyAmt !== undefined) {
+        min = Math.min(min, d.programNetBuyAmt);
+        max = Math.max(max, d.programNetBuyAmt);
+      }
+    });
+    const range = Math.max(10, Math.abs(max - min));
+    const pad = range * 0.15;
+    return [Math.floor(min - pad), Math.ceil(max + pad)] as [number, number];
+  }, [displayTrend, showForeign, showOrgan, showProgram]);
 
   // 🚨 [사용자 요청] "120일도 너무 안 보여" - 60/120일 캔들을 좁은 모바일 화면 폭에 욱여넣으니 3분봉과
   // 똑같이 캔들이 짓눌려 안 보이는 문제가 있었다. 3분봉(MobileIntraday3mChart.tsx)에서 이미 검증된
@@ -433,6 +464,27 @@ export default function MobileStockDetailChart({ trend, stockInfo, isLoading }: 
         >
           이격도
         </button>
+        <span className="text-slate-300 dark:text-slate-700">|</span>
+        {/* 🚨 [기능 추가] 데스크톱(RankingStockDetailChart.tsx:1247-1273)엔 있는 외인/기관/프로그램
+            토글이 모바일엔 없었다 - 동일 색상/라벨로 이식(수칙 1-6). */}
+        <button
+          onClick={() => setShowForeign((v) => !v)}
+          className={`px-2 py-1 rounded-md text-[11px] font-bold border transition ${showForeign ? 'bg-orange-500/10 text-orange-600 dark:text-orange-400 border-orange-500/30' : 'bg-slate-50 dark:bg-[#131722] text-slate-400 border-slate-200 dark:border-[#2a2e39] opacity-50'}`}
+        >
+          외인
+        </button>
+        <button
+          onClick={() => setShowOrgan((v) => !v)}
+          className={`px-2 py-1 rounded-md text-[11px] font-bold border transition ${showOrgan ? 'bg-teal-500/10 text-teal-600 dark:text-teal-400 border-teal-500/30' : 'bg-slate-50 dark:bg-[#131722] text-slate-400 border-slate-200 dark:border-[#2a2e39] opacity-50'}`}
+        >
+          기관
+        </button>
+        <button
+          onClick={() => setShowProgram((v) => !v)}
+          className={`px-2 py-1 rounded-md text-[11px] font-bold border transition ${showProgram ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/30' : 'bg-slate-50 dark:bg-[#131722] text-slate-400 border-slate-200 dark:border-[#2a2e39] opacity-50'}`}
+        >
+          프로그램
+        </button>
       </div>
 
       {/* 캔들스틱 - Y축 가격은 스크롤 안 되는 고정 컬럼, 캔들/거래량은 가로 스크롤(3분봉과 동일 패턴) */}
@@ -456,7 +508,11 @@ export default function MobileStockDetailChart({ trend, stockInfo, isLoading }: 
             버그). key를 chartWidth에 묶어 폭이 바뀔 때마다 강제로 새로 마운트시켜 매번 정확히 재측정하게
             한다. */}
         <ResponsiveContainer key={`price-${chartWidth}`} width="100%" height={PRICE_CHART_CONFIG.containerHeight}>
-          <ComposedChart data={displayTrend} margin={PRICE_CHART_CONFIG.margin}>
+          {/* 🚨 [버그 수정] 데스크톱(RankingStockDetailChart.tsx:1353/1532/1603)은 캔들·4대주체·거래량
+              3개 차트가 전부 같은 syncId를 공유해서 하나를 탭하면 세 팝업이 동시에 뜨고 동시에 사라진다.
+              모바일은 이 syncId가 아예 없어서 차트마다 따로 놀았다(사용자 지적) - 3개 전부 동일한
+              syncId를 추가해 데스크톱과 똑같이 통일한다. */}
+          <ComposedChart syncId="mobile-stock-detail-chart" data={displayTrend} margin={PRICE_CHART_CONFIG.margin}>
             <CartesianGrid strokeDasharray="3 3" stroke={gridColor} opacity={0.7} />
             <XAxis dataKey="formattedDate" hide={true} />
             <YAxis stroke={axisColor} tick={false} axisLine={false} tickLine={false} width={52} domain={priceDomain} ticks={priceTicks} allowDataOverflow={true} />
@@ -499,12 +555,34 @@ export default function MobileStockDetailChart({ trend, stockInfo, isLoading }: 
         )}
         </div>
 
+        {/* 4대 주체(외국인/기관/프로그램) 일별 순매수 - 데스크톱(RankingStockDetailChart.tsx:1561-1604)에는
+            있는데 모바일엔 아예 없었다(사용자 지적) - 팝업(CustomSupplyTooltip)까지 완전히 동일하게 이식한다
+            (수칙 1-6). 캔들/거래량과 같은 chartWidth 컨테이너 안에 있어야 가로 스크롤해도 x축이 안 어긋난다. */}
+        <div className="mt-1">
+          <div className="flex items-center justify-between text-[10px] font-bold text-slate-700 dark:text-slate-300 pb-0.5 px-0.5">
+            <span>4대 주체 일별 순매수</span>
+            <span className="text-[9px] text-slate-400 font-mono">0점 기준</span>
+          </div>
+          <ResponsiveContainer key={`supply-${chartWidth}`} width="100%" height={70}>
+            <ComposedChart syncId="mobile-stock-detail-chart" data={displayTrend} margin={{ top: 5, right: 15, left: -10, bottom: 0 }} barGap={0} barCategoryGap="18%">
+              <CartesianGrid strokeDasharray="3 3" stroke={gridColor} opacity={0.7} />
+              <XAxis dataKey="formattedDate" hide={true} />
+              <YAxis stroke={axisColor} tickFormatter={formatYAmt} tick={{ fontSize: 8 }} width={52} domain={supplyDomain as any} />
+              <Tooltip content={<CustomSupplyTooltip />} cursor={{ fill: isDark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.04)' }} />
+              <ReferenceLine y={0} stroke={isDark ? '#475569' : '#94a3b8'} strokeWidth={1.5} />
+              {showForeign && <Bar dataKey="foreignNetBuyAmt" name="외국인" fill="#f97316" radius={[2, 2, 0, 0]} />}
+              {showOrgan && <Bar dataKey="organNetBuyAmt" name="기관" fill="#14b8a6" radius={[2, 2, 0, 0]} />}
+              {showProgram && <Bar dataKey="programNetBuyAmt" name="프로그램" fill="#f59e0b" radius={[2, 2, 0, 0]} />}
+            </ComposedChart>
+          </ResponsiveContainer>
+        </div>
+
         {/* 거래량 - 데스크톱(RankingStockDetailChart.tsx)과 동일한 팝업(CustomDailyVolumeTooltip, 양봉/음봉·
             20일 평균·평균 대비 %)을 그대로 재사용한다(수칙 1-6). 캔들과 같은 chartWidth 컨테이너 안에 있어야
             가로 스크롤해도 x축이 어긋나지 않는다 - Y축(거래량 눈금)은 3분봉과 동일하게 스크롤 대상에 포함. */}
         <div className="mt-1">
           <ResponsiveContainer key={`vol-${chartWidth}`} width="100%" height={70}>
-            <ComposedChart data={displayTrend} margin={{ top: 5, right: 15, left: -10, bottom: 0 }}>
+            <ComposedChart syncId="mobile-stock-detail-chart" data={displayTrend} margin={{ top: 5, right: 15, left: -10, bottom: 0 }}>
               <XAxis dataKey="formattedDate" stroke={axisColor} tick={{ fontSize: 8 }} />
               <YAxis stroke={axisColor} tickFormatter={formatYVol} tick={{ fontSize: 8 }} width={52} />
               <Tooltip content={<CustomDailyVolumeTooltip />} cursor={{ fill: isDark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.04)' }} />
@@ -519,6 +597,22 @@ export default function MobileStockDetailChart({ trend, stockInfo, isLoading }: 
         </div>
         </div>
       </div>
+
+      {/* 4대 주체 범례 - 데스크톱(RankingStockDetailChart.tsx:1583-1603)과 동일. 가로 스크롤 영역 밖에
+          둬서 5일/20일 탭(chartWidth 320px)에서도 안 잘리고 항상 보인다. */}
+      {(showForeign || showOrgan || showProgram) && (
+        <div className="flex items-center justify-center gap-3 pt-1 text-[10px] font-semibold text-slate-600 dark:text-slate-300">
+          {showForeign && (
+            <div className="flex items-center gap-1"><span className="w-2.5 h-2.5 bg-[#f97316] inline-block rounded-xs" /><span>외국인</span></div>
+          )}
+          {showOrgan && (
+            <div className="flex items-center gap-1"><span className="w-2.5 h-2.5 bg-[#14b8a6] inline-block rounded-xs" /><span>기관</span></div>
+          )}
+          {showProgram && (
+            <div className="flex items-center gap-1"><span className="w-2.5 h-2.5 bg-[#f59e0b] inline-block rounded-xs" /><span>프로그램</span></div>
+          )}
+        </div>
+      )}
 
       {/* "최초 거래량 돌파일 대비 오늘 거래량 몇%" 안내 - 데스크톱과 동일 문구/공식(recentVolumeBenchmark).
           가로 스크롤 영역(chartWidth) 밖, 화면 전체 폭에 표시해야 탭을 5일/20일로 바꿔 chartWidth가
