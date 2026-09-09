@@ -126,37 +126,43 @@ export default function MobileStockDetailChart({ trend, stockInfo, isLoading }: 
   // 떠 있었다 - 데스크톱은 getTrendBadgeInfo(RankingStockDetailChart.tsx:468)로 계산해서 헤더에
   // 보여주는데, 모바일은 disparate 숫자만 계산하고 badge/badgeStyle 필드 자체를 안 만들었다. 데스크톱과
   // 동일하게 ma5 + computeRecentVolumeRatio(당일 거래량/최근20일 평균 비율)까지 계산해 배지를 채운다.
+  // 🚨 [버그 수정 - 수칙 1-6] 예전엔 displayTrend(현재 탭만큼 잘린 배열)에서 20/60/120일 평균을
+  // 다시 계산했다 - 5D/20D 탭에서 displayTrend가 5개/20개짜리뿐이라 "20일선"/"60일선"이 조용히 더
+  // 짧은 평균으로 대체됐다(데스크톱 RankingStockDetailChart.tsx와 동일 버그, 실측: 가온전선 000500
+  // 5D 탭에서 20일선 이격도가 139.3%가 아니라 115.6%로 나옴). 이 컴포넌트는 부모(MobileStockDetailPanel
+  // .tsx:16)가 애초에 항상 period=60d(180일치)로 조회해서 넘겨주므로, 잘리지 않은 원본 fullTrendWithMA
+  // 기준으로 계산하면 탭과 무관하게 항상 정확하다 - 새 API 호출도 필요 없다.
   const disparateInfo = React.useMemo(() => {
     const emptyBadge = { badge: '⚪ 이평선 수렴', badgeStyle: 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-300 dark:border-slate-700' };
     const empty = { disparate20: 100, disparate60: 100, disparate120: 100, overbought20Price: 0, oversold20Price: 0, overbought60Price: 0, oversold60Price: 0, overbought120Price: 0, oversold120Price: 0, support1Price: 0, recentLowPrice: 0, ...emptyBadge };
-    if (displayTrend.length === 0) return empty;
+    if (fullTrendWithMA.length === 0) return empty;
 
-    const rawCloses = displayTrend.map((d) => d.closePrice).filter((c) => c && c > 0);
+    const rawCloses = fullTrendWithMA.map((d) => d.closePrice).filter((c) => c && c > 0);
     if (rawCloses.length === 0) return empty;
 
     const closes = rawCloses.slice(findSplitSafeStartIndex(rawCloses));
-    const splitSafeDisplayTrend = displayTrend.slice(displayTrend.length - closes.length);
-    if (splitSafeDisplayTrend.length === 0) return empty;
+    const splitSafeFullTrend = fullTrendWithMA.slice(fullTrendWithMA.length - closes.length);
+    if (splitSafeFullTrend.length === 0) return empty;
 
     const currentP = closes[closes.length - 1];
     const slice5 = closes.slice(-Math.min(5, closes.length));
     const slice20 = closes.slice(-Math.min(20, closes.length));
     const slice60 = closes.slice(-Math.min(60, closes.length));
+    const slice120 = closes.slice(-Math.min(120, closes.length));
     const ma5 = slice5.reduce((a, b) => a + b, 0) / slice5.length;
     const ma20 = slice20.reduce((a, b) => a + b, 0) / slice20.length;
     const ma60 = slice60.reduce((a, b) => a + b, 0) / slice60.length;
+    const ma120 = slice120.reduce((a, b) => a + b, 0) / slice120.length;
 
-    // 120일선: displayTrend는 이미 period(5d/20d/60d/120D)로 잘려 있어 slice(-120) 방식으로는 진짜
-    // 120일 평균을 낼 수 없다(60일선과 같아지는 가짜 계산) - fullTrendWithMA가 원본 전체 배열 기준으로
-    // 미리 계산해둔 ma120 필드를 그대로 재사용한다.
-    const lastPoint = splitSafeDisplayTrend[splitSafeDisplayTrend.length - 1] as any;
-    const ma120 = (lastPoint?.ma120 !== undefined && lastPoint?.ma120 !== null) ? lastPoint.ma120 : ma60;
-
-    const recentLowPrice = Math.min(...splitSafeDisplayTrend.map((d) => (d.lowPrice && d.lowPrice > 0 ? d.lowPrice : d.closePrice)));
+    // 2차 지지(전저점)만은 의도적으로 "지금 보고 있는 탭 구간 안의 최저가"로 남겨둔다 - 이격도(20/60/
+    // 120일 고정 기준)와 달리 "화면에 보이는 범위 안의 전저점"이라는 별개 개념이라 displayTrend를 쓴다.
+    const recentLowPrice = displayTrend.length > 0
+      ? Math.min(...displayTrend.map((d) => (d.lowPrice && d.lowPrice > 0 ? d.lowPrice : d.closePrice)))
+      : 0;
 
     // 당일 거래량 / 최근 20일(당일 제외) 평균 거래량 비율 - getTrendBadgeInfo가 세력매집/설거지주의
-    // 판별에 쓴다(RankingStockDetailChart.tsx:465와 동일).
-    const volumeRatio = computeRecentVolumeRatio(splitSafeDisplayTrend.map((d) => d.volume));
+    // 판별에 쓴다(RankingStockDetailChart.tsx:465와 동일). 이것도 원본 전체 배열 기준으로 계산한다.
+    const volumeRatio = computeRecentVolumeRatio(splitSafeFullTrend.map((d) => d.volume));
     const { badge, badgeStyle } = getTrendBadgeInfo(currentP, ma5, ma20, ma60, volumeRatio);
 
     return {
@@ -174,7 +180,7 @@ export default function MobileStockDetailChart({ trend, stockInfo, isLoading }: 
       support1Price: roundToKrxTick(ma20),
       recentLowPrice,
     };
-  }, [displayTrend]);
+  }, [fullTrendWithMA, displayTrend]);
 
   const { minPrice, maxPrice, priceDomain, priceTicks } = React.useMemo(() => {
     if (displayTrend.length === 0) return { minPrice: 0, maxPrice: 100, ...calculatePriceAxis(0, 100) };

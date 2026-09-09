@@ -181,6 +181,22 @@ export default function RankingStockDetailChart({
     refetchOnMount: false,
   });
 
+  // 🚨 [버그 수정 - 수칙 1-6] 헤더의 20일/60일/120일선 이격도(disparateInfo)가 지금 보고 있는 탭
+  // (5D/20D/60D/120D)에 맞춰 잘린 displayTrend에서 재계산되고 있었다 - 5D/20D 탭에서 closes 배열이
+  // 5개/20개뿐이라 "20일선"/"60일선"이 실제로는 5개/20개짜리 평균으로 조용히 대체됐다(실측: 삼성E&A
+  // 아니라 가온전선 000500 - 5D 탭에서 20일선 이격도가 139.3%가 아니라 115.6%로 나옴). 120D 버튼이
+  // period='60d'로 고정 조회해 우회하는 것과 동일한 방식을, 헤더 전용으로 모든 탭에 적용한다 - 탭이
+  // 뭐든 이 쿼리 하나만 항상 깊은 데이터(180일치)를 들고 있고, 헤더 계산은 여기서만 가져온다.
+  // period='60d'와 동일한 queryKey를 써서 60D/120D 탭을 이미 본 적 있으면 react-query 캐시를 그대로
+  // 재사용하고(중복 호출 없음), 캔들 차트 자체(displayTrend)는 기존처럼 현재 탭의 가벼운 조회를 그대로 쓴다.
+  const disparityQuery = useQuery<InvestorTrendResponse>({
+    queryKey: ['rankingStockDetail', safeSymbol, '60d'],
+    queryFn: () => fetchTrend(safeSymbol, '60d'),
+    enabled: Boolean(safeSymbol),
+    staleTime: 5 * 60 * 1000,
+    refetchOnMount: false,
+  });
+
   // 한국 거래소 장중 여부 판별 (평일 09:00 ~ 15:30)
   const isMarketOpen = React.useMemo(() => {
     const now = new Date();
@@ -433,42 +449,42 @@ function calculateUltraTightKrxPriceAxis(minRaw: number, maxRaw: number) {
 
   // 100%-Baseline Disparate Ratio & 4-Stage Status Computation
   const disparateInfo = React.useMemo(() => {
-    if (!displayTrend || displayTrend.length === 0) {
+    // 🚨 [버그 수정 - 수칙 1-6] 예전엔 displayTrend(현재 탭만큼 잘린 배열)로 재계산해서, 5D/20D 탭에서
+    // "20일선"/"60일선"이 실제로는 5개/20개짜리 평균으로 조용히 대체되는 문제가 있었다. 지금은 탭과
+    // 무관하게 항상 깊은 데이터(disparityQuery, period='60d' 고정 - 180일치)에서 계산해서, 어느 탭을
+    // 보고 있든 항상 같은(정확한) 20일/60일/120일 이격도가 나온다.
+    const deepTrend = disparityQuery.data?.trend || [];
+    if (!deepTrend || deepTrend.length === 0) {
       return { ma5: 0, ma20: 0, ma60: 0, ma120: 0, disparate20: 100, disparate60: 100, disparate120: 100, overbought20Price: 0, oversold60Price: 0, overbought120Price: 0, oversold120Price: 0, badge: '⚪ 이평선 수렴', badgeStyle: 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-300 dark:border-slate-700' };
     }
 
-    const rawCloses = displayTrend.map((d) => d.closePrice).filter((c) => c && c > 0);
+    const rawCloses = deepTrend.map((d) => d.closePrice).filter((c) => c && c > 0);
     if (rawCloses.length === 0) {
       return { ma5: 0, ma20: 0, ma60: 0, ma120: 0, disparate20: 100, disparate60: 100, disparate120: 100, overbought20Price: 0, oversold60Price: 0, overbought120Price: 0, oversold120Price: 0, badge: '⚪ 이평선 수렴', badgeStyle: 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-300 dark:border-slate-700' };
     }
 
     // 액면분할/무상감자 등 옛 가격 스케일 구간은 제외하고 계산 (수칙 1-3: 오염 구간 제외 방식)
     const closes = rawCloses.slice(findSplitSafeStartIndex(rawCloses));
-    const splitSafeDisplayTrend = displayTrend.slice(displayTrend.length - closes.length);
+    const splitSafeDeepTrend = deepTrend.slice(deepTrend.length - closes.length);
 
     const currentP = closes[closes.length - 1];
     const slice5 = closes.slice(-Math.min(5, closes.length));
     const slice20 = closes.slice(-Math.min(20, closes.length));
     const slice60 = closes.slice(-Math.min(60, closes.length));
+    const slice120 = closes.slice(-Math.min(120, closes.length));
 
     const ma5 = slice5.reduce((a, b) => a + b, 0) / slice5.length;
     const ma20 = slice20.reduce((a, b) => a + b, 0) / slice20.length;
     const ma60 = slice60.reduce((a, b) => a + b, 0) / slice60.length;
+    const ma120 = slice120.reduce((a, b) => a + b, 0) / slice120.length;
 
     const disparate20 = Number(((currentP / ma20) * 100).toFixed(1));
     const disparate60 = Number(((currentP / ma60) * 100).toFixed(1));
-
-    // 120일선: 여기 closes는 이미 period(5d/20d/60d)로 잘린 displayTrend 기준이라 최대 60개뿐이라서
-    // slice(-120) 방식으로는 진짜 120일 평균을 만들 수 없다 (60일선과 똑같은 값이 되는 가짜 계산이 된다).
-    // 대신 displayTrend 각 행에 이미 원본(raw) 전체 trend 배열(최대 약 250 거래일) 기준으로 정확히
-    // 계산되어 있는 ma120 필드(fullTrendWithMA 참고)를 그대로 재사용한다 (수칙 1-3/1-6: 가짜 축소 계산 및
-    // 중복 재구현 금지).
-    const lastPoint = splitSafeDisplayTrend[splitSafeDisplayTrend.length - 1] as any;
-    const ma120 = (lastPoint?.ma120 !== undefined && lastPoint?.ma120 !== null) ? lastPoint.ma120 : ma60;
     const disparate120 = Number(((currentP / ma120) * 100).toFixed(1));
 
     // 당일 거래량 / 최근 20일(당일 제외) 평균 거래량 비율 - 세력매집/설거지주의 정교 판별용
-    const volumeRatio = computeRecentVolumeRatio(splitSafeDisplayTrend.map((d) => d.volume));
+    // (이것도 예전엔 displayTrend 기준이라 5D/20D 탭에서 진짜 20일 평균이 아니었다 - 같은 이유로 deep 기준으로 통일)
+    const volumeRatio = computeRecentVolumeRatio(splitSafeDeepTrend.map((d) => d.volume));
 
     // Use unified getTrendBadgeInfo helper for exact status consistency
     const { badge, badgeStyle } = getTrendBadgeInfo(currentP, ma5, ma20, ma60, volumeRatio);
@@ -482,10 +498,15 @@ function calculateUltraTightKrxPriceAxis(minRaw: number, maxRaw: number) {
     const overbought120Price = roundToKrxTick(ma120 * 1.10);
     const oversold120Price = roundToKrxTick(ma120 * 0.90);
     const support1Price = roundToKrxTick(ma20);
-    const recentLowPrice = Math.min(...splitSafeDisplayTrend.map((d) => (d.lowPrice && d.lowPrice > 0 ? d.lowPrice : d.closePrice)));
+    // 2차 지지(전저점)만은 의도적으로 "지금 보고 있는 탭 구간 안에서의 최저가"로 남겨둔다 - 이건
+    // 이격도(20/60/120일 고정 기준)와 달리 "이 화면에 보이는 범위 안의 전저점"이라는 별개 개념이라,
+    // displayTrend(탭 스코프)를 그대로 쓰는 게 맞다.
+    const recentLowPrice = displayTrend.length > 0
+      ? Math.min(...displayTrend.map((d) => (d.lowPrice && d.lowPrice > 0 ? d.lowPrice : d.closePrice)))
+      : 0;
 
     return { ma5, ma20, ma60, ma120, disparate20, disparate60, disparate120, overbought20Price, oversold20Price, overbought60Price, oversold60Price, overbought120Price, oversold120Price, support1Price, recentLowPrice, badge, badgeStyle };
-  }, [displayTrend]);
+  }, [disparityQuery.data, displayTrend]);
 
   // 오늘 거래량이 "신뢰할 만한 수준"인지 판단하는 기준 - 20일 평균(일반 기준선)과는 별개로,
   // "이번 무브에서 양봉 거래량이 평소 대비 처음으로 급증(돌파)한 날"의 거래량과 오늘을 직접 비교한다.
