@@ -24,7 +24,7 @@ import {
 } from 'recharts';
 import { InvestorTrendDay, StockInfo } from '@/lib/types';
 import { useTheme } from '@/providers/ThemeProvider';
-import { PRICE_CHART_CONFIG, CandlestickBar, CustomCandleTooltip, getTrendBadgeInfo } from '@/components/chart/CandlestickPrimitives';
+import { PRICE_CHART_CONFIG, CandlestickBar, CustomCandleTooltip, CustomDailyVolumeTooltip, getTrendBadgeInfo } from '@/components/chart/CandlestickPrimitives';
 import { findSplitSafeStartIndex, roundToKrxTick, computeRecentVolumeRatio } from '@/lib/mockData';
 import { ShieldCheck, ShieldOff } from 'lucide-react';
 import MobileIntraday3mChart, { fetchIntraday3m } from './MobileIntraday3mChart';
@@ -93,6 +93,53 @@ export default function MobileStockDetailChart({ trend, stockInfo, isLoading }: 
 
   const rawTrend = trend || [];
 
+  // 🚨 [기능 추가] 데스크톱(RankingStockDetailChart.tsx:478)에만 있던 "최초 거래량 돌파일 대비 오늘
+  // 거래량 몇%" 안내가 모바일엔 없었다 - 완전히 동일한 공식 그대로 이식한다(수칙 1-6, 새 계산 로직
+  // 만들지 않음). 표시 구간(displayTrend)과 무관하게 rawTrend(전체 배열) 기준으로 계산해야 5D/20D
+  // 탭에서도 "최근 40영업일 스캔"이 온전히 동작한다.
+  const recentVolumeBenchmark = React.useMemo(() => {
+    if (!rawTrend || rawTrend.length < 2) return null;
+    const todayIdx = rawTrend.length - 1;
+    const today = rawTrend[todayIdx] as any;
+    if (!today || !today.volume) return null;
+    const isUpCandle = (d: any) => (d.closePrice ?? 0) >= (d.openPrice ?? 0);
+
+    // 오늘 이전 최대 40영업일을 스캔한다. 각 날짜의 거래량을 "그 직전 5영업일 평균" 대비 배율로 보고,
+    // 양봉이면서 배율이 3배 이상으로 처음(가장 이른 날짜) 튀는 날을 "돌파일"로 판정한다.
+    const scanStart = Math.max(0, todayIdx - 40);
+    const scanWindow = rawTrend.slice(scanStart, todayIdx) as any[];
+    const BREAKOUT_MULTIPLIER = 3;
+    let breakoutDay: any = null;
+    for (let i = 5; i < scanWindow.length; i++) {
+      const day = scanWindow[i];
+      if (!day.volume || !isUpCandle(day)) continue;
+      const baseline = scanWindow.slice(i - 5, i);
+      const baselineAvg = baseline.reduce((sum, d) => sum + (d.volume || 0), 0) / baseline.length;
+      if (baselineAvg > 0 && day.volume / baselineAvg >= BREAKOUT_MULTIPLIER) {
+        breakoutDay = day;
+        break; // 가장 이른(첫) 돌파일만 채택
+      }
+    }
+
+    // 뚜렷한 돌파일이 없으면 최근 20영업일 중 양봉만 놓고 거래량 최댓값일로 대체한다.
+    let peakDay = breakoutDay;
+    if (!peakDay) {
+      const fallbackWindow = (rawTrend.slice(Math.max(0, todayIdx - 20), todayIdx) as any[]).filter(isUpCandle);
+      if (fallbackWindow.length > 0) {
+        peakDay = fallbackWindow.reduce((a, b) => ((b.volume || 0) > (a.volume || 0) ? b : a));
+      }
+    }
+    if (!peakDay || !peakDay.volume) return null;
+
+    const ratio = Math.round((today.volume / peakDay.volume) * 100);
+    return {
+      peakDate: peakDay.formattedDate || peakDay.stck_bsop_date || '',
+      peakVolume: peakDay.volume,
+      ratio,
+      isBreakoutDay: !!breakoutDay,
+    };
+  }, [rawTrend]);
+
   // MA5/20/60/120은 표시 구간과 무관하게 전체 배열 기준으로 계산해야 정확하다 - 잘린 배열로 평균 내면
   // 60일선과 120일선이 똑같아지는 가짜 계산이 된다(RankingStockDetailChart.tsx와 동일 이유).
   const fullTrendWithMA = React.useMemo(() => {
@@ -105,11 +152,13 @@ export default function MobileStockDetailChart({ trend, stockInfo, isLoading }: 
       const ma60 = slice60.reduce((acc, x) => acc + x.closePrice, 0) / slice60.length;
       const slice120 = arr.slice(Math.max(0, idx - 119), idx + 1);
       const ma120 = slice120.reduce((acc, x) => acc + x.closePrice, 0) / slice120.length;
+      // 20일 평균 거래량 - 데스크톱 거래량 팝업(CustomDailyVolumeTooltip)이 "평균 대비 %"를 보여주는 데 쓴다.
+      const volMa20 = Math.round(slice20.reduce((acc, x) => acc + (x.volume || 0), 0) / slice20.length);
 
       const volumeRatio = idx > 0 && arr[idx - 1].volume > 0 ? d.volume / arr[idx - 1].volume : null;
       const { badge } = getTrendBadgeInfo(d.closePrice, ma5, idx >= 19 ? ma20 : null, idx >= 59 ? ma60 : null, volumeRatio);
 
-      return { ...d, ma5, ma20, ma60, ma120, trendStatus: badge };
+      return { ...d, ma5, ma20, ma60, ma120, volMa20, trendStatus: badge };
     });
   }, [rawTrend]);
 
@@ -231,6 +280,20 @@ export default function MobileStockDetailChart({ trend, stockInfo, isLoading }: 
 
   const formatYPrice = (v: number) => v.toLocaleString(undefined, { maximumFractionDigits: 0 });
   const formatYVol = (v: number) => (v >= 100000000 ? `${Math.round(v / 100000000)}억` : v >= 10000 ? `${Math.round(v / 10000)}만` : v.toLocaleString());
+
+  // 🚨 [사용자 요청] "120일도 너무 안 보여" - 60/120일 캔들을 좁은 모바일 화면 폭에 욱여넣으니 3분봉과
+  // 똑같이 캔들이 짓눌려 안 보이는 문제가 있었다. 3분봉(MobileIntraday3mChart.tsx)에서 이미 검증된
+  // "캔들 최소폭 보장 가로 스크롤 + Y축 가격은 스크롤 안 되는 고정 컬럼" 패턴을 여기도 그대로 적용한다
+  // (수칙 1-6, MIN_CANDLE_PX=8도 3분봉과 동일하게 재사용). 5일/20일처럼 원래 폭에 다 들어가는 탭은
+  // Math.max(..., 320)에 걸려 스크롤이 아예 안 생기므로 기존과 동일하게 보인다.
+  const MIN_CANDLE_PX = 8;
+  const chartWidth = Math.max(displayTrend.length * MIN_CANDLE_PX, 320);
+  const dailyScrollRef = React.useRef<HTMLDivElement>(null);
+  React.useEffect(() => {
+    if (dailyScrollRef.current) {
+      dailyScrollRef.current.scrollLeft = dailyScrollRef.current.scrollWidth;
+    }
+  }, [displayTrend.length]);
 
   return (
     <div className="w-full bg-white dark:bg-[#131722] border border-slate-200 dark:border-[#2a2e39] rounded-xl p-2.5">
@@ -372,13 +435,31 @@ export default function MobileStockDetailChart({ trend, stockInfo, isLoading }: 
         </button>
       </div>
 
-      {/* 캔들스틱 */}
-      <div className="relative">
-        <ResponsiveContainer width="100%" height={PRICE_CHART_CONFIG.containerHeight}>
+      {/* 캔들스틱 - Y축 가격은 스크롤 안 되는 고정 컬럼, 캔들/거래량은 가로 스크롤(3분봉과 동일 패턴) */}
+      <div className="flex">
+        <div className="shrink-0 relative" style={{ width: 52, height: PRICE_CHART_CONFIG.containerHeight }}>
+          {priceTicks.map((t) => (
+            <div
+              key={`daily-fixed-ytick-${t}`}
+              className="absolute text-[9px] font-mono"
+              style={{ top: PRICE_CHART_CONFIG.margin.top + (1 - (t - minPrice) / (maxPrice - minPrice)) * PRICE_CHART_CONFIG.plotHeight - 6, left: 2, color: axisColor }}
+            >
+              {formatYPrice(t)}
+            </div>
+          ))}
+        </div>
+        <div ref={dailyScrollRef} className="overflow-x-auto flex-1 min-w-0">
+        <div style={{ width: chartWidth }}>
+        <div className="relative">
+        {/* 🚨 [버그 수정] ResponsiveContainer가 부모 폭이 줄어드는(120D→5D처럼) 방향의 변화를 못 알아채고
+            이전 폭(예: 960px)에 그대로 멈춰 있는 걸 실측으로 확인했다(늘어나는 방향은 정상 반영됨 - 편도
+            버그). key를 chartWidth에 묶어 폭이 바뀔 때마다 강제로 새로 마운트시켜 매번 정확히 재측정하게
+            한다. */}
+        <ResponsiveContainer key={`price-${chartWidth}`} width="100%" height={PRICE_CHART_CONFIG.containerHeight}>
           <ComposedChart data={displayTrend} margin={PRICE_CHART_CONFIG.margin}>
             <CartesianGrid strokeDasharray="3 3" stroke={gridColor} opacity={0.7} />
             <XAxis dataKey="formattedDate" hide={true} />
-            <YAxis stroke={axisColor} tickFormatter={formatYPrice} tick={{ fontSize: 9 }} width={52} domain={priceDomain} ticks={priceTicks} allowDataOverflow={true} />
+            <YAxis stroke={axisColor} tick={false} axisLine={false} tickLine={false} width={52} domain={priceDomain} ticks={priceTicks} allowDataOverflow={true} />
             <Tooltip content={<CustomCandleTooltip priceLabel="원" />} cursor={{ stroke: '#94a3b8', strokeWidth: 1, strokeDasharray: '3 3' }} />
             <Bar dataKey="closePrice" name="캔들스틱" shape={(props: any) => <CandlestickBar {...props} minPrice={minPrice} maxPrice={maxPrice} topPadding={PRICE_CHART_CONFIG.margin.top} plotHeight={PRICE_CHART_CONFIG.plotHeight} />} isAnimationActive={false} />
             {showMA5 && <Line type="linear" dataKey="ma5" name="5일 이동평균" stroke="#f59e0b" strokeWidth={1.5} dot={false} activeDot={false} connectNulls={true} />}
@@ -398,7 +479,7 @@ export default function MobileStockDetailChart({ trend, stockInfo, isLoading }: 
 
         {/* 매물대 반투명 오버레이 */}
         {showVolumeProfile && volumeProfileBins.length > 0 && (
-          <div className="absolute left-[52px] right-[15px] top-2 bottom-0 pointer-events-none">
+          <div className="absolute left-0 right-[15px] top-2 bottom-0 pointer-events-none">
             <svg width="100%" height="100%" style={{ overflow: 'visible' }}>
               {volumeProfileBins.map((bin, i) => {
                 const topPadding = PRICE_CHART_CONFIG.margin.top;
@@ -416,7 +497,41 @@ export default function MobileStockDetailChart({ trend, stockInfo, isLoading }: 
             </svg>
           </div>
         )}
+        </div>
+
+        {/* 거래량 - 데스크톱(RankingStockDetailChart.tsx)과 동일한 팝업(CustomDailyVolumeTooltip, 양봉/음봉·
+            20일 평균·평균 대비 %)을 그대로 재사용한다(수칙 1-6). 캔들과 같은 chartWidth 컨테이너 안에 있어야
+            가로 스크롤해도 x축이 어긋나지 않는다 - Y축(거래량 눈금)은 3분봉과 동일하게 스크롤 대상에 포함. */}
+        <div className="mt-1">
+          <ResponsiveContainer key={`vol-${chartWidth}`} width="100%" height={70}>
+            <ComposedChart data={displayTrend} margin={{ top: 5, right: 15, left: -10, bottom: 0 }}>
+              <XAxis dataKey="formattedDate" stroke={axisColor} tick={{ fontSize: 8 }} />
+              <YAxis stroke={axisColor} tickFormatter={formatYVol} tick={{ fontSize: 8 }} width={52} />
+              <Tooltip content={<CustomDailyVolumeTooltip />} cursor={{ fill: isDark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.04)' }} />
+              <Bar dataKey="volume" name="거래량" radius={[2, 2, 0, 0]}>
+                {displayTrend.map((d, i) => (
+                  <Cell key={`vol-${i}`} fill={d.closePrice >= (d.openPrice ?? d.closePrice) ? '#ef4444' : '#3b82f6'} fillOpacity={0.6} />
+                ))}
+              </Bar>
+            </ComposedChart>
+          </ResponsiveContainer>
+        </div>
+        </div>
+        </div>
       </div>
+
+      {/* "최초 거래량 돌파일 대비 오늘 거래량 몇%" 안내 - 데스크톱과 동일 문구/공식(recentVolumeBenchmark).
+          가로 스크롤 영역(chartWidth) 밖, 화면 전체 폭에 표시해야 탭을 5일/20일로 바꿔 chartWidth가
+          좁아져도(320px) 문구가 줄바꿈으로 안 잘리고 읽힌다. */}
+      {recentVolumeBenchmark && (
+        <div className={`flex items-center gap-1.5 text-[10px] font-bold px-0.5 pt-1.5 ${recentVolumeBenchmark.ratio >= 100 ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'}`}>
+          <span>{recentVolumeBenchmark.ratio >= 100 ? '✅' : '⚠️'}</span>
+          <span className="font-mono">
+            {recentVolumeBenchmark.isBreakoutDay ? '최초 거래량 돌파일' : '최근 거래량 고점'} {recentVolumeBenchmark.peakDate}
+            ({(recentVolumeBenchmark.peakVolume || 0).toLocaleString()}주) 대비 오늘 거래량 {recentVolumeBenchmark.ratio}%
+          </span>
+        </div>
+      )}
 
       {/* 이격도 범례 바 */}
       {showDisparate && (
@@ -430,21 +545,6 @@ export default function MobileStockDetailChart({ trend, stockInfo, isLoading }: 
         </div>
       )}
 
-      {/* 거래량 */}
-      <div className="mt-1">
-        <ResponsiveContainer width="100%" height={70}>
-          <ComposedChart data={displayTrend} margin={{ top: 5, right: 15, left: -10, bottom: 0 }}>
-            <XAxis dataKey="formattedDate" stroke={axisColor} tick={{ fontSize: 8 }} />
-            <YAxis stroke={axisColor} tickFormatter={formatYVol} tick={{ fontSize: 8 }} width={52} />
-            <Tooltip formatter={(v: any) => [Number(v).toLocaleString(), '거래량']} contentStyle={{ fontSize: 11, borderRadius: 8 }} />
-            <Bar dataKey="volume" name="거래량" radius={[2, 2, 0, 0]}>
-              {displayTrend.map((d, i) => (
-                <Cell key={`vol-${i}`} fill={d.closePrice >= (d.openPrice ?? d.closePrice) ? '#ef4444' : '#3b82f6'} fillOpacity={0.6} />
-              ))}
-            </Bar>
-          </ComposedChart>
-        </ResponsiveContainer>
-      </div>
       </>
       )}
     </div>

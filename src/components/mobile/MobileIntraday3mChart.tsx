@@ -130,18 +130,21 @@ export default function MobileIntraday3mChart({ symbol }: MobileIntraday3mChartP
   const [showFibo, setShowFibo] = useState(true);
   const [showVolumeProfile, setShowVolumeProfile] = useState(true);
 
-  // 🚨 [사용자 요청] Recharts 기본 Tooltip은 마우스 이동/이탈 기준으로 뜨고 닫히는데, 모바일 터치엔
-  // "벗어남" 이벤트가 없어서 한 번 탭하면 안 닫히고 차트를 계속 가렸다("팝업 뜨면 차트를 볼 수 없다").
-  // Recharts에 맡기지 않고 직접 상태로 관리한다 - 캔들 탭 → 그 캔들 정보를 차트 밖 고정 바에 표시,
-  // 차트 컴포넌트 바깥을 탭 → 무조건 닫힘(기본 상태로 복귀). 팝업이 차트 위에 뜨는 게 아니라 항상
-  // 차트 밖 같은 자리에 표시되므로 애초에 캔들을 가릴 일이 없다.
+  // 🚨 [사용자 요청 - 재변경] 처음엔 Recharts 기본 Tooltip이 모바일 터치에서 안 닫히고 차트를 계속
+  // 가리는 문제(마우스 "벗어남" 이벤트가 터치엔 없음) 때문에 차트 밖 고정 바 방식으로 바꿨었는데,
+  // 이번엔 "다른 모바일 일봉 차트들처럼 팝업으로 띄워달라"는 요청을 받았다. 다만 Recharts Tooltip
+  // 자체를 다시 쓰진 않는다(그 근본 문제가 그대로 재발함) - 대신 탭 좌표(clientX/Y)를 직접 저장해서
+  // 그 위치에 우리가 만든 카드를 position:fixed로 띄운다. 화면(뷰포트) 기준 고정이라 가로 스크롤 위치와
+  // 무관하게 항상 탭한 자리에 정확히 뜨고, 차트 컨테이너 바깥을 탭하면(기존 로직 그대로) 사라진다.
   const [selectedCandle, setSelectedCandle] = useState<any | null>(null);
+  const [tapPos, setTapPos] = useState<{ x: number; y: number } | null>(null);
   const containerRef = React.useRef<HTMLDivElement>(null);
 
   React.useEffect(() => {
     const handleOutsideTap = (e: MouseEvent) => {
       if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
         setSelectedCandle(null);
+        setTapPos(null);
       }
     };
     document.addEventListener('click', handleOutsideTap);
@@ -338,29 +341,45 @@ export default function MobileIntraday3mChart({ symbol }: MobileIntraday3mChartP
         </div>
       )}
 
-      {/* 🚨 [사용자 요청] 캔들 탭 정보를 차트 위에 뜨는 팝업이 아니라 차트 "밖" 고정 자리에 표시한다 -
-          그래서 정보가 떠 있어도 캔들이 하나도 안 가려진다. 탭 안 했을 때는 가장 최근(맨 오른쪽) 캔들
-          기준으로 기본 표시, 캔들을 탭하면 그 캔들 값으로 바뀌고, 차트 컴포넌트 바깥을 탭하면(위
-          useEffect의 document 리스너) 다시 최근 캔들 기준으로 돌아온다. */}
-      {(() => {
-        const info = selectedCandle || candles[candles.length - 1];
-        if (!info) return null;
+      {/* 🚨 [사용자 요청] 캔들을 탭하면 다른 모바일 일봉 차트들과 동일하게 팝업 카드로 띄운다. 탭 좌표
+          (tapPos)에 position:fixed로 앵커링해 화면 밖으로 넘치지 않게 clamp하고, 차트 컨테이너 바깥을
+          탭하면(위 useEffect) 사라진다 - 탭 안 했을 때는 아무것도 안 뜬다(다른 일봉 팝업과 동일 동작). */}
+      {selectedCandle && tapPos && (() => {
+        const info = selectedCandle;
         const openPrice = info.openPrice ?? info.closePrice;
         const highPrice = info.highPrice ?? info.closePrice;
         const lowPrice = info.lowPrice ?? info.closePrice;
         const closePrice = info.closePrice;
         const isUp = closePrice >= openPrice;
         const rate = openPrice > 0 ? ((closePrice - openPrice) / openPrice) * 100 : 0;
+        // 팝업 카드 예상 크기 기준으로 화면 밖으로 넘치지 않게 좌표를 clamp한다.
+        const POPUP_W = 168;
+        const POPUP_H = 108;
+        const MARGIN = 8;
+        const vw = typeof window !== 'undefined' ? window.innerWidth : 375;
+        const vh = typeof window !== 'undefined' ? window.innerHeight : 812;
+        const left = Math.min(Math.max(tapPos.x - POPUP_W / 2, MARGIN), vw - POPUP_W - MARGIN);
+        // 기본은 탭 지점 위쪽에 띄우고, 화면 위로 넘치면 아래쪽으로 뒤집는다.
+        const preferAbove = tapPos.y - POPUP_H - 14 > MARGIN;
+        const top = preferAbove ? tapPos.y - POPUP_H - 14 : Math.min(tapPos.y + 14, vh - POPUP_H - MARGIN);
         return (
-          <div className="flex items-center justify-between gap-1 px-2 py-1.5 mb-2 rounded-lg bg-slate-50 dark:bg-[#131722] border border-slate-200 dark:border-[#2a2e39] text-[10px] font-mono">
-            <span className="font-bold text-slate-500 dark:text-slate-400 shrink-0">
-              {selectedCandle ? info.time : `최근(${info.time})`}
-            </span>
-            <span className="text-slate-400">시 <b className="text-slate-700 dark:text-slate-200">{Math.round(openPrice).toLocaleString()}</b></span>
-            <span className="text-red-500">고 <b>{Math.round(highPrice).toLocaleString()}</b></span>
-            <span className="text-blue-500">저 <b>{Math.round(lowPrice).toLocaleString()}</b></span>
-            <span className="text-slate-400">종 <b className="text-slate-900 dark:text-white">{Math.round(closePrice).toLocaleString()}</b></span>
-            <span className={isUp ? 'text-red-500 font-bold' : 'text-blue-500 font-bold'}>{isUp ? '+' : ''}{rate.toFixed(2)}%</span>
+          <div
+            className="fixed z-50 px-2.5 py-2 rounded-xl bg-white/95 dark:bg-[#1e222d]/95 backdrop-blur-md border border-slate-200 dark:border-[#2a2e39] shadow-xl text-[10px] font-mono space-y-1"
+            style={{ left, top, width: POPUP_W }}
+          >
+            <div className="font-bold text-slate-500 dark:text-slate-400 pb-1 border-b border-slate-100 dark:border-slate-800">
+              {info.time}
+            </div>
+            <div className="flex justify-between"><span className="text-slate-400">시</span><b className="text-slate-700 dark:text-slate-200">{Math.round(openPrice).toLocaleString()}</b></div>
+            <div className="flex justify-between"><span className="text-red-500">고</span><b className="text-red-500">{Math.round(highPrice).toLocaleString()}</b></div>
+            <div className="flex justify-between"><span className="text-blue-500">저</span><b className="text-blue-500">{Math.round(lowPrice).toLocaleString()}</b></div>
+            <div className="flex justify-between border-t border-slate-100 dark:border-slate-800 pt-1">
+              <span className="text-slate-400">종</span>
+              <span className="flex items-center gap-1">
+                <b className="text-slate-900 dark:text-white">{Math.round(closePrice).toLocaleString()}</b>
+                <b className={isUp ? 'text-red-500' : 'text-blue-500'}>{isUp ? '+' : ''}{rate.toFixed(2)}%</b>
+              </span>
+            </div>
           </div>
         );
       })()}
@@ -452,7 +471,10 @@ export default function MobileIntraday3mChart({ symbol }: MobileIntraday3mChartP
           const relX = e.clientX - rect.left;
           const idx = Math.round((relX / rect.width) * (candles.length - 1));
           const clamped = Math.max(0, Math.min(candles.length - 1, idx));
-          if (candles[clamped]) setSelectedCandle(candles[clamped]);
+          if (candles[clamped]) {
+            setSelectedCandle(candles[clamped]);
+            setTapPos({ x: e.clientX, y: e.clientY });
+          }
         }}
       />
 

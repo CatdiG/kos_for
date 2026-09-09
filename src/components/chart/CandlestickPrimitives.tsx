@@ -147,3 +147,45 @@ export const CustomCandleTooltip = ({ active, payload, label, priceLabel = '원'
     </div>
   );
 };
+
+// 일간 거래량 차트 공용 팝업 - RankingStockDetailChart.tsx에만 있던 걸 모바일도 똑같이 쓸 수 있게
+// 공통 모듈로 옮겼다(수칙 1-6, 데스크톱은 이 안에 로컬로 중복 구현돼 있던 것을 이걸로 대체).
+export const CustomDailyVolumeTooltip = ({ active, payload, label }: any) => {
+  if (!active || !payload || !payload.length) return null;
+  const dataPoint = payload[0]?.payload;
+  if (!dataPoint) return null;
+
+  const volume = dataPoint.volume || 0;
+  const volMa20 = dataPoint.volMa20 || 0;
+  const isUp = (dataPoint.closePrice ?? 0) >= (dataPoint.openPrice ?? 0);
+  // 오늘 거래량이 20일 평균 대비 몇 %인지 - "기준선 위로 올라왔는지"를 숫자로도 바로 확인
+  const ratioVsAvg = volMa20 > 0 ? Math.round((volume / volMa20) * 100) : null;
+
+  return (
+    <div className="bg-white/95 dark:bg-[#1e222d]/95 backdrop-blur-md p-2.5 rounded-xl border border-slate-200 dark:border-[#2a2e39] shadow-xl text-xs space-y-1 z-50">
+      <div className="font-bold text-slate-700 dark:text-slate-200 pb-1 border-b border-slate-100 dark:border-slate-800">
+        {label} 거래량
+      </div>
+      <div className="flex justify-between items-center gap-3">
+        <span className={`font-bold flex items-center gap-1 ${isUp ? 'text-red-500' : 'text-blue-500'}`}>
+          {isUp ? '🔴 양봉' : '🔵 음봉'}
+        </span>
+        <span className="font-mono font-bold text-slate-900 dark:text-white">{volume.toLocaleString()}주</span>
+      </div>
+      {volMa20 > 0 && (
+        <div className="flex justify-between items-center gap-3 pt-1 border-t border-slate-100 dark:border-slate-800">
+          <span className="font-semibold text-amber-600 dark:text-amber-400">20일 평균</span>
+          <span className="font-mono text-slate-600 dark:text-slate-300">{volMa20.toLocaleString()}주</span>
+        </div>
+      )}
+      {ratioVsAvg !== null && (
+        <div className="flex justify-between items-center gap-3">
+          <span className="font-semibold text-slate-500 dark:text-slate-400">평균 대비</span>
+          <span className={`font-mono font-bold ${ratioVsAvg >= 100 ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-500 dark:text-slate-400'}`}>
+            {ratioVsAvg}%{ratioVsAvg >= 100 ? ' (기준선 이상)' : ''}
+          </span>
+        </div>
+      )}
+    </div>
+  );
+};
