@@ -188,6 +188,102 @@ export const CustomSupplyTooltip = ({ active, payload, label }: any) => {
   );
 };
 
+// 🚨 [기능 추가 - 모바일 전용] 데스크톱은 캔들/4대주체/거래량 3개 팝업이 syncId로 동시에 뜨는데,
+// 화면이 넓어서 세로로 겹치지 않는다. 모바일은 세 차트 사이 간격이 좁아 세 팝업이 동시에 뜨면
+// 서로 겹쳐서 아래 팝업이 가려지는 문제가 실측으로 확인됐다(사용자 지적). 데스크톱과 똑같이
+// "3개 다 따로 띄우기"가 아니라, 캔들/4대주체/거래량 정보를 한 카드에 전부 모아 캔들 차트 쪽
+// 팝업 하나만 띄우는 방식으로 해결한다(수칙 1-6: CustomCandleTooltip/CustomSupplyTooltip/
+// CustomDailyVolumeTooltip 각각의 계산·포맷 로직을 그대로 재사용, 새 공식 없음). 나머지 두
+// 차트는 Tooltip content를 null로 비우고 cursor(세로 기준선)만 유지해 "어느 날짜가 선택됐는지"는
+// 계속 3개 차트에 다 표시되게 한다.
+export const CustomUnifiedMobileTooltip = ({ active, payload, label, priceLabel = '원' }: any) => {
+  if (!active || !payload || !payload.length) return null;
+  const dataPoint = payload[0]?.payload;
+  if (!dataPoint) return null;
+
+  const openPrice = dataPoint.openPrice ?? dataPoint.closePrice;
+  const highPrice = dataPoint.highPrice ?? dataPoint.closePrice;
+  const lowPrice = dataPoint.lowPrice ?? dataPoint.closePrice;
+  const closePrice = dataPoint.closePrice;
+  const isUp = closePrice >= openPrice;
+  const intradayRate = openPrice > 0 ? ((closePrice - openPrice) / openPrice) * 100 : 0;
+  const fmtPrice = (v: number) => Math.round(v).toLocaleString();
+  const fmtAmt = (v: number) => {
+    const sign = v >= 0 ? '+' : '';
+    return Math.abs(v) >= 100 ? `${sign}${(v / 100).toFixed(1)}억` : `${sign}${v.toLocaleString()}백만`;
+  };
+  const volume = dataPoint.volume || 0;
+  const volMa20 = dataPoint.volMa20 || 0;
+  const volRatioVsAvg = volMa20 > 0 ? Math.round((volume / volMa20) * 100) : null;
+
+  return (
+    <div className="bg-white/95 dark:bg-[#1a1e29]/95 border border-slate-200 dark:border-[#2a2e39] p-2.5 rounded-lg shadow-xl text-xs space-y-1 z-50 font-sans backdrop-blur-sm min-w-[195px] w-auto whitespace-nowrap pointer-events-none">
+      <div className="font-bold border-b border-slate-200 dark:border-slate-700/80 pb-1 text-slate-800 dark:text-slate-100 flex justify-between items-center text-[11px] gap-3">
+        <span>📅 {dataPoint.formattedDate ? `${dataPoint.formattedDate} ` : ''}{label}</span>
+        <span className="text-[10px] text-slate-400 font-mono">{isUp ? `양봉 🔴 (+${intradayRate.toFixed(2)}%)` : `음봉 🔵 (${intradayRate.toFixed(2)}%)`}</span>
+      </div>
+
+      <div className="flex justify-between items-center text-[11px] gap-3">
+        <span className="text-slate-500 dark:text-slate-400 font-medium">최고가:</span>
+        <span className="font-mono font-bold text-red-500">{fmtPrice(highPrice)}{priceLabel}</span>
+      </div>
+      <div className="flex justify-between items-center text-[11px] gap-3">
+        <span className="text-slate-500 dark:text-slate-400 font-medium">시가:</span>
+        <span className="font-mono font-semibold text-slate-700 dark:text-slate-300">{fmtPrice(openPrice)}{priceLabel}</span>
+      </div>
+      <div className="flex justify-between items-center text-[11px] gap-3">
+        <span className="text-slate-500 dark:text-slate-400 font-medium">종가:</span>
+        <span className="font-mono font-bold text-slate-900 dark:text-white">{fmtPrice(closePrice)}{priceLabel}</span>
+      </div>
+      <div className="flex justify-between items-center text-[11px] gap-3">
+        <span className="text-slate-500 dark:text-slate-400 font-medium">최저가:</span>
+        <span className="font-mono font-bold text-blue-500">{fmtPrice(lowPrice)}{priceLabel}</span>
+      </div>
+
+      <div className="pt-1.5 border-t border-slate-200 dark:border-slate-700/80 space-y-1 text-[10px]">
+        <div className="flex justify-between items-center gap-3">
+          <span className="text-slate-500 dark:text-slate-400 font-medium">🟢 추세:</span>
+          <span className="font-bold text-emerald-600 dark:text-emerald-400">{dataPoint.trendStatus || '이평선 수렴'}</span>
+        </div>
+        <div className="flex justify-between items-center gap-3">
+          <span className="text-orange-600 dark:text-orange-400 font-medium">🛡️ 1차 지지 (20일선):</span>
+          <span className="font-mono font-bold text-orange-500">
+            {dataPoint.ma20 !== undefined && dataPoint.ma20 !== null ? `${fmtPrice(dataPoint.ma20)}${priceLabel}` : '-'}
+          </span>
+        </div>
+      </div>
+
+      <div className="pt-1.5 border-t border-slate-200 dark:border-slate-700/80 space-y-0.5 text-[10px]">
+        <div className="flex justify-between items-center gap-3">
+          <span className="text-orange-500 font-bold">🟠 외국인:</span>
+          <span className={`font-mono font-bold ${(dataPoint.foreignNetBuyAmt ?? 0) >= 0 ? 'text-red-500' : 'text-blue-500'}`}>{fmtAmt(dataPoint.foreignNetBuyAmt ?? 0)}</span>
+        </div>
+        <div className="flex justify-between items-center gap-3">
+          <span className="text-teal-500 font-bold">🟢 기관:</span>
+          <span className={`font-mono font-bold ${(dataPoint.organNetBuyAmt ?? 0) >= 0 ? 'text-red-500' : 'text-blue-500'}`}>{fmtAmt(dataPoint.organNetBuyAmt ?? 0)}</span>
+        </div>
+        <div className="flex justify-between items-center gap-3">
+          <span className="text-amber-500 font-bold">🟡 프로그램:</span>
+          <span className={`font-mono font-bold ${(dataPoint.programNetBuyAmt ?? 0) >= 0 ? 'text-red-500' : 'text-blue-500'}`}>{fmtAmt(dataPoint.programNetBuyAmt ?? 0)}</span>
+        </div>
+      </div>
+
+      <div className="pt-1.5 border-t border-slate-200 dark:border-slate-700/80 space-y-0.5 text-[10px]">
+        <div className="flex justify-between items-center gap-3">
+          <span className="text-slate-500 dark:text-slate-400 font-medium">📊 거래량:</span>
+          <span className="font-mono font-bold text-slate-900 dark:text-white">{volume.toLocaleString()}주</span>
+        </div>
+        {volRatioVsAvg !== null && (
+          <div className="flex justify-between items-center gap-3">
+            <span className="text-slate-500 dark:text-slate-400 font-medium">20일 평균 대비:</span>
+            <span className={`font-mono font-bold ${volRatioVsAvg >= 100 ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-500 dark:text-slate-400'}`}>{volRatioVsAvg}%</span>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
 // 일간 거래량 차트 공용 팝업 - RankingStockDetailChart.tsx에만 있던 걸 모바일도 똑같이 쓸 수 있게
 // 공통 모듈로 옮겼다(수칙 1-6, 데스크톱은 이 안에 로컬로 중복 구현돼 있던 것을 이걸로 대체).
 export const CustomDailyVolumeTooltip = ({ active, payload, label }: any) => {

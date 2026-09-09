@@ -24,7 +24,7 @@ import {
 } from 'recharts';
 import { InvestorTrendDay, StockInfo } from '@/lib/types';
 import { useTheme } from '@/providers/ThemeProvider';
-import { PRICE_CHART_CONFIG, CandlestickBar, CustomCandleTooltip, CustomSupplyTooltip, CustomDailyVolumeTooltip, getTrendBadgeInfo } from '@/components/chart/CandlestickPrimitives';
+import { PRICE_CHART_CONFIG, CandlestickBar, CustomUnifiedMobileTooltip, getTrendBadgeInfo } from '@/components/chart/CandlestickPrimitives';
 import { findSplitSafeStartIndex, roundToKrxTick, computeRecentVolumeRatio } from '@/lib/mockData';
 import { ShieldCheck, ShieldOff } from 'lucide-react';
 import MobileIntraday3mChart, { fetchIntraday3m } from './MobileIntraday3mChart';
@@ -157,7 +157,7 @@ export default function MobileStockDetailChart({ trend, stockInfo, isLoading }: 
       const ma60 = slice60.reduce((acc, x) => acc + x.closePrice, 0) / slice60.length;
       const slice120 = arr.slice(Math.max(0, idx - 119), idx + 1);
       const ma120 = slice120.reduce((acc, x) => acc + x.closePrice, 0) / slice120.length;
-      // 20일 평균 거래량 - 데스크톱 거래량 팝업(CustomDailyVolumeTooltip)이 "평균 대비 %"를 보여주는 데 쓴다.
+      // 20일 평균 거래량 - 통합 팝업(CustomUnifiedMobileTooltip)이 "20일 평균 대비 %"를 보여주는 데 쓴다.
       const volMa20 = Math.round(slice20.reduce((acc, x) => acc + (x.volume || 0), 0) / slice20.length);
 
       const volumeRatio = idx > 0 && arr[idx - 1].volume > 0 ? d.volume / arr[idx - 1].volume : null;
@@ -516,7 +516,11 @@ export default function MobileStockDetailChart({ trend, stockInfo, isLoading }: 
             <CartesianGrid strokeDasharray="3 3" stroke={gridColor} opacity={0.7} />
             <XAxis dataKey="formattedDate" hide={true} />
             <YAxis stroke={axisColor} tick={false} axisLine={false} tickLine={false} width={52} domain={priceDomain} ticks={priceTicks} allowDataOverflow={true} />
-            <Tooltip content={<CustomCandleTooltip priceLabel="원" />} cursor={{ stroke: '#94a3b8', strokeWidth: 1, strokeDasharray: '3 3' }} />
+            {/* 🚨 [버그 수정 - 사용자 지적] 캔들/4대주체/거래량 3개 팝업이 syncId로 동시에 뜨니까 좁은
+                모바일 화면에서 서로 겹쳐서 아래 팝업이 가려졌다 - 세 정보를 한 카드로 합친
+                CustomUnifiedMobileTooltip 하나만 여기(캔들 차트)에 띄우고, 나머지 두 차트는 세로
+                기준선(cursor)만 유지한 채 팝업 내용은 비운다(아래 두 Tooltip 참고). */}
+            <Tooltip content={<CustomUnifiedMobileTooltip priceLabel="원" />} cursor={{ stroke: '#94a3b8', strokeWidth: 1, strokeDasharray: '3 3' }} />
             <Bar dataKey="closePrice" name="캔들스틱" shape={(props: any) => <CandlestickBar {...props} minPrice={minPrice} maxPrice={maxPrice} topPadding={PRICE_CHART_CONFIG.margin.top} plotHeight={PRICE_CHART_CONFIG.plotHeight} />} isAnimationActive={false} />
             {showMA5 && <Line type="linear" dataKey="ma5" name="5일 이동평균" stroke="#f59e0b" strokeWidth={1.5} dot={false} activeDot={false} connectNulls={true} />}
             {showMA20 && <Line type="linear" dataKey="ma20" name="20일 이동평균" stroke="#a855f7" strokeWidth={1.5} dot={false} activeDot={false} connectNulls={true} />}
@@ -556,8 +560,9 @@ export default function MobileStockDetailChart({ trend, stockInfo, isLoading }: 
         </div>
 
         {/* 4대 주체(외국인/기관/프로그램) 일별 순매수 - 데스크톱(RankingStockDetailChart.tsx:1561-1604)에는
-            있는데 모바일엔 아예 없었다(사용자 지적) - 팝업(CustomSupplyTooltip)까지 완전히 동일하게 이식한다
-            (수칙 1-6). 캔들/거래량과 같은 chartWidth 컨테이너 안에 있어야 가로 스크롤해도 x축이 안 어긋난다. */}
+            있는데 모바일엔 아예 없었다(사용자 지적) - 막대그래프까지 완전히 동일하게 이식한다(수칙 1-6).
+            팝업 내용은 위 캔들 차트의 통합 팝업(CustomUnifiedMobileTooltip)이 대신 보여준다(아래 참고).
+            캔들/거래량과 같은 chartWidth 컨테이너 안에 있어야 가로 스크롤해도 x축이 안 어긋난다. */}
         <div className="mt-1">
           <div className="flex items-center justify-between text-[10px] font-bold text-slate-700 dark:text-slate-300 pb-0.5 px-0.5">
             <span>4대 주체 일별 순매수</span>
@@ -568,7 +573,8 @@ export default function MobileStockDetailChart({ trend, stockInfo, isLoading }: 
               <CartesianGrid strokeDasharray="3 3" stroke={gridColor} opacity={0.7} />
               <XAxis dataKey="formattedDate" hide={true} />
               <YAxis stroke={axisColor} tickFormatter={formatYAmt} tick={{ fontSize: 8 }} width={52} domain={supplyDomain as any} />
-              <Tooltip content={<CustomSupplyTooltip />} cursor={{ fill: isDark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.04)' }} />
+              {/* 팝업 내용은 위 캔들 차트의 통합 팝업이 이미 보여주므로 여기선 세로 기준선만 유지한다. */}
+              <Tooltip content={() => null} cursor={{ fill: isDark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.04)' }} />
               <ReferenceLine y={0} stroke={isDark ? '#475569' : '#94a3b8'} strokeWidth={1.5} />
               {showForeign && <Bar dataKey="foreignNetBuyAmt" name="외국인" fill="#f97316" radius={[2, 2, 0, 0]} />}
               {showOrgan && <Bar dataKey="organNetBuyAmt" name="기관" fill="#14b8a6" radius={[2, 2, 0, 0]} />}
@@ -577,15 +583,16 @@ export default function MobileStockDetailChart({ trend, stockInfo, isLoading }: 
           </ResponsiveContainer>
         </div>
 
-        {/* 거래량 - 데스크톱(RankingStockDetailChart.tsx)과 동일한 팝업(CustomDailyVolumeTooltip, 양봉/음봉·
-            20일 평균·평균 대비 %)을 그대로 재사용한다(수칙 1-6). 캔들과 같은 chartWidth 컨테이너 안에 있어야
-            가로 스크롤해도 x축이 어긋나지 않는다 - Y축(거래량 눈금)은 3분봉과 동일하게 스크롤 대상에 포함. */}
+        {/* 거래량 - 팝업 내용(양봉/음봉·20일 평균·평균 대비 %)은 위 캔들 차트의 통합 팝업이 대신 보여준다
+            (수칙 1-6, 아래 참고). 캔들과 같은 chartWidth 컨테이너 안에 있어야 가로 스크롤해도 x축이
+            어긋나지 않는다 - Y축(거래량 눈금)은 3분봉과 동일하게 스크롤 대상에 포함. */}
         <div className="mt-1">
           <ResponsiveContainer key={`vol-${chartWidth}`} width="100%" height={70}>
             <ComposedChart syncId="mobile-stock-detail-chart" data={displayTrend} margin={{ top: 5, right: 15, left: -10, bottom: 0 }}>
               <XAxis dataKey="formattedDate" stroke={axisColor} tick={{ fontSize: 8 }} />
               <YAxis stroke={axisColor} tickFormatter={formatYVol} tick={{ fontSize: 8 }} width={52} />
-              <Tooltip content={<CustomDailyVolumeTooltip />} cursor={{ fill: isDark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.04)' }} />
+              {/* 팝업 내용은 위 캔들 차트의 통합 팝업이 이미 보여주므로 여기선 세로 기준선만 유지한다. */}
+              <Tooltip content={() => null} cursor={{ fill: isDark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.04)' }} />
               <Bar dataKey="volume" name="거래량" radius={[2, 2, 0, 0]}>
                 {displayTrend.map((d, i) => (
                   <Cell key={`vol-${i}`} fill={d.closePrice >= (d.openPrice ?? d.closePrice) ? '#ef4444' : '#3b82f6'} fillOpacity={0.6} />
