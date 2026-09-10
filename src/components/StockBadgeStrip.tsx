@@ -71,11 +71,11 @@ export default function StockBadgeStrip({ symbol }: StockBadgeStripProps) {
   const badges = data?.badges || [];
   if (badges.length === 0) return null;
 
-  // 🚨 [버그 수정 - 사용자 지적: "뱃지모음엔 가장 최신거만 넣어"] 탭마다 statusBadge 문구가 다를 수
-  // 있는데(수칙 1-5와 동일 취지 - 탭마다 캐시 시점이 다름), 여기서는 그 차이를 전부 나열하지 않고
-  // FRESHNESS_PRIORITY 기준 가장 최신일 가능성이 높은 탭 하나의 값만 채택해 모든 탭 칩에 동일하게
-  // 보여준다. 탭 간 불일치를 실제로 비교/표시하는 건 종목상세 차트(MobileStockDetailChart.tsx)의
-  // 기준/최신 배지 몫으로 넘긴다(사용자 지시 - "그리고 차트에다가만 해").
+  // 🚨 [버그 수정 - 사용자 지적: "단기과열 뱃지 하나만 띄우고 뒤에 다 붙이지 말고"] 이전 버전은
+  // freshestBadge 문구를 모든 탭 칩에 각각 반복해서 넣는 바람에, 실제로는 값이 1개인데 칩 개수만큼(예:
+  // 7번) 화면에 똑같은 배지가 줄줄이 찍혀 보였다(사용자 스크린샷으로 확인). 이격도 배지는 종목당 딱
+  // 하나만, 별도의 단일 칩으로 앞에 한 번만 그린다 - 나머지 탭 칩(급등주/외국인/기관 등)은 원래 목적인
+  // "이 종목이 몇 위에 있는지"만 담백하게 보여준다.
   const freshestBadge = [...badges]
     .filter((b) => b.statusBadge)
     .sort((a, b) => freshnessRank(a.tabId) - freshnessRank(b.tabId))[0];
@@ -84,23 +84,24 @@ export default function StockBadgeStrip({ symbol }: StockBadgeStripProps) {
     // 🚨 [UI 수정] flex-1 하나로 옆 종목명 블록(shrink-0 없음)까지 밀어붙이던 걸,
     // 오른쪽에 명시적 여백(mr-3)을 둬서 뱃지가 아무리 여러 줄로 늘어나도 종목명 영역을 침범하지 않게 한다.
     <div className="flex-1 min-w-0 flex flex-wrap items-center gap-1.5 px-1 lg:px-3 mr-3 lg:mr-4">
+      {freshestBadge?.statusBadge && (
+        <span
+          title={`이격도 추세 (${shortSourceLabel(freshestBadge.tabId)} 탭 최신 기준)`}
+          className={`inline-flex items-center text-[10px] px-1.5 py-0.5 rounded font-bold border whitespace-nowrap ${
+            freshestBadge.statusBadgeStyle || DEFAULT_BADGE_STYLE
+          }`}
+        >
+          {freshestBadge.statusBadge}
+        </span>
+      )}
       {badges.map((b) => (
         <span
           key={b.tabId}
           title={`${b.tabLabel} ${b.rank}위${b.investorBadge ? ` · ${b.investorBadge}` : ''}`}
-          // 🚨 [버그 수정] 배경색은 각 칩 자기 자신의 statusBadgeStyle을 쓰면서 문구만 freshestBadge
-          // 것으로 바꾸면, 칩마다 색은 다른데 글자는 똑같은 모순된 모습이 된다 - 배경색도 freshestBadge
-          // 것으로 통일해 색과 문구가 항상 같은 값을 가리키게 한다.
-          className={`inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded font-bold border whitespace-nowrap ${
-            freshestBadge?.statusBadgeStyle || DEFAULT_BADGE_STYLE
-          }`}
+          className={`inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded font-bold border whitespace-nowrap ${DEFAULT_BADGE_STYLE}`}
         >
           <span className="opacity-70 font-medium">{b.tabLabel}</span>
           <span>{b.rank}위</span>
-          {/* 🚨 [기능 추가 - 사용자 요청: "뱃지모음에 이격도 뱃지도 넣어줘, 가장 최신거만"] 탭마다 각자의
-              statusBadge를 반복 노출하지 않고, 전체 탭 중 가장 최신일 탭(freshestBadge) 하나의 문구만
-              모든 칩에 동일하게 보여준다 - 중복도 없고 탭 간 불일치도 화면에 안 드러나 깔끔하다. */}
-          {freshestBadge?.statusBadge && <span className="font-bold">{freshestBadge.statusBadge}</span>}
           {b.aiPickRank && b.aiPickRank <= 5 && <span title={`AI 수급 추천 ${b.aiPickRank}위`}>⭐</span>}
 
           {/* 수급교집합 탭은 주체별 실제 연속일수 뱃지를 그대로 붙여서 보여준다 */}
