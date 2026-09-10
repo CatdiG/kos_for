@@ -144,6 +144,14 @@ export function getStockName(symbol: string, fallbackName?: string): string {
   const top300 = TOP_300_STOCKS.find((s) => s.symbol === symbol);
   if (top300) return top300.name;
 
+  // 🚨 [버그 수정 - 사용자 지적: 종목명이 코드로 뜨는 현상] TOP_300(시총 상위 300종목)에도 없는
+  // 중소형주(엔켐 348370, 라온피플 300120, 기가레인 049080 등 실측 확인)는 여기서 전부 걸러지지 않고
+  // symbol 그대로 반환됐다 - stockDictionary.ts의 getMasterStockList()(KIS 전체 상장 3,554종목 캐시)를
+  // 이미 이 파일이 import해두고도(8번 줄) 정작 이 조회 사다리엔 안 끼워 넣었던 게 근본 원인이었다.
+  // 순수 인메모리 배열 조회라 네트워크 호출 없음 - 실측 50개 연속 조회 최악 시나리오 3.27ms(수칙 2-6).
+  const master = getMasterStockList().find((s) => s.symbol === symbol);
+  if (master) return master.name;
+
   return symbol;
 }
 

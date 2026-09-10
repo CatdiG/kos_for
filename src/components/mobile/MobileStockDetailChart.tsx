@@ -26,7 +26,7 @@ import { InvestorTrendDay, StockInfo } from '@/lib/types';
 import { useTheme } from '@/providers/ThemeProvider';
 import { PRICE_CHART_CONFIG, CandlestickBar, CustomUnifiedMobileTooltip, getTrendBadgeInfo } from '@/components/chart/CandlestickPrimitives';
 import { findSplitSafeStartIndex, roundToKrxTick, computeRecentVolumeRatio } from '@/lib/mockData';
-import { ShieldCheck, ShieldOff } from 'lucide-react';
+import { ShieldCheck, ShieldOff, ShieldQuestion } from 'lucide-react';
 import MobileIntraday3mChart, { fetchIntraday3m } from './MobileIntraday3mChart';
 import MobileLoadingSpinner from './MobileLoadingSpinner';
 
@@ -362,16 +362,24 @@ export default function MobileStockDetailChart({ trend, stockInfo, isLoading }: 
         <span className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold border ${disparateInfo.badgeStyle}`}>
           {disparateInfo.badge}
         </span>
-        {stockInfo?.isCreditAvailable !== undefined && (
+        {stockInfo && (
           <span
             className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold border ${
-              stockInfo.isCreditAvailable
+              stockInfo.isCreditAvailable === true
                 ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-600 dark:text-emerald-400 border-emerald-500/30'
-                : 'bg-slate-50 dark:bg-[#1e222d] text-slate-400 border-slate-200 dark:border-[#2a2e39]'
+                : stockInfo.isCreditAvailable === false
+                ? 'bg-slate-50 dark:bg-[#1e222d] text-slate-400 border-slate-200 dark:border-[#2a2e39]'
+                : 'bg-amber-50 dark:bg-amber-950/30 text-amber-600 dark:text-amber-400 border-amber-500/30'
             }`}
           >
-            {stockInfo.isCreditAvailable ? <ShieldCheck className="w-3 h-3" /> : <ShieldOff className="w-3 h-3" />}
-            {stockInfo.isCreditAvailable ? '신용가능' : '신용불가'}
+            {stockInfo.isCreditAvailable === true ? (
+              <ShieldCheck className="w-3 h-3" />
+            ) : stockInfo.isCreditAvailable === false ? (
+              <ShieldOff className="w-3 h-3" />
+            ) : (
+              <ShieldQuestion className="w-3 h-3" />
+            )}
+            {stockInfo.isCreditAvailable === true ? '신용가능' : stockInfo.isCreditAvailable === false ? '신용불가' : '신용 확인필요'}
           </span>
         )}
       </div>

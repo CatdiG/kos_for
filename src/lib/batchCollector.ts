@@ -77,7 +77,35 @@ export function getCached5dTrend(symbol: string): any {
 export function setCached5dTrend(symbol: string, data: any): void {
   if (symbol && data) {
     trend5dBatchStore.set(symbol, data);
+    // 🚨 [버그 수정 - 사용자 지적: 기관 순매수 랭킹이 42개만 뜸] trend5dBatchStore는 순수 인메모리
+    // Map이라 Vercel이 새 서버리스 인스턴스를 띄울 때마다(하루 1회 크론과 무관하게 콜드스타트마다) 처음
+    // 부터 다시 빈 상태로 시작했다 - 이 프로젝트가 외국인/기관/급등주/수급교집합 랭킹에서 이미 겪고
+    // shared_rank_cache(Supabase)로 고친 것과 완전히 동일한 "인스턴스 간 캐시 불일치" 결함인데, 이 캐시만
+    // 그 리팩토링에서 빠져 있었다. fire-and-forget으로 같은 공유 캐시에 함께 적어 다른 인스턴스도 재사용할
+    // 수 있게 한다(수칙 1-6 - 기존 shared_rank_cache 함수 재사용, 새 테이블/설계 없음).
+    upsertSharedRankCache(`trend5d:${symbol}`, [data]).catch(() => {});
   }
+}
+
+/**
+ * 🚨 [버그 수정 - 기관 순매수 랭킹 42개 원인 해소] TOP_300 보강 루프(kisApi.ts)가 시작되기 전에, 아직
+ * 이 인스턴스의 trend5dBatchStore에 없는 종목들을 Supabase shared_rank_cache에서 한 번에 배치 조회해
+ * 미리 채워 넣는다. mergeCreditStatusToRanking(kisApi.ts)의 "메모리 우선 → 없으면 DB 배치조회 → 메모리
+ * 반영" 패턴과 동일하다(수칙 1-6). 이러면 이 인스턴스가 아직 직접 예열(25종목 순환)하지 못한 종목도,
+ * 다른 인스턴스가 예전에 예열/조회해서 이미 DB에 저장해둔 값이 있으면 재사용할 수 있다.
+ * maxAgeMs=24시간: 직전 유효 거래일 수급 스냅샷은 credit 캐시(24h)와 동일하게 하루 동안 유효하다고 본다.
+ */
+export async function warmCached5dTrendFromSupabase(symbols: string[]): Promise<void> {
+  const missing = symbols.filter((s) => s && !trend5dBatchStore.has(s));
+  if (missing.length === 0) return;
+  const keyToSymbol = new Map(missing.map((s) => [`trend5d:${s}`, s]));
+  const rowMap = await fetchSharedRankCacheBatch(Array.from(keyToSymbol.keys()), 24 * 60 * 60 * 1000).catch(() => new Map<string, any[]>());
+  rowMap.forEach((list, key) => {
+    const symbol = keyToSymbol.get(key);
+    if (symbol && list && list[0]) {
+      trend5dBatchStore.set(symbol, list[0]);
+    }
+  });
 }
 
 /**

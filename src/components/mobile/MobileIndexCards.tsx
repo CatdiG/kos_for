@@ -29,7 +29,9 @@ function MobileIndexCard({ market, selected, onSelect }: { market: 'KOSPI' | 'KO
   });
 
   const info = data?.indexInfo;
-  const isUp = (info?.change || 0) >= 0;
+  // 🚨 [버그 수정 - 사용자 지적: 음봉인데 +로 표시] change 부호 재역산 대신 백엔드가 KIS prdy_vrss_sign을
+  // 직접 판정해 내려주는 isUp을 그대로 신뢰한다(수칙 1-6, IndexCards.tsx와 동일 수정).
+  const isUp = info?.isUp ?? false;
   const isActive = selected === market;
 
   return (

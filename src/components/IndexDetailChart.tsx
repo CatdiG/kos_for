@@ -184,7 +184,9 @@ export default function IndexDetailChart({ market, onClose }: IndexDetailChartPr
   const formatYVol = (v: number) => (v >= 100000000 ? `${Math.round(v / 100000000)}억` : v >= 10000 ? `${Math.round(v / 10000)}만` : v.toLocaleString());
 
   const indexInfo = data?.indexInfo;
-  const isUp = (indexInfo?.change || 0) >= 0;
+  // 🚨 [버그 수정 - 사용자 지적: 음봉인데 +로 표시] change 부호 재역산 대신 백엔드가 KIS prdy_vrss_sign을
+  // 직접 판정해 내려주는 isUp을 그대로 신뢰한다(수칙 1-6, IndexCards.tsx와 동일 수정).
+  const isUp = indexInfo?.isUp ?? false;
 
   return (
     <div className="relative bg-white dark:bg-[#131722] border border-slate-200 dark:border-[#2a2e39] rounded-2xl p-3 sm:p-4 shadow-xl transition-all duration-300">

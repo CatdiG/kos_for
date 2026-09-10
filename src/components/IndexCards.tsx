@@ -26,7 +26,10 @@ function IndexCard({ market, selected, onSelect }: { market: 'KOSPI' | 'KOSDAQ' 
   });
 
   const info = data?.indexInfo;
-  const isUp = (info?.change || 0) >= 0;
+  // 🚨 [버그 수정 - 사용자 지적: 음봉인데 +로 표시] change 값의 부호를 다시 역산하지 않는다 - KIS가
+  // 직접 내려주는 prdy_vrss_sign을 백엔드(kisApi.ts parseIndexDirection)가 이미 판정해 isUp으로
+  // 내려보내므로 그걸 그대로 신뢰한다(수칙 1-6, 부호 재추론 로직 제거).
+  const isUp = info?.isUp ?? false;
   const isActive = selected === market;
 
   return (

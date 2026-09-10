@@ -609,9 +609,24 @@ async function executeKisIndexDailyTrendFetch(
     if (priceJson.rt_cd !== '0') throw new Error(`[KIS FHPUP02100000] ${priceJson.msg1 || '알 수 없는 오류'}`);
     return priceJson.output || {};
   };
-  const buildPriceChange = (p: any): number => {
-    const priceSign = p.prdy_vrss_sign || '3';
-    return Number(p.bstp_nmix_prdy_vrss || 0) * (priceSign === '4' || priceSign === '5' ? -1 : 1);
+  // 🚨 [버그 수정 - 사용자 지적: 음봉인데 +로 표시] bstp_nmix_prdy_vrss가 KIS에서 이미 부호를 포함해서
+  // 내려오는데(실측: 하락 시 "-145.92", scratch/diagnose_index_sign_bug.cjs) 여기서 prdy_vrss_sign(하락)을
+  // 보고 또 -1을 곱해 이중 반전시키는 바람에 실제로는 하락인데 양수로 뒤집혀 "+"로 표시되던 게 근본
+  // 원인이었다. 값의 부호를 다시 추론하지 않고, 절대값으로 정규화한 뒤 KIS가 직접 내려주는
+  // prdy_vrss_sign(1·2=상승, 3=보합, 4·5=하락) 하나만을 유일한 방향 판정 기준으로 삼는다 - 개별 종목
+  // 시세 파싱(1672번 줄 근방 -Math.abs 패턴)과 동일한 정석 방식으로 통일(수칙 1-6). isUp도 여기서 함께
+  // 확정해 프론트가 change의 부호를 다시 역산(>= 0)하지 않도록 한다.
+  const parseIndexDirection = (p: any): { isUp: boolean; change: number; changeRate: number } => {
+    const sign = p.prdy_vrss_sign || '3';
+    const isDown = sign === '4' || sign === '5';
+    const isUp = sign === '1' || sign === '2';
+    const absChange = Math.abs(Number(p.bstp_nmix_prdy_vrss || 0));
+    const absRate = Math.abs(Number(p.bstp_nmix_prdy_ctrt || 0));
+    return {
+      isUp,
+      change: isDown ? -absChange : absChange,
+      changeRate: isDown ? -absRate : absRate,
+    };
   };
 
   // 2. 지수 일자별(일봉) 시세 - KIS는 최신순(내림차순)으로 내려주므로 오름차순으로 뒤집는다
@@ -621,14 +636,15 @@ async function executeKisIndexDailyTrendFetch(
   // 2회 → 1회로 절반 감소, KOSPI+KOSDAQ 합쳐 4회 → 2회).
   if (summaryOnly) {
     const p = await fetchPriceInfo();
-    const priceChange = buildPriceChange(p);
+    const { isUp, change, changeRate } = parseIndexDirection(p);
     return {
       indexInfo: {
         code: indexCode,
         name: indexName,
         currentPrice: Number(p.bstp_nmix_prpr || 0),
-        change: priceChange,
-        changeRate: Number(p.bstp_nmix_prdy_ctrt || 0),
+        change,
+        changeRate,
+        isUp,
         volume: Number(p.acml_vol || 0),
         tradingValueEok: Number((Number(p.acml_tr_pbmn || 0) / 100).toFixed(1)),
         advancingCount: Number(p.ascn_issu_cnt || 0),
@@ -660,7 +676,7 @@ async function executeKisIndexDailyTrendFetch(
   // 지수현재가와 일봉 조회를 동시에 요청한다(위 fetchPriceInfo 분리 주석 참고) - 서로 독립된 데이터라
   // 순차로 기다릴 이유가 없다.
   const [p, combined] = await Promise.all([fetchPriceInfo(), fetchDailyPage()]); // combined: 최신순, 최대 100건
-  const priceChange = buildPriceChange(p);
+  const { isUp, change: priceChange, changeRate: priceChangeRate } = parseIndexDirection(p);
 
   const ascending = [...combined].reverse();
 
@@ -687,7 +703,8 @@ async function executeKisIndexDailyTrendFetch(
       name: indexName,
       currentPrice: Number(p.bstp_nmix_prpr || 0),
       change: priceChange,
-      changeRate: Number(p.bstp_nmix_prdy_ctrt || 0),
+      changeRate: priceChangeRate,
+      isUp,
       volume: Number(p.acml_vol || 0),
       tradingValueEok: Number((Number(p.acml_tr_pbmn || 0) / 100).toFixed(1)),
       advancingCount: Number(p.ascn_issu_cnt || 0),
@@ -1706,32 +1723,28 @@ async function executeKisCreditAvailableFetch(symbol: string): Promise<boolean |
 }
 
 /**
- * 신용가능 여부 일별 배치 캐시 스토어 (symbol -> { isCredit, updatedAt })
- * 랭킹 API 호출 시 실시간 KIS 네트워크 조회를 100% 제거하고 0ms 로컬 룩업만 수행합니다.
+ * 🚨 [버그 수정 - 사용자 지적: 로보티즈(108490) 신용불가인데 신용가능으로 오표시]
+ * 원래 여기 있던 creditBatchStore(Map)/creditBatchTimeLabel/getCreditBatchTimeLabel()는
+ * "일별 08:30 배치 캐시"라는 주석과 달리 실제로는 batchCollector.ts 어디에도 이걸 채우는
+ * 크론 로직이 없어(grep 확인: .set() 호출 0건) 항상 빈 Map으로만 존재하던 죽은 코드였다.
+ * getCreditBatchTimeLabel()도 어디서도 호출되지 않는 미사용 함수였다(grep 확인: 외부 참조 0건).
+ * 실제로는 이 죽은 1차 관문 때문에 creditStatusCache(개별/Supabase 실조회 캐시)도 비어있는
+ * 종목은 곧장 최종 폴백 `return true`로 떨어졌다 - 즉 "확인 안 된 종목은 무조건 신용가능"으로
+ * 확정해버리는 가상 하드코딩이었다(수칙 1-3 위반). 실측: 로보티즈 KIS crdt_able_yn 원본은
+ * "N"(신용불가)인데 이 함수는 true를 반환했다. 진짜 3번째 상태(undefined="확인필요")를
+ * 함수 시그니처(boolean | undefined)가 애초에 약속하고 있었으므로, 근거 없는 종목을
+ * 함부로 true로 단정하지 않고 정직하게 undefined를 반환하도록 원상복구한다.
  */
-interface CreditBatchStoreEntry {
-  isCredit: boolean;
-  updatedAt: string;
-}
-const creditBatchStore = new Map<string, CreditBatchStoreEntry>();
-let creditBatchTimeLabel = '당일 08:30 배치 기준';
-
-export function getCreditBatchTimeLabel(): string {
-  return creditBatchTimeLabel;
-}
 
 /**
  * 3-상태 신용가능 여부 단일 공용 평가 함수 (Single Source of Truth)
  * - false: ETF/ETN 또는 확정된 신용불가 종목
  * - true: 확정된 신용가능 종목
- * - undefined: 미캐시 / 조회 중 ('확인필요')
+ * - undefined: 미캐시 / 조회 중 (모바일 종목상세 배지: MobileStockDetailChart.tsx가 '신용 확인필요'로 표시)
  */
 export function getEvaluatedCreditStatus(symbol: string, name?: string): boolean | undefined {
   if (name && isEtfOrEtn(name)) {
     return false;
-  }
-  if (creditBatchStore.has(symbol)) {
-    return creditBatchStore.get(symbol)!.isCredit;
   }
   if (creditStatusCache.has(symbol)) {
     return creditStatusCache.get(symbol)!.isCredit;
@@ -1740,8 +1753,9 @@ export function getEvaluatedCreditStatus(symbol: string, name?: string): boolean
   if (knownNonCredit.includes(symbol)) {
     return false;
   }
-  // Organic fallback for major KOSPI/KOSDAQ stocks on cold startup
-  return true;
+  // 캐시에도 없고 하드코딩 확정 리스트에도 없는 종목은 실제 KIS 값을 모르는 것이므로
+  // 임의로 true/false를 단정하지 않고 미확인 상태(undefined)로 정직하게 반환한다.
+  return undefined;
 }
 
 /**
@@ -1760,7 +1774,7 @@ export async function mergeCreditStatusToRanking(items: RankingItem[]): Promise<
   // 2. Identify symbols still missing from memory cache
   const missingSymbols: string[] = [];
   items.forEach((item) => {
-    if (!creditBatchStore.has(item.symbol) && !creditStatusCache.has(item.symbol)) {
+    if (!creditStatusCache.has(item.symbol)) {
       missingSymbols.push(item.symbol);
     }
   });
@@ -1787,7 +1801,7 @@ export async function mergeCreditStatusToRanking(items: RankingItem[]): Promise<
  */
 export async function resolveAndCacheMissingCredits(symbols: string[]): Promise<void> {
   if (!symbols || symbols.length === 0) return;
-  const unCached = symbols.filter((sym) => !creditStatusCache.has(sym) && !creditBatchStore.has(sym));
+  const unCached = symbols.filter((sym) => !creditStatusCache.has(sym));
   if (unCached.length === 0) return;
 
   const entries: Array<{ symbol: string; is_credit: boolean }> = [];
@@ -1977,7 +1991,10 @@ async function executeKisForeignInstitutionRankingFetch(
     // 드는 종목들이 항상 더미 가격(basePrice)으로 계산돼 이격도/배지가 틀리게 나오던 진짜 근본 원인이었다
     // - KIS API 장애나 장마감과 무관하게, API가 순위를 안 줬다는 이유만으로 매번 재현되는 구조적 결함.
     // else 분기와 동일하게 getCached5dTrend(배치 예열 캐시의 실제 최근 종가)를 우선 쓰도록 통일한다.
-    const { getCached5dTrend: getCached5dTrendForAll } = await import('./batchCollector');
+    const { getCached5dTrend: getCached5dTrendForAll, warmCached5dTrendFromSupabase: warmAll } = await import('./batchCollector');
+    // 🚨 [버그 수정 - 기관 순매수 랭킹 42개 원인] 이 인스턴스가 아직 직접 예열 못 한 종목도 다른
+    // 인스턴스가 Supabase에 저장해둔 값이 있으면 재사용하도록 먼저 배치 조회로 채운다.
+    await warmAll(TOP_300_STOCKS.slice(0, 50).map((s) => s.symbol));
     const extraAll: any[] = [];
     TOP_300_STOCKS.slice(0, 50).forEach((stock) => {
       if (existingSymbolsAll.has(stock.symbol)) return;
@@ -2046,8 +2063,11 @@ async function executeKisForeignInstitutionRankingFetch(
     const existingSymbols = new Set(baseOutputs.map((i: any) => i.mksc_shrn_iscd || i.stck_shrn_iscd));
 
     // TOP_300_STOCKS 중 해당 시장 종목들의 당일 실데이터로 30위 밖 보강 (50개 충족)
-    const { getCached5dTrend } = await import('./batchCollector');
+    const { getCached5dTrend, warmCached5dTrendFromSupabase } = await import('./batchCollector');
     const marketStocks = TOP_300_STOCKS.filter((s) => s.market === market && !existingSymbols.has(s.symbol));
+    // 🚨 [버그 수정 - 기관 순매수 랭킹 42개 원인] market==='ALL' 분기와 동일하게, 이 인스턴스가 아직
+    // 직접 예열 못 한 종목도 다른 인스턴스가 Supabase에 저장해둔 값이 있으면 먼저 재사용한다.
+    await warmCached5dTrendFromSupabase(marketStocks.map((s) => s.symbol));
     const extraOutputs: any[] = [];
 
     for (const stock of marketStocks) {
@@ -4231,7 +4251,7 @@ async function executeKisSurgingStocksFetch(
   // 2. Populate credit status asynchronously in background ONLY for un-cached items (Non-blocking)
   Promise.all(
     items.map(async (item) => {
-      if (!creditBatchStore.has(item.symbol) && !creditStatusCache.has(item.symbol)) {
+      if (!creditStatusCache.has(item.symbol)) {
         try {
           const isCredit = await fetchKisCreditAvailable(item.symbol);
           item.isCreditAvailable = getEvaluatedCreditStatus(item.symbol, item.name);

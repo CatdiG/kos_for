@@ -158,6 +158,11 @@ export interface IndexInfo {
   currentPrice: number;
   change: number;
   changeRate: number;
+  // 🚨 [버그 수정 - 사용자 지적: 음봉인데 +로 표시] change/changeRate의 부호를 프론트가 다시 역산해서
+  // "양봉/음봉"을 판정하던 방식(change >= 0)이, KIS 원본 필드 부호 이중 반전 버그와 맞물려 잘못된 방향을
+  // 표시하는 근본 원인이었다. KIS가 이미 직접 내려주는 prdy_vrss_sign(1·2=상승, 3=보합, 4·5=하락)을
+  // 백엔드에서 그대로 판정해 내려보내, 프론트는 값의 부호를 다시 추론하지 않고 이 필드만 신뢰하면 된다.
+  isUp: boolean;
   volume: number;
   tradingValueEok?: number;
   advancingCount?: number;
