@@ -9,7 +9,7 @@
 // 쓰는 mockData.ts의 기존 함수를 그대로 재사용한다 - 새 계산 로직을 만들지 않는다.
 
 import React, { useEffect, useState } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   ResponsiveContainer,
   ComposedChart,
@@ -29,6 +29,8 @@ import { findSplitSafeStartIndex, roundToKrxTick, computeRecentVolumeRatio } fro
 import { ShieldCheck, ShieldOff, ShieldQuestion } from 'lucide-react';
 import MobileIntraday3mChart, { fetchIntraday3m } from './MobileIntraday3mChart';
 import MobileLoadingSpinner from './MobileLoadingSpinner';
+import { fetchStockBadges, shortSourceLabel } from '@/components/StockBadgeStrip';
+import { StockBadgeSummaryResponse } from '@/lib/types';
 
 interface MobileStockDetailChartProps {
   trend: InvestorTrendDay[];
@@ -236,6 +238,41 @@ export default function MobileStockDetailChart({ trend, stockInfo, isLoading }: 
     };
   }, [fullTrendWithMA, displayTrend]);
 
+  // 🚨 [기능 추가 - 사용자 요청: "단기과열 뱃지가 탭마다 다르면 두 개 띄우고 기준/최신을 알려달라"]
+  // disparateInfo.badge(바로 위)는 이 패널이 지금 막 새로 조회한 60d 데이터로 계산한 "최신" 값이다.
+  // 반면 매매순위 표(외국인/기관/수급교집합 등)에 이미 떠 있는 배지는 그 탭 캐시가 마지막으로 계산됐을
+  // 때의 "기준"(baseline) 값이라 몇 분~그 이상 오래됐을 수 있다(2026-09-10 SK이노베이션 실측 사례).
+  // StockBadgeStrip.tsx가 이미 같은 queryKey로 조회해두므로 React Query 캐시를 그대로 공유해
+  // 중복 네트워크 요청 없이 비교한다(수칙 1-6).
+  const { data: badgeSummary } = useQuery<StockBadgeSummaryResponse>({
+    queryKey: ['stockBadges', stockInfo?.symbol],
+    queryFn: () => fetchStockBadges(stockInfo!.symbol),
+    enabled: Boolean(stockInfo?.symbol),
+    staleTime: 20 * 1000,
+  });
+
+  const baselineBadgeInfo = React.useMemo(() => {
+    const withBadge = (badgeSummary?.badges || []).filter((b) => b.statusBadge);
+    if (withBadge.length === 0) return null;
+    // 여러 탭이 서로 다른 문구를 들고 있을 수 있으니(수칙 1-1 실측 확인) 최빈값(가장 많은 탭이 동의하는
+    // 값)을 "기준"으로 채택한다 - 특정 탭 하나를 임의로 고르지 않기 위함.
+    const counts = new Map<string, { count: number; sample: (typeof withBadge)[number] }>();
+    withBadge.forEach((b) => {
+      const key = b.statusBadge!;
+      const cur = counts.get(key);
+      if (cur) cur.count += 1;
+      else counts.set(key, { count: 1, sample: b });
+    });
+    const sorted = Array.from(counts.values()).sort((a, b) => b.count - a.count);
+    return sorted.length > 0 ? sorted[0].sample : null;
+  }, [badgeSummary]);
+
+  // "기준"(랭킹 캐시 최빈값)과 "최신"(이 패널이 방금 계산한 값)이 실제로 다를 때만 2개를 같이 보여준다 -
+  // 같으면 지금처럼 하나만 보여줘서 평소엔 화면이 복잡해지지 않는다.
+  const hasBaselineMismatch = Boolean(
+    baselineBadgeInfo && baselineBadgeInfo.statusBadge && baselineBadgeInfo.statusBadge !== disparateInfo.badge
+  );
+
   const { minPrice, maxPrice, priceDomain, priceTicks } = React.useMemo(() => {
     if (displayTrend.length === 0) return { minPrice: 0, maxPrice: 100, ...calculatePriceAxis(0, 100) };
     const highs = displayTrend.map((d) => d.highPrice || d.closePrice);
@@ -358,10 +395,26 @@ export default function MobileStockDetailChart({ trend, stockInfo, isLoading }: 
       <>
       {/* 🚨 [버그 수정 - 사용자 지적] 단기과열 배지와 신용정보 배지가 각자 자기 줄을 차지해서 그 사이에
           불필요한 빈 공간이 생겼다 - 한 줄에 같이 놓는다(왼쪽 단기과열, 오른쪽 신용정보). */}
-      <div className="flex items-center justify-between mb-1.5">
-        <span className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold border ${disparateInfo.badgeStyle}`}>
-          {disparateInfo.badge}
-        </span>
+      <div className="flex items-center justify-between mb-1.5 flex-wrap gap-1">
+        <div className="flex items-center flex-wrap gap-1">
+          <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold border ${disparateInfo.badgeStyle}`}>
+            {disparateInfo.badge}
+          </span>
+          {/* 🚨 [기능 추가 - 사용자 요청] 단기과열 여부 자체가 같으면(값이 일치하면) 그대로 두고, 매매순위
+              표에서 온 값(baselineBadgeInfo)이 실제로 다를 때만 그 값을 하나 더 붙이되 "(3일연속기준)"처럼
+              어느 탭 값인지만 짧게 표시한다 - 시각까지 넣지 않고 간단히(사용자 지시). */}
+          {hasBaselineMismatch && baselineBadgeInfo && (
+            <span
+              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold border ${
+                baselineBadgeInfo.statusBadgeStyle || disparateInfo.badgeStyle
+              }`}
+              title="매매순위 표에서 이 종목의 순위/필터링에 실제로 쓰이고 있는 배지 - 탭 캐시가 마지막으로 계산됐을 때의 값이라 방금 계산한 값보다 오래됐을 수 있습니다."
+            >
+              {baselineBadgeInfo.statusBadge}
+              <span className="opacity-70 font-normal">({shortSourceLabel(baselineBadgeInfo.tabId)}기준)</span>
+            </span>
+          )}
+        </div>
         {stockInfo && (
           <span
             className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold border ${

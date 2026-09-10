@@ -298,6 +298,11 @@ export interface StockBadgeItem {
   scoreTotal?: number;
   aiPickRank?: number;
   ranksByType?: OverlapInvestorRank[];
+  // 🚨 [기능 추가 - 사용자 요청: 탭마다 배지 다를 때 기준 시각 표시] 탭마다 statusBadge가 서로 다른
+  // 시점의 캐시 스냅샷을 기반으로 계산될 수 있다(수칙 1-5와 동일 취지 - 대체 데이터엔 기준을 밝힌다).
+  // 각 탭이 이미 갖고 있는 asOfDateLabel(예: "당일 가집계 (12:01 기준)")을 그대로 실어보내 프론트가
+  // "이 배지가 몇 시 기준 데이터인지" 보여줄 수 있게 한다.
+  asOfDateLabel?: string;
 }
 
 export interface StockBadgeSummaryResponse {

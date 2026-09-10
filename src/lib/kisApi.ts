@@ -73,6 +73,11 @@ export function syncSharedRankCache(cacheKey: string, list: RankingItem[] | unde
     scoreBreakdown: item.scoreBreakdown ? { totalScore: item.scoreBreakdown.totalScore } : undefined,
     aiPickRank: item.aiPickRank,
     ranksByType: item.ranksByType,
+    // 🚨 [버그 수정 - 사용자 요청: 탭 배지 기준 시각 표시] 이 필드가 트림 목록에서 빠져 있어서
+    // getStockBadgeSummary가 이 경량 캐시를 통해 조회한 배지엔 항상 asOfDateLabel이 undefined였다
+    // (외국인/기관/급등주 등 대부분 이 경로를 탐) - 뱃지 판정 자체엔 안 쓰이지만 "몇 시 기준"
+    // 표시에 필요한 최소 필드라 함께 싣는다.
+    asOfDateLabel: item.asOfDateLabel,
   }));
   upsertSharedRankCache(cacheKey, trimmed).catch(() => {});
 }
@@ -5197,7 +5202,7 @@ export async function fetchKis3mCandlesFullDay(
 // 라이브 함수가 돌려주는 완전한 RankingItem 양쪽 다 이 타입을 만족하므로 소스를 가리지 않고 재사용한다.
 type BadgeSourceItem = Pick<
   RankingItem,
-  'symbol' | 'rank' | 'netBuyAmt' | 'statusBadge' | 'statusBadgeStyle' | 'surgingBadge' | 'investorBadge' | 'netBuyAmtEok' | 'scoreBreakdown' | 'aiPickRank' | 'ranksByType'
+  'symbol' | 'rank' | 'netBuyAmt' | 'statusBadge' | 'statusBadgeStyle' | 'surgingBadge' | 'investorBadge' | 'netBuyAmtEok' | 'scoreBreakdown' | 'aiPickRank' | 'ranksByType' | 'asOfDateLabel'
 >;
 
 export async function getStockBadgeSummary(symbol: string, market: MarketType = 'ALL'): Promise<StockBadgeItem[]> {
@@ -5234,6 +5239,10 @@ export async function getStockBadgeSummary(symbol: string, market: MarketType = 
       scoreTotal: item.scoreBreakdown?.totalScore,
       aiPickRank: item.aiPickRank,
       ranksByType: item.ranksByType,
+      // 🚨 [기능 추가 - 사용자 요청] 이 탭의 배지가 몇 시 기준 스냅샷인지 그대로 실어보낸다 -
+      // 없는 탭(급등주/단타종합 등 asOfDateLabel을 안 채우는 타입)은 undefined로 남겨 프론트가
+      // "시각 정보 없음"으로 자연스럽게 처리하게 한다.
+      asOfDateLabel: item.asOfDateLabel,
     });
   };
 
