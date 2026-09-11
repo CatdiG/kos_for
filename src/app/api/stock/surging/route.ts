@@ -11,7 +11,7 @@ export async function GET(request: NextRequest) {
   const modeParam = (searchParams.get('mode') || 'fluctuation') as SurgingMode;
   const market = (searchParams.get('market') as MarketType) || 'ALL';
 
-  const validModes: SurgingMode[] = ['fluctuation', 'volume', 'amount', 'overlap', 'comprehensive'];
+  const validModes: SurgingMode[] = ['fluctuation', 'volume', 'amount', 'overlap', 'comprehensive', 'postmarket'];
   const mode: SurgingMode = validModes.includes(modeParam) ? modeParam : 'fluctuation';
 
   try {

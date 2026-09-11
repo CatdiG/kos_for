@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse, after } from 'next/server';
-import { fetchKisForeignInstitutionRanking, fetchOverlapRankingData, fetchConsecutive2dOverlapRankingData, fetchConsecutive3dOverlapRankingData, fetchKisInvestorTrend, getKisAccessTokenWithSource, resolveAndCacheMissingCredits, mergeCreditStatusToRanking, assertNoMockLeak } from '@/lib/kisApi';
+import { fetchKisForeignInstitutionRanking, fetchOverlapRankingData, fetchConsecutive2dOverlapRankingData, fetchConsecutive3dOverlapRankingData, fetchKisSupplyPostMarketCandidates, fetchKisInvestorTrend, getKisAccessTokenWithSource, resolveAndCacheMissingCredits, mergeCreditStatusToRanking, assertNoMockLeak } from '@/lib/kisApi';
 import { getBatchRankingData, getBatchRankingDataAsync, runTop50BatchCollector } from '@/lib/batchCollector';
 import { MarketType, RankingDirection, RankingPeriod, RankingType } from '@/lib/types';
 
@@ -28,6 +28,10 @@ export async function GET(request: NextRequest) {
     if (type === 'overlap') {
       if (mode === 'consecutive2d' || period === 'consecutive2d') {
         responseData = await fetchConsecutive2dOverlapRankingData(direction, 2, limit, market);
+      } else if (mode === 'supplyPostmarket') {
+        // 🚨 [기능 추가 - 사용자 요청: "3일연속 교집합 옆에 수급 장마감 후보군"] 3일연속 수급 교집합에
+        // 변동폭 축소·고가권 마감·기관 매수 우위 조건을 얹은 버전(kisApi.ts, 수칙 1-6)
+        responseData = await fetchKisSupplyPostMarketCandidates(direction, market, limit);
       } else if (mode === 'consecutive3d' || period === ('3d_consecutive' as any) || period === 'consecutive3d') {
         responseData = await fetchConsecutive3dOverlapRankingData(direction, 2, limit, market);
       } else {

@@ -38,6 +38,11 @@ export function shortSourceLabel(tabId: string): string {
   if (tabId.startsWith('foreign')) return '외국인';
   if (tabId.startsWith('organ')) return '기관';
   if (tabId.startsWith('program')) return '프로그램';
+  // 🚨 [기능 추가 - 사용자 요청: "오늘 만든 장마감 후보군도 뱃지모음에 나오게 해줘"] 'supply-postmarket'이
+  // 'overlap'으로 시작하지 않지만 'postmarket'으로 시작하는 다른 항목보다 먼저 체크해야
+  // "postmarket" 단순 매칭에 걸리지 않는다(아래 postmarket 분기와 순서 무관하게 명확히 구분).
+  if (tabId.startsWith('supply-postmarket')) return '수급장마감후보군';
+  if (tabId === 'postmarket') return '장마감후보군';
   if (tabId.startsWith('overlap-3d')) return '3일연속';
   if (tabId.startsWith('overlap-2d')) return '2일연속';
   if (tabId.startsWith('overlap-daily') || tabId.startsWith('overlap')) return '수급교집합';
@@ -53,7 +58,11 @@ export function shortSourceLabel(tabId: string): string {
 // 임시 파싱 숏컷 금지), 대신 이 코드베이스가 실제로 채택한 캐시 갱신 주기(kisApi.ts: 외국인/기관/
 // 당일교집합/프로그램=장중 60초, 2·3일연속=그보다 훨씬 느린 재계산 주기)를 그대로 우선순위로 삼는다 -
 // 갱신이 잦은 탭일수록 "지금"에 더 가깝다.
-const FRESHNESS_PRIORITY = ['foreign', 'organ', 'program', 'overlap-daily', 'overlap-2d', 'overlap-3d'];
+// 🚨 [기능 추가 - "수급 장마감 후보군"] 이 소스의 statusBadge는 overlap-3d 계산 결과를 그대로 물려받은
+// 것이라(kisApi.ts의 fetchKisSupplyPostMarketCandidates) overlap-3d와 사실상 동일한 신선도다 - 바로
+// 뒤에 둔다. postmarket(급등주 기반)은 statusBadge 자체를 계산하지 않는 소스라 이 목록에 넣어도 절대
+// 선택되지 않지만(freshnessRank는 b.statusBadge가 있는 항목에만 쓰임), 명시적으로 최하위에 둬 의도를 남긴다.
+const FRESHNESS_PRIORITY = ['foreign', 'organ', 'program', 'overlap-daily', 'overlap-2d', 'overlap-3d', 'supply-postmarket', 'postmarket'];
 function freshnessRank(tabId: string): number {
   const idx = FRESHNESS_PRIORITY.findIndex((p) => tabId.startsWith(p));
   return idx === -1 ? FRESHNESS_PRIORITY.length : idx;

@@ -32,6 +32,7 @@ import {
   Trophy,
   ChevronDown,
   ChevronUp,
+  Target,
 } from 'lucide-react';
 
 interface InvestorRankingTableProps {
@@ -43,7 +44,7 @@ async function fetchRanking(
   type: RankingType,
   direction: RankingDirection,
   period: RankingPeriod,
-  mode: 'daily' | 'consecutive2d' | 'consecutive3d' = 'daily',
+  mode: 'daily' | 'consecutive2d' | 'consecutive3d' | 'supplyPostmarket' = 'daily',
   limit: number = 50,
   market: MarketType = 'ALL'
 ): Promise<InvestorRankingResponse> {
@@ -64,7 +65,7 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
   const [period, setPeriod] = useState<RankingPeriod>('1d');
   const [sortField, setSortField] = useState<keyof RankingItem>('netBuyAmt');
   const [sortAsc, setSortAsc] = useState<boolean>(false);
-  const [overlapMode, setOverlapMode] = useState<'daily' | 'consecutive2d' | 'consecutive3d'>('daily');
+  const [overlapMode, setOverlapMode] = useState<'daily' | 'consecutive2d' | 'consecutive3d' | 'supplyPostmarket'>('daily');
   const [overlapLimit, setOverlapLimit] = useState<number>(50);
   const [showDropouts, setShowDropouts] = useState<boolean>(false);
   // 이탈 종목 비교 기준: 'today'=오늘 하루 안의 변화, 'yesterday'=직전 영업일 마감 대비(히스토리 페이지와 동일 기준)
@@ -80,13 +81,13 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
   const tableContainerRef = useRef<HTMLDivElement>(null);
 
   const selectedSymbol = propSelectedSymbol || internalSymbol;
-  const isSurging = activeTab === 'surging' || activeTab === 'comprehensive';
+  const isSurging = activeTab === 'surging' || activeTab === 'comprehensive' || activeTab === 'postmarket';
 
   const queryClient = useQueryClient();
 
   const { data, isLoading, isError, refetch, isFetching } = useQuery<InvestorRankingResponse>({
     queryKey: isSurging
-      ? ['surging', activeTab === 'comprehensive' ? 'comprehensive' : surgingMode, market]
+      ? ['surging', activeTab === 'comprehensive' ? 'comprehensive' : activeTab === 'postmarket' ? 'postmarket' : surgingMode, market]
       : ['ranking', activeTab, direction, period, overlapMode, overlapLimit, market],
     queryFn: async () => {
       if (activeTab === 'comprehensive') {
@@ -94,6 +95,16 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
         if (!res.ok) {
           const errJson = await res.json().catch(() => null);
           throw new Error(errJson?.error || '종합랭킹 데이터를 가져오는 중 오류가 발생했습니다.');
+        }
+        return res.json();
+      }
+      // 🚨 [기능 추가 - 사용자 요청: "장마감 후보군을 단타종합랭킹-외국인 사이 최상위 탭으로"] comprehensive와
+      // 동일 패턴 - surgingMode 서브탭 선택과 무관하게 이 탭 자체가 항상 postmarket 데이터를 가져온다.
+      if (activeTab === 'postmarket') {
+        const res = await fetch(`/api/stock/surging?mode=postmarket&market=${market}`);
+        if (!res.ok) {
+          const errJson = await res.json().catch(() => null);
+          throw new Error(errJson?.error || '장마감 후보군 데이터를 가져오는 중 오류가 발생했습니다.');
         }
         return res.json();
       }
@@ -166,8 +177,8 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
   // Smart hover-based prefetching: Only prefetches the target tab when the user hovers over its button
   const handleTabHover = (tab: RankingType) => {
     if (tab === activeTab) return;
-    const key = tab === 'surging' || tab === 'comprehensive'
-      ? ['surging', tab === 'comprehensive' ? 'comprehensive' : surgingMode, market]
+    const key = tab === 'surging' || tab === 'comprehensive' || tab === 'postmarket'
+      ? ['surging', tab === 'comprehensive' ? 'comprehensive' : tab === 'postmarket' ? 'postmarket' : surgingMode, market]
       : ['ranking', tab, direction, period, overlapMode, overlapLimit, market];
 
     queryClient.prefetchQuery({
@@ -175,6 +186,10 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
       queryFn: async () => {
         if (tab === 'comprehensive') {
           const res = await fetch(`/api/stock/surging?mode=comprehensive&market=${market}`);
+          return res.json();
+        }
+        if (tab === 'postmarket') {
+          const res = await fetch(`/api/stock/surging?mode=postmarket&market=${market}`);
           return res.json();
         }
         if (tab === 'surging') {
@@ -423,11 +438,23 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
         } else if (surgingMode === 'amount') {
           return (b.amountEok || 0) - (a.amountEok || 0);
         } else if (surgingMode === 'overlap') {
-          // 급등주 교집합의 "정상" 순서 - 백엔드가 이미 계산해서 내려준 원래 rank(등락률/거래량/거래대금
-          // 3중 교집합 기준) 그대로. 아래 464번째 줄에서 정렬 후 rank를 1,2,3...으로 재할당하기 전이라
-          // 이 시점의 a.rank/b.rank는 API가 원래 내려준 순위값이다.
+          // 급등주 교집합의 "정상" 순서 - 백엔드가 이미 계산해서 내려준 원래 rank(교집합 개수 기준)
+          // 그대로. 아래 464번째 줄에서 정렬 후 rank를 1,2,3...으로 재할당하기 전이라 이 시점의
+          // a.rank/b.rank는 API가 원래 내려준 순위값이다.
           return (a.rank || 0) - (b.rank || 0);
         }
+      }
+      // 🚨 [기능 추가 - 사용자 요청] 장마감 후보군은 이제 surging 서브탭이 아니라 최상위 activeTab이라
+      // 위 surging 분기 밖에서 따로 처리한다 - postMarketScore 기준으로 백엔드가 이미 정렬해준 순서 유지.
+      if (activeTab === 'postmarket') {
+        return (a.rank || 0) - (b.rank || 0);
+      }
+      // 🚨 [기능 추가 - 사용자 요청: "수급 장마감 후보군"] 이 모드는 overlapCount 단순 내림차순이 아니라
+      // postMarketScore(변동폭·고가마감·기관수급 종합) 기준으로 백엔드가 이미 정렬해준 순서를 그대로
+      // 유지해야 한다 - 바로 위 postmarket 탭과 동일 원칙(수칙 1-6). 아래 일반 'overlap' 분기보다
+      // 먼저 걸러내지 않으면 overlapCount 기준으로 재정렬되어 버린다.
+      if (activeTab === 'overlap' && overlapMode === 'supplyPostmarket') {
+        return (a.rank || 0) - (b.rank || 0);
       }
       if (activeTab === 'overlap') {
         const countA = a.overlapCount || 0;
@@ -568,6 +595,9 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
   const tabs: { id: RankingType; label: string; icon: any; isRealtime: boolean; badge?: string }[] = [
     { id: 'surging', label: '급등주', icon: Rocket, isRealtime: true, badge: 'LIVE' },
     { id: 'comprehensive', label: '단타 종합랭킹', icon: Trophy, isRealtime: true, badge: 'SCORE' },
+    // 🚨 [기능 추가 - 사용자 요청: "단타종합랭킹-외국인 사이에 넣자"] 급등주 교집합 종목 중 R2 근접도
+    // (변동폭·고가권 마감)와 기관 지속매수 기준으로 다음 거래일 후보를 추리는 탭 - fetchKisPostMarketCandidates(kisApi.ts) 재사용.
+    { id: 'postmarket', label: '장마감 후보군', icon: Target, isRealtime: false, badge: 'NEW' },
     { id: 'foreign', label: '외국인', icon: Globe2, isRealtime: true },
     { id: 'organ', label: '기관', icon: Landmark, isRealtime: true },
     { id: 'program', label: '프로그램', icon: Cpu, isRealtime: false },
@@ -613,7 +643,11 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
     : `외 ${formatParenLabel(rawForeignAsOf)} · 기 ${formatParenLabel(rawOrganAsOf)}`;
 
   let dynamicNoticeText = '';
-  if (activeTab === 'surging') {
+  if (activeTab === 'postmarket') {
+    dynamicNoticeText = '급등주 교집합 중 R2 근접도(변동폭·고가권 마감) · 기관 지속매수 기준 다음 거래일 후보 (5분 캐시)';
+  } else if (activeTab === 'overlap' && overlapMode === 'supplyPostmarket') {
+    dynamicNoticeText = '3일연속 수급교집합 중 변동폭 축소(R2 근접) · 고가권 마감 · 기관 매수 우위 후보 (5분 캐시)';
+  } else if (activeTab === 'surging') {
     dynamicNoticeText = '실시간 등락률 · 거래량 · 거래대금 체결 기준 (60초 자동 갱신)';
   } else if (activeTab === 'comprehensive') {
     dynamicNoticeText = '7대 모멘텀 & 확증 지표 실시간 종합 스코어링 (60초 자동 갱신)';
@@ -637,8 +671,10 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
               </h2>
               {activeTab === 'overlap' && (
                 <span className="text-[11px] px-2.5 py-0.5 rounded-full font-bold bg-gradient-to-r from-purple-600 to-amber-600 text-white flex items-center gap-1 shadow-xs animate-pulse whitespace-nowrap shrink-0">
-                  {overlapMode === 'consecutive3d' ? <Rocket className="w-3 h-3 shrink-0" /> : <Zap className="w-3 h-3 shrink-0" />}
-                  {overlapMode === 'consecutive3d'
+                  {overlapMode === 'supplyPostmarket' ? <Target className="w-3 h-3 shrink-0" /> : overlapMode === 'consecutive3d' ? <Rocket className="w-3 h-3 shrink-0" /> : <Zap className="w-3 h-3 shrink-0" />}
+                  {overlapMode === 'supplyPostmarket'
+                    ? '수급 장마감 후보군'
+                    : overlapMode === 'consecutive3d'
                     ? '3일연속 수급교집합'
                     : (overlapMode === 'consecutive2d' ? '2일연속 수급교집합' : '당일 수급교집합')}
                 </span>
@@ -1146,6 +1182,22 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
                   <Rocket className="w-3 h-3 shrink-0" />
                   <span>3일연속 교집합</span>
                 </button>
+                {/* 🚨 [기능 추가 - 사용자 요청: "3일연속 교집합에 변동폭 축소 조건 얹어서... 탭은 3일연속
+                    교집합 옆에 두고. 수급 장마감 후보군 이라고 이름붙여"] 3일연속 수급 교집합 후보군에
+                    변동폭 축소·고가권 마감·기관 매수 우위 조건을 더 얹은 버전 - fetchKisSupplyPostMarketCandidates(kisApi.ts) */}
+                <button
+                  type="button"
+                  onClick={() => { setOverlapMode('supplyPostmarket'); setShowDropouts(false); }}
+                  className={`px-2.5 py-1 rounded-lg transition whitespace-nowrap cursor-pointer text-xs font-bold flex items-center gap-1 shrink-0 ${
+                    overlapMode === 'supplyPostmarket' && !showDropouts
+                      ? 'bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-xs'
+                      : 'text-purple-700 dark:text-purple-300 hover:text-purple-900'
+                  }`}
+                  title="3일연속 수급 교집합 중, 당일 변동폭이 좁고 고가권에서 마감한 종목만 추려 다음 거래일 후보로 봅니다"
+                >
+                  <Target className="w-3 h-3 shrink-0" />
+                  <span>수급 장마감 후보군</span>
+                </button>
                 {/* 이탈 종목 - 3일연속 교집합 버튼 바로 옆, 같은 pill 안에 붙여서 배치 */}
                 <button
                   type="button"
@@ -1393,7 +1445,9 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
             <div className="h-64 flex flex-col items-center justify-center gap-2 text-slate-400 dark:text-slate-500 text-xs animate-pulse">
               <RefreshCw className="w-6 h-6 animate-spin" />
               <span>
-                {overlapMode === 'consecutive3d'
+                {overlapMode === 'supplyPostmarket'
+                  ? '수급 장마감 후보군(변동폭·고가마감) 계산 중...'
+                  : overlapMode === 'consecutive3d'
                   ? '3일 연속 수급 교집합 데이터 분석 중...'
                   : (overlapMode === 'consecutive2d' ? '2일 연속 수급 교집합 데이터 분석 중...' : '매매 순위 데이터를 로딩하는 중입니다...')}
               </span>
@@ -1405,7 +1459,9 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
           ) : displayList.length === 0 ? (
             <div className="p-8 text-center text-xs text-slate-400 dark:text-slate-500 bg-slate-50/50 dark:bg-[#1e222d]/30 rounded-xl border border-dashed border-slate-200 dark:border-[#2a2e39]">
               {activeTab === 'overlap'
-                ? (overlapMode !== 'daily'
+                ? (overlapMode === 'supplyPostmarket'
+                    ? '변동폭 축소·고가권 마감 조건까지 만족하는 3일연속 수급 교집합 종목이 없습니다.'
+                    : overlapMode !== 'daily'
                     ? `${overlapMode === 'consecutive2d' ? '2일' : '3일'} 이상 연속 수급이 2개 이상 주체에서 동시에 진행 중인 종목이 없습니다.`
                     : '조건에 부합하는 수급 교집합 종목 데이터가 없습니다.')
                 : `${activeTabLabel} ${isBuy ? '순매수' : '순매도'}${market !== 'ALL' ? ` (${market === 'KOSPI' ? '코스피' : '코스닥'})` : ''} 조건에 부합하는 종목 데이터가 없습니다.`}
@@ -1422,7 +1478,7 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
 
                     {activeTab === 'overlap' ? (
                       <th className="p-2.5 whitespace-nowrap min-w-[200px] sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]">
-                        {overlapMode === 'consecutive3d' ? '주체별 연속 순매수' : '주체별 상세 순위'}
+                        {overlapMode === 'consecutive3d' || overlapMode === 'supplyPostmarket' ? '주체별 연속 순매수' : '주체별 상세 순위'}
                       </th>
                     ) : null}
 
@@ -1435,8 +1491,8 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
                         <th className="p-2.5 whitespace-nowrap sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]">기관 수급</th>
                         <th className="p-2.5 text-center whitespace-nowrap sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]">7개 세부 지표</th>
                       </>
-                    ) : activeTab === 'surging' ? (
-                      surgingMode === 'overlap' ? (
+                    ) : activeTab === 'surging' || activeTab === 'postmarket' ? (
+                      activeTab === 'postmarket' || surgingMode === 'overlap' ? (
                         <>
                           <th className="p-2.5 text-right whitespace-nowrap sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]">현재가</th>
                           <th className="p-2.5 text-right whitespace-nowrap sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]">등락률</th>
@@ -1484,7 +1540,7 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
                         <th className="p-2.5 text-right whitespace-nowrap sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]">
                           <button type="button" onClick={() => handleSort('netBuyAmt')} className="inline-flex items-center gap-1 hover:text-slate-900 dark:hover:text-white font-bold text-slate-700 dark:text-slate-300 cursor-pointer">
                             {activeTab === 'overlap'
-                              ? overlapMode === 'consecutive3d'
+                              ? overlapMode === 'consecutive3d' || overlapMode === 'supplyPostmarket'
                                 ? isBuy
                                   ? '3일누적 순매수'
                                   : '3일누적 순매도'
@@ -1715,6 +1771,22 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
                                   <span>{m.label}: 미달</span>
                                 </span>
                               ))}
+                              {/* 🚨 [기능 추가 - "수급 장마감 후보군"] 변동폭 축소·고가권 마감 조건 값을 그대로
+                                  노출한다 - R2 = 종가+(고가-저가) 공식상 변동폭이 좁을수록 다음날 R2까지
+                                  거리가 가깝다(kisApi.ts의 fetchKisSupplyPostMarketCandidates). */}
+                              {overlapMode === 'supplyPostmarket' && item.todayRangePct !== undefined && (
+                                <span
+                                  className="inline-flex items-center gap-1 text-[9px] px-1.5 py-0.5 rounded font-bold border whitespace-nowrap shrink-0 bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-400 border-amber-200 dark:border-amber-800/60"
+                                  title="당일 고가-저가 변동폭(좁을수록 R2 근접) · 저가~고가 구간 내 종가 위치(높을수록 고가권 마감)"
+                                >
+                                  변동폭 {item.todayRangePct}% · 고가마감 {item.closePositionPct}%
+                                </span>
+                              )}
+                              {overlapMode === 'supplyPostmarket' && (item.organNetBuyAmt ?? 0) > 0 && (
+                                <span className="inline-flex items-center gap-1 text-[9px] px-1.5 py-0.5 rounded font-bold border whitespace-nowrap shrink-0 bg-red-50 dark:bg-red-950/50 text-red-700 dark:text-red-300 border-red-200 dark:border-red-800/60">
+                                  기관매수우위
+                                </span>
+                              )}
                               {/* 당일 최초 진입 시각 - 뱃지 열의 제일 뒤에 배치("당일 교집합" 모드에서만 의미가 있다) */}
                               {overlapMode === 'daily' && item.firstSeenLabel && (
                                 <span
@@ -1805,7 +1877,7 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
                               </button>
                             </td>
                           </>
-                        ) : activeTab === 'surging' ? (
+                        ) : activeTab === 'surging' || activeTab === 'postmarket' ? (
                           <>
                             {/* 현재가 */}
                             <td className="p-2.5 text-right font-bold text-slate-900 dark:text-white whitespace-nowrap">
@@ -1829,9 +1901,9 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
                               {(item.amountEok || 0).toLocaleString()} 억원
                             </td>
 
-                            {surgingMode === 'overlap' ? (
+                            {activeTab === 'postmarket' || surgingMode === 'overlap' ? (
                               <>
-                                {/* 급등 교집합 뱃지 */}
+                                {/* 급등 교집합 뱃지 (postmarket 모드에선 고가마감·변동폭·기관수급까지 이어붙인 문구) */}
                                 <td className="p-2.5 whitespace-nowrap">
                                   <span
                                     className={`text-[10px] px-2 py-0.5 rounded-md font-bold inline-flex items-center gap-1 ${

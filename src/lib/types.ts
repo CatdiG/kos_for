@@ -192,10 +192,10 @@ export interface InvestorTrendResponse {
 }
 
 export type MarketType = 'ALL' | 'KOSPI' | 'KOSDAQ';
-export type RankingType = 'foreign' | 'organ' | 'program' | 'overlap' | 'surging' | 'comprehensive';
+export type RankingType = 'foreign' | 'organ' | 'program' | 'overlap' | 'surging' | 'comprehensive' | 'postmarket';
 export type RankingDirection = 'buy' | 'sell';
 export type RankingPeriod = '1d' | '1w' | '1m' | 'consecutive2d' | 'consecutive3d';
-export type SurgingMode = 'fluctuation' | 'volume' | 'amount' | 'overlap' | 'comprehensive';
+export type SurgingMode = 'fluctuation' | 'volume' | 'amount' | 'overlap' | 'comprehensive' | 'postmarket';
 
 export interface ScoreBreakdown {
   totalScore: number;         // 0 ~ 100
@@ -259,6 +259,11 @@ export interface RankingItem {
   aiPickRank?: number;        // AI 추천 순위 배지 (1, 2, 3, 4, 5)
   firstSeenAt?: string;       // 당일 교집합 탭 전용: 이 종목이 오늘 처음 교집합 명단에 포착된 시각(ISO)
   firstSeenLabel?: string;    // firstSeenAt을 "HH:MM 최초포착" 형태로 가공한 표시용 문구
+  // 급등주 탭 "장마감 후보군"(postmarket) 서브모드 전용 - 다음 거래일 시가 R2 돌파 후보를 가리기 위한
+  // 당일 캔들 형태 지표. R2 = 종가+(고가-저가)이므로 todayRangePct가 좁을수록 다음날 R2까지 거리가 가깝다.
+  todayRangePct?: number;     // 당일 변동폭 (고가-저가)/종가 * 100 (%) - 낮을수록 R2 근접
+  closePositionPct?: number;  // 당일 저가~고가 구간에서 종가의 위치 (%) - 100에 가까울수록 고가권 마감
+  postMarketScore?: number;   // 위 지표 + 급등주 교집합 개수 + 기관 수급 상태를 합산한 종합 점수(내부 정렬용)
 }
 
 export interface SurgingRankItem {
