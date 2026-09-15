@@ -264,6 +264,12 @@ export interface RankingItem {
   todayRangePct?: number;     // 당일 변동폭 (고가-저가)/종가 * 100 (%) - 낮을수록 R2 근접
   closePositionPct?: number;  // 당일 저가~고가 구간에서 종가의 위치 (%) - 100에 가까울수록 고가권 마감
   postMarketScore?: number;   // 위 지표 + 급등주 교집합 개수 + 기관 수급 상태를 합산한 종합 점수(내부 정렬용)
+  // 🚨 [기능 추가 - "장마감 후보만" 토글] 수급교집합(당일/2일연속/3일연속) 위에 얹는 역발상 필터 전용 -
+  // scratch 백테스트(96거래일 실측)로 검증된 결과, closePositionPct는 "낮을수록"(저가마감), 아래 두
+  // 지표도 "낮을수록"(조용한 거래량 · 최근 눌림) 다음날 수익률이 좋았다 - 기존 postMarketScore의 "고가
+  // 마감·변동폭 좁음이 좋다"는 가정과 정반대 결과라 별도 필드로 분리했다(수칙 1-3 - 검증 안 된 가정 재사용 금지).
+  volRatioPct?: number;       // 당일 거래량 / 최근 5거래일 평균거래량 * 100 (%) - 낮을수록(조용할수록) 유리
+  cum5dReturnPct?: number;    // 최근 5거래일 누적수익률(오늘 포함, %) - 낮을수록(최근 눌려있을수록) 유리
 }
 
 export interface SurgingRankItem {

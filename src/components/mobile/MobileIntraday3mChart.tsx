@@ -77,9 +77,11 @@ function findActiveSwingLow(candles: any[]): SwingLowPoint | null {
 
 // RankingStockDetailChart.tsx의 getKrxTickSize/피봇 연동 축 계산만큼 정교하진 않지만, MobileStockDetailChart.tsx
 // 의 calculatePriceAxis와 동일한 단순 nice-number 방식으로 1차 버전을 충분히 커버한다.
+// 🚨 [버그 수정 - RankingStockDetailChart.tsx와 동일 결함(수칙 1-6)] isFallback으로 "진짜 데이터 없음"과
+// "축 반올림으로 우연히 0이 된 정상 케이스"를 구분한다 - 자세한 사유는 RankingStockDetailChart.tsx:487 주석 참고.
 function calculatePriceAxis(minRaw: number, maxRaw: number, targetTicks = 6) {
   if (!minRaw || !maxRaw || minRaw <= 0 || maxRaw <= 0 || maxRaw <= minRaw) {
-    return { priceDomain: [0, 100] as [number, number], priceTicks: [0, 20, 40, 60, 80, 100] };
+    return { priceDomain: [0, 100] as [number, number], priceTicks: [0, 20, 40, 60, 80, 100], isFallback: true };
   }
   const range = maxRaw - minRaw;
   const pad = Math.max(range * 0.08, 1);
@@ -94,7 +96,7 @@ function calculatePriceAxis(minRaw: number, maxRaw: number, targetTicks = 6) {
   const endP = Math.ceil(rawMax / step) * step;
   const ticks: number[] = [];
   for (let p = startP; p <= endP + step * 0.01; p += step) ticks.push(Math.round(p));
-  return { priceDomain: [startP, endP] as [number, number], priceTicks: ticks };
+  return { priceDomain: [startP, endP] as [number, number], priceTicks: ticks, isFallback: false };
 }
 
 function isMarketOpenNowKst(): boolean {
@@ -173,8 +175,11 @@ export default function MobileIntraday3mChart({ symbol }: MobileIntraday3mChartP
 
   const activeSwingLow = React.useMemo(() => findActiveSwingLow(candles), [candles]);
 
-  const { minPrice, maxPrice, priceDomain, priceTicks } = React.useMemo(() => {
-    if (candles.length === 0) return { minPrice: 0, maxPrice: 100, ...calculatePriceAxis(0, 100) };
+  const { minPrice, maxPrice, priceDomain, priceTicks, hasValidPriceRange } = React.useMemo(() => {
+    if (candles.length === 0) {
+      const axis = calculatePriceAxis(0, 100);
+      return { minPrice: 0, maxPrice: 100, hasValidPriceRange: false, ...axis };
+    }
     const vals: number[] = [];
     candles.forEach((c) => {
       const o = c.openPrice || c.closePrice;
@@ -196,14 +201,14 @@ export default function MobileIntraday3mChart({ symbol }: MobileIntraday3mChartP
     }
     if (activeSwingLow) vals.push(activeSwingLow.price);
     const axis = calculatePriceAxis(Math.min(...vals), Math.max(...vals));
-    return { minPrice: axis.priceDomain[0], maxPrice: axis.priceDomain[1], ...axis };
+    return { minPrice: axis.priceDomain[0], maxPrice: axis.priceDomain[1], hasValidPriceRange: !axis.isFallback, ...axis };
   }, [candles, showVWAP, showPivot, showFibo, levels, activeSwingLow]);
 
   // 3분봉 매물대(가격대별 누적 거래량) - 일간 차트(MobileStockDetailChart.tsx)와 동일한 방식(대표가에
   // 해당 봉 실거래량 배정)을 3분봉 단위로 그대로 적용한다(RankingStockDetailChart.tsx 779~816번 줄과
   // 동일 공식, 가짜 데이터 없이 실 3분봉 OHLCV만 사용, 수칙 1-6).
   const volumeProfileBins = React.useMemo(() => {
-    if (!showVolumeProfile || candles.length === 0 || minPrice <= 0 || maxPrice <= minPrice) return [];
+    if (!showVolumeProfile || candles.length === 0 || !hasValidPriceRange || maxPrice <= minPrice) return [];
     const BIN_COUNT = 24;
     const binSize = (maxPrice - minPrice) / BIN_COUNT;
     const bins = Array.from({ length: BIN_COUNT }, (_, i) => ({ priceLow: minPrice + i * binSize, priceHigh: minPrice + (i + 1) * binSize, volume: 0 }));
@@ -223,7 +228,7 @@ export default function MobileIntraday3mChart({ symbol }: MobileIntraday3mChartP
     let pocIdx = 0;
     bins.forEach((b, i) => { if (b.volume > bins[pocIdx].volume) pocIdx = i; });
     return bins.map((b, i) => ({ ...b, ratio: b.volume / maxBinVolume, isPoc: i === pocIdx && b.volume > 0 }));
-  }, [showVolumeProfile, candles, minPrice, maxPrice]);
+  }, [showVolumeProfile, candles, minPrice, maxPrice, hasValidPriceRange]);
 
   const formatYPrice = (v: number) => v.toLocaleString(undefined, { maximumFractionDigits: 0 });
   const formatYVol = (v: number) => (v >= 100000000 ? `${Math.round(v / 100000000)}억` : v >= 10000 ? `${Math.round(v / 10000)}만` : v.toLocaleString());

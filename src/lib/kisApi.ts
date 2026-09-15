@@ -4561,11 +4561,11 @@ const postMarketCacheStore = getGlobalMap<string, { data: InvestorRankingRespons
 
 /**
  * 후보 종목 배열에 당일 고가/저가/종가 기반 변동폭(todayRangePct)·고가권 마감도(closePositionPct)를
- * 채우고, 교집합/연속매수 개수(overlapCount) + 고가권 마감 + 변동폭 좁음 + 기관 매수 우위를 합산한
- * postMarketScore까지 계산해 점수 내림차순으로 정렬·재랭크한다.
- * "장마감 후보군"(급등주 기반, fetchKisPostMarketCandidates)과 "수급 장마감 후보군"(3일연속 수급 기반,
- * fetchKisSupplyPostMarketCandidates) 양쪽에서 완전히 동일한 계산이라 하나로 통합했다
- * (수칙 1-6 - 동일 로직 중복 구현 금지).
+ * 채우고, 교집합 개수(overlapCount) + 고가권 마감 + 변동폭 좁음 + 기관 매수 우위를 합산한 postMarketScore
+ * 까지 계산해 점수 내림차순으로 정렬·재랭크한다. "장마감 후보군"(급등주 기반, fetchKisPostMarketCandidates)
+ * 전용 — 수급교집합 쪽 "장마감 후보만" 토글(applyQuietAccumulationFilter, 아래 4700번 줄 근방)은 실측
+ * 백테스트로 이 공식(고가마감·변동폭 좁음이 좋다)이 다음날 수익률과 반대 방향임이 확인돼 별도 공식으로
+ * 분리했다 - 이름은 비슷해도 서로 다른 검증 결과에 기반한 별개 로직이니 다시 통합하지 말 것.
  */
 async function enrichCandidatesWithNarrowRangeScore<T extends RankingItem>(
   candidates: T[],
@@ -4670,8 +4670,7 @@ export async function fetchKisPostMarketCandidates(market: MarketType = 'ALL'): 
   // 없이 계산해둔 당일 organSupplyDirection(기관 순위표 기준 당일 매수/매도 방향)을 재사용한다 - 여러 날
   // 추세는 못 보지만 이 탭의 원래 목적(다음 거래일 아침 후보 스크리닝)엔 오늘 방향성만으로 충분하고, 새
   // KIS 호출이 전혀 추가되지 않는다(수칙 1-6). 실제 청크 조회·점수 계산은 enrichCandidatesWithNarrowRangeScore
-  // (위 4560번 줄 근방)로 통합했다 - "수급 장마감 후보군"(fetchKisSupplyPostMarketCandidates)과 완전히
-  // 동일한 계산이기 때문(수칙 1-6).
+  // (위 4560번 줄 근방) 전용 함수로 위임한다.
   const enriched = await enrichCandidatesWithNarrowRangeScore(candidates, (item) => item.organSupplyDirection === 'buy');
 
   // 3. 배지 문구에 반영 - 급등주 탭은 이 surgingBadge 문자열이 화면 "급등 상세 순위" 칸에 그대로 노출된다.
@@ -4699,85 +4698,239 @@ export async function fetchKisPostMarketCandidates(market: MarketType = 'ALL'): 
   return res;
 }
 
-// 🚨 [기능 추가 - 사용자 요청: "3일연속 교집합에 변동폭 축소 조건 얹어서 만들어봐. 탭은 3일연속 교집합
-// 옆에 두고. 수급 장마감 후보군 이라고 이름붙여"] 위 "장마감 후보군"(급등주 기반)과 목적은 같지만
-// 후보 진입 조건이 다르다:
-//   - 급등주 기반 버전: 오늘 등락률·거래량·거래대금이 "이미" 상위권이어야 후보가 됨(fetchKisSurgingOverlap).
-//   - 이 버전: 오늘 등락률과 무관하게, 외국인·기관·프로그램 중 2개 이상 주체가 3일 이상 연속으로 조용히
-//     순매수를 쌓아온 종목(fetchConsecutive3dOverlapRankingData)을 후보로 삼는다 - 사용자 질문
-//     "조용히 기다렸다가 갑자기 확 치고 올라갈 애들"에 대응하려는 목적.
-// 여기에 동일한 변동폭 축소(narrow range)·고가권 마감·기관 매수 우위 점수(enrichCandidatesWithNarrowRangeScore,
-// 위 4560번 줄 근방)를 그대로 얹어 다음 거래일 R2 돌파 가능성이 상대적으로 높은 순으로 재정렬한다(수칙 1-6).
-const SUPPLY_POSTMARKET_CACHE_TTL_MS = 5 * 60 * 1000; // 급등주 기반 버전과 동일 취지(당일 캔들 기반 지표)
-const supplyPostMarketCacheStore = getGlobalMap<string, { data: InvestorRankingResponse; timestamp: number }>('supplyPostMarketCacheStore');
+// 🚨 [기능 재설계 - 사용자 요청: "3일연속이 다음날 상승에 더 좋을려나?" → 실측 백테스트 → "다른 조건이면
+// 어떤게 더 좋은지 봐봐" → "2일연속/3일연속 풀에서도 확인해봐" → "토글 필터로 진행해줘"] 원래 있던
+// "수급 장마감 후보군"(3일연속 전용 4번째 버튼, fetchKisSupplyPostMarketCandidates)을 제거하고, 당일/
+// 2일연속/3일연속 어느 탭에서든 켤 수 있는 토글 필터로 바꾼다. 제거 이유는 실측 근거가 있다 - scratch
+// 백테스트(2026-04-28~09-11, 96거래일 원본 raw_daily_data 실측)로 옛 공식(변동폭 좁음·고가권 마감·
+// 기관매수 가점)의 다음날 수익률을 직접 검증한 결과:
+//   - 3일연속 교집합 자체가 당일/2일연속보다 다음날 수익률이 더 나빴다(중앙값 -0.132% vs +0.126%/+0.189%,
+//     승률 47.4% vs 51.7%/52.3%) - "3일 연속 매집일수록 더 강한 신호"라는 원래 가정이 틀렸다.
+//   - 옛 공식으로 상위 N을 골라낼수록(어느 기준을 쓰든) 오히려 필터 없는 전체 풀보다 더 나빠졌다
+//     (예: 3일연속 상위 15위 중앙값 -0.321% - 필터가 있으나 마나가 아니라 역효과).
+// 개별 요인 5분위 분석으로 진짜 신호를 찾았다 - 옛 공식과 정반대 방향이다:
+//   - 종가위치: 낮을수록(저가마감) 좋음 (Q1 평균+0.856%/승률56.4% vs Q5 평균-0.031%/승률46.3%)
+//   - 거래량/최근5일평균: 낮을수록(조용할수록) 좋음 (Q1 평균+0.719%/승률56.1% vs Q5 평균+0.160%/승률46.9%)
+//   - 최근5일 누적수익률: 낮을수록(최근 눌려있을수록) 좋음 (Q1 평균+1.343%/승률59.1% vs Q5 평균-0.072%/승률47.5%)
+// 세 지표를 후보군 내 백분위로 환산해(낮을수록 고득점) 30%+30%+30% + 주체수(2→3) 10% 가중합한 새 점수로
+// 당일/2일연속/3일연속 세 풀 전부에서 Top-N 백테스트 재검증까지 마쳤다(당일·2일연속은 뚜렷한 개선,
+// 3일연속은 개선되지만 본전 수준) - applyQuietAccumulationFilter가 이 새 공식이다.
+const QUIET_ACCUM_CACHE_TTL_MS = 5 * 60 * 1000; // 당일 캔들·거래량 기반 지표라 급등주(60초)만큼 자주 안 바뀜
+const quietAccumCacheStore = getGlobalMap<string, { data: InvestorRankingResponse; timestamp: number }>('quietAccumCacheStore');
+const recentDailyBarsCache = getGlobalMap<string, { data: Array<{ date: string; open: number; high: number; low: number; close: number; volume: number }>; timestamp: number }>('recentDailyBarsCache');
 
-export async function fetchKisSupplyPostMarketCandidates(
+/**
+ * "장마감 후보만" 토글 전용 - 후보 종목의 최근 6거래일치(오늘 포함) 시가/고가/저가/종가/거래량만 가볍게
+ * 조회한다. fetchKisInvestorTrend(365일치+수급+프로그램매매까지 통째 조회)를 후보군 전체에 또 돌리면
+ * 느려지는 문제를 fetchKisDailyPrice가 이미 "오늘 시세만"으로 해결했던 것과 동일한 이유로, 여기선
+ * inquire-daily-itemchartprice(FHKST03010100)를 짧은 기간(달력 12일 ≈ 거래일 6~8일)만 요청해 오늘
+ * 시세뿐 아니라 직전 며칠치 거래량·종가까지 단 1회 호출로 받는다(수칙 1-6 - executeKisInvestorTrendFetch와
+ * 같은 TR을 재사용하되 페이지네이션·수급 병합 등 무거운 부분은 걷어냄).
+ */
+async function fetchKisRecentDailyBars(
+  symbol: string
+): Promise<Array<{ date: string; open: number; high: number; low: number; close: number; volume: number }> | undefined> {
+  const cached = recentDailyBarsCache.get(symbol);
+  if (cached && Date.now() - cached.timestamp < getDynamicRankingTtl()) {
+    return cached.data;
+  }
+
+  const appKey = process.env.KIS_APPKEY;
+  const appSecret = process.env.KIS_APPSECRET;
+  if (!appKey || !appSecret || appKey.trim() === '') return undefined;
+
+  try {
+    const result = await kisQueue.enqueue(
+      () => fetchWithRetry(() => executeKisRecentDailyBarsFetch(symbol)),
+      'LOW',
+      `recent-daily-bars-${symbol}`
+    );
+    if (result && result.length > 0) {
+      recentDailyBarsCache.set(symbol, { data: result, timestamp: Date.now() });
+    }
+    return result;
+  } catch (e) {
+    console.warn(`[Recent Daily Bars Queue Error] ${symbol}:`, e);
+    return undefined;
+  }
+}
+
+async function executeKisRecentDailyBarsFetch(
+  symbol: string
+): Promise<Array<{ date: string; open: number; high: number; low: number; close: number; volume: number }> | undefined> {
+  const isVirtual = process.env.KIS_VIRTUAL === 'true';
+  const defaultBaseUrl = isVirtual
+    ? 'https://openapivts.koreainvestment.com:29443'
+    : 'https://openapi.koreainvestment.com:9443';
+  const baseUrl = process.env.KIS_BASE_URL || defaultBaseUrl;
+  const appKey = process.env.KIS_APPKEY!;
+  const appSecret = process.env.KIS_APPSECRET!;
+
+  const token = await getKisAccessToken();
+  if (!token) return undefined;
+
+  const today = new Date();
+  const endDate = today.toISOString().slice(0, 10).replace(/-/g, '');
+  const startObj = new Date(today);
+  startObj.setDate(startObj.getDate() - 14); // 주말·공휴일 감안해 거래일 6~8일 확보
+  const startDate = startObj.toISOString().slice(0, 10).replace(/-/g, '');
+
+  const url = `${baseUrl}/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice?FID_COND_MRKT_DIV_CODE=J&FID_INPUT_ISCD=${symbol}&FID_INPUT_DATE_1=${startDate}&FID_INPUT_DATE_2=${endDate}&FID_PERIOD_DIV_CODE=D&FID_ORG_ADJ_PRC=0`;
+
+  const res = await fetch(url, {
+    method: 'GET',
+    headers: {
+      'content-type': 'application/json; charset=utf-8',
+      authorization: `Bearer ${token}`,
+      appkey: appKey,
+      appsecret: appSecret,
+      tr_id: 'FHKST03010100',
+      custtype: 'P',
+    },
+    cache: 'no-store',
+    signal: AbortSignal.timeout(8000),
+  });
+
+  if (!res.ok) return undefined;
+  const json = await res.json().catch(() => null);
+  if (!json || json.rt_cd !== '0' || !Array.isArray(json.output2)) return undefined;
+
+  return json.output2
+    .map((item: any) => ({
+      date: item.stck_bsop_date || '',
+      open: parseInt(item.stck_oprc || '0', 10),
+      high: parseInt(item.stck_hgpr || '0', 10),
+      low: parseInt(item.stck_lwpr || '0', 10),
+      close: parseInt(item.stck_clpr || '0', 10),
+      volume: parseInt(item.acml_vol || '0', 10),
+    }))
+    .filter((b: any) => b.date && b.close > 0)
+    .reverse(); // KIS는 최신순(내림차순)으로 내려주므로 오름차순으로 뒤집는다
+}
+
+/**
+ * "장마감 후보만" 토글 - 위 주석에 정리한 백테스트 검증 공식 그대로: 종가위치·거래량배율·5일누적수익률을
+ * 후보군 내 백분위로 환산해(셋 다 낮을수록 고득점) 30%씩, 주체수(2→0점/3→100점) 10%로 가중합한다.
+ * 데이터를 못 가져온 종목은 percentile 계산을 왜곡하지 않도록 후보군 자체에서 제외한다(수칙 1-3 -
+ * 실패를 가짜 중간값으로 채우지 않음).
+ */
+async function applyQuietAccumulationFilter<T extends RankingItem>(candidates: T[], topLimit: number): Promise<T[]> {
+  const CHUNK_SIZE = 10;
+  const enrichedRaw: Array<T & { volRatioPct: number; cum5dReturnPct: number }> = [];
+
+  for (let i = 0; i < candidates.length; i += CHUNK_SIZE) {
+    const chunk = candidates.slice(i, i + CHUNK_SIZE);
+    const results = await Promise.all(
+      chunk.map(async (item) => {
+        try {
+          const bars = await fetchKisRecentDailyBars(item.symbol);
+          if (!bars || bars.length < 6) return null; // 최근 5일 평균·5일전 종가 계산에 최소 6거래일 필요
+          const todayBar = bars[bars.length - 1];
+          const prior5 = bars.slice(bars.length - 6, bars.length - 1); // 오늘 제외 직전 5거래일
+          const fiveDaysAgoBar = bars[bars.length - 6];
+
+          const range = todayBar.high - todayBar.low;
+          const closePositionPct = range > 0 ? Number((((todayBar.close - todayBar.low) / range) * 100).toFixed(0)) : 50;
+
+          const avgVol5 = prior5.reduce((sum, b) => sum + b.volume, 0) / prior5.length;
+          const volRatioPct = avgVol5 > 0 ? Number(((todayBar.volume / avgVol5) * 100).toFixed(1)) : 100;
+
+          const cum5dReturnPct = fiveDaysAgoBar.close > 0
+            ? Number((((todayBar.close - fiveDaysAgoBar.close) / fiveDaysAgoBar.close) * 100).toFixed(2))
+            : 0;
+
+          return { ...item, closePositionPct, volRatioPct, cum5dReturnPct } as T & { volRatioPct: number; cum5dReturnPct: number };
+        } catch (e) {
+          console.warn(`[Quiet Accum Filter Enrich Skip] ${item.symbol}:`, (e as any)?.message || e);
+          return null;
+        }
+      })
+    );
+    results.forEach((r) => { if (r) enrichedRaw.push(r); });
+    if (i + CHUNK_SIZE < candidates.length) {
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    }
+  }
+
+  if (enrichedRaw.length === 0) return [];
+
+  // 백분위 환산(오름차순 정렬 후 순위/전체) - 셋 다 "낮을수록" 고득점이라 (100 - percentile)로 뒤집는다
+  const percentileOf = (values: number[], target: number): number => {
+    const sorted = [...values].sort((a, b) => a - b);
+    let idx = sorted.findIndex((v) => v >= target);
+    if (idx === -1) idx = sorted.length - 1;
+    return (idx / sorted.length) * 100;
+  };
+  const closeVals = enrichedRaw.map((r) => r.closePositionPct ?? 50);
+  const volVals = enrichedRaw.map((r) => r.volRatioPct);
+  const momVals = enrichedRaw.map((r) => r.cum5dReturnPct);
+  const maxOverlap = Math.max(...enrichedRaw.map((r) => r.overlapCount || 2), 3);
+
+  enrichedRaw.forEach((item) => {
+    const closeScore = 100 - percentileOf(closeVals, item.closePositionPct ?? 50);
+    const volScore = 100 - percentileOf(volVals, item.volRatioPct);
+    const momScore = 100 - percentileOf(momVals, item.cum5dReturnPct);
+    const overlapScore = maxOverlap > 2 ? (((item.overlapCount || 2) - 2) / (maxOverlap - 2)) * 100 : 0;
+    item.postMarketScore = Number((closeScore * 0.3 + volScore * 0.3 + momScore * 0.3 + overlapScore * 0.1).toFixed(1));
+  });
+
+  enrichedRaw.sort((a, b) => (b.postMarketScore || 0) - (a.postMarketScore || 0));
+  const trimmed = enrichedRaw.slice(0, topLimit);
+  trimmed.forEach((item, idx) => { item.rank = idx + 1; });
+  return trimmed;
+}
+
+export async function fetchKisQuietAccumulationCandidates(
+  baseMode: 'daily' | 'consecutive2d' | 'consecutive3d',
   direction: RankingDirection = 'buy',
   market: MarketType = 'ALL',
   topLimit: number = 50
 ): Promise<InvestorRankingResponse> {
-  const cacheKey = `supply-postmarket-${direction}-${market}`;
-  const cached = supplyPostMarketCacheStore.get(cacheKey);
-  if (cached && Date.now() - cached.timestamp < SUPPLY_POSTMARKET_CACHE_TTL_MS) {
+  const cacheKey = `quiet-accum-${baseMode}-${direction}-${market}`;
+  const cached = quietAccumCacheStore.get(cacheKey);
+  if (cached && Date.now() - cached.timestamp < QUIET_ACCUM_CACHE_TTL_MS) {
     return cached.data;
   }
 
-  const sharedMap = await fetchSharedRankCacheBatch([`full:${cacheKey}`], SUPPLY_POSTMARKET_CACHE_TTL_MS).catch(() => new Map<string, any[]>());
+  const periodLabel = (baseMode === 'consecutive2d' ? 'consecutive2d' : baseMode === 'consecutive3d' ? 'consecutive3d' : '1d') as RankingPeriod;
+
+  const sharedMap = await fetchSharedRankCacheBatch([`full:${cacheKey}`], QUIET_ACCUM_CACHE_TTL_MS).catch(() => new Map<string, any[]>());
   const sharedList = sharedMap.get(`full:${cacheKey}`);
   if (sharedList && sharedList.length > 0) {
-    console.log(`[Shared Rank Cache Hit] full:${cacheKey} - 다른 인스턴스가 이미 계산해둔 수급 장마감 후보군을 Supabase에서 재사용`);
+    console.log(`[Shared Rank Cache Hit] full:${cacheKey} - 다른 인스턴스가 이미 계산해둔 장마감 후보만 필터 결과를 Supabase에서 재사용`);
     const sharedRes: InvestorRankingResponse = {
-      type: 'overlap',
-      direction,
-      period: 'consecutive3d' as RankingPeriod,
-      list: sharedList,
-      isMock: false,
-      updatedAt: new Date().toISOString(),
+      type: 'overlap', direction, period: periodLabel, list: sharedList, isMock: false, updatedAt: new Date().toISOString(),
     };
-    supplyPostMarketCacheStore.set(cacheKey, { data: sharedRes, timestamp: Date.now() });
+    quietAccumCacheStore.set(cacheKey, { data: sharedRes, timestamp: Date.now() });
     return sharedRes;
   }
 
-  // 1. 3일연속 수급 교집합 후보군 재사용 - 연속일수 판정·이탈 추적·이격도 배지까지 이미 끝난 상태(수칙 1-6)
-  const overlapRes = await fetchConsecutive3dOverlapRankingData(direction, 2, topLimit, market);
+  // 1. 기준 교집합 목록 재사용(당일/2일연속/3일연속 중 프론트가 지금 보고 있는 탭 그대로) - 연속일수
+  // 판정·이탈 추적·이격도 배지까지 이미 끝난 상태(수칙 1-6)
+  const overlapRes = baseMode === 'consecutive2d'
+    ? await fetchConsecutive2dOverlapRankingData(direction, 2, topLimit, market)
+    : baseMode === 'consecutive3d'
+    ? await fetchConsecutive3dOverlapRankingData(direction, 2, topLimit, market)
+    : await fetchOverlapRankingData(direction, '1d', 2, topLimit, market);
   const candidates = overlapRes.list;
 
   if (candidates.length === 0) {
-    const emptyRes: InvestorRankingResponse = {
-      type: 'overlap',
-      direction,
-      period: 'consecutive3d' as RankingPeriod,
-      list: [],
-      isMock: false,
-      updatedAt: new Date().toISOString(),
-    };
-    supplyPostMarketCacheStore.set(cacheKey, { data: emptyRes, timestamp: Date.now() });
+    const emptyRes: InvestorRankingResponse = { type: 'overlap', direction, period: periodLabel, list: [], isMock: false, updatedAt: new Date().toISOString() };
+    quietAccumCacheStore.set(cacheKey, { data: emptyRes, timestamp: Date.now() });
     return emptyRes;
   }
 
-  // 🚨 [버그 방지] fetchConsecutive3dOverlapRankingData는 콜드스타트 시 상위 15종목만 먼저 계산해
-  // isPartial:true로 응답하고 나머지는 백그라운드에서 채운다(위 3763번 줄 PRIORITY_LIMIT 주석 참고).
-  // 이 부분판을 그대로 5분 캐시/Supabase에 박제해버리면, 완전판이 다 채워진 뒤에도 이 탭만 5분 동안
-  // 계속 15종목짜리 부분판을 보여주게 된다 - 프론트가 isPartial:true인 동안 4초 간격으로 재조회하는
-  // 로직(InvestorRankingTable.tsx의 refetchInterval)이 무력화되지 않도록, 부분판일 때는 캐시에 쓰지
-  // 않고 그대로 반환만 한다.
-  const enriched = await enrichCandidatesWithNarrowRangeScore(candidates, (item) => (item.organNetBuyAmt ?? 0) > 0);
+  // 🚨 [버그 방지] 콜드스타트 시 기준 목록이 상위 일부만 먼저 계산돼 isPartial:true로 오는 경우, 그
+  // 부분판을 캐시에 박제하지 않는다 - fetchKisSupplyPostMarketCandidates에서 이미 겪은 문제와 동일.
+  const enriched = await applyQuietAccumulationFilter(candidates, Math.min(20, topLimit));
 
   const res: InvestorRankingResponse = {
-    type: 'overlap',
-    direction,
-    period: 'consecutive3d' as RankingPeriod,
-    list: enriched,
-    isPartial: overlapRes.isPartial,
-    isMock: false,
-    updatedAt: new Date().toISOString(),
+    type: 'overlap', direction, period: periodLabel, list: enriched, isPartial: overlapRes.isPartial, isMock: false, updatedAt: new Date().toISOString(),
   };
 
   if (!overlapRes.isPartial) {
-    supplyPostMarketCacheStore.set(cacheKey, { data: res, timestamp: Date.now() });
+    quietAccumCacheStore.set(cacheKey, { data: res, timestamp: Date.now() });
     upsertSharedRankCache(`full:${cacheKey}`, enriched).catch(() => {});
-    // 🚨 [기능 추가 - 사용자 요청: "오늘 만든 장마감 후보군도 뱃지모음에 나오게 해줘"] 급등주 기반
-    // postmarket과 동일하게, 뱃지모음(getStockBadgeSummary)이 조회할 트림 캐시도 채운다(수칙 1-6).
     syncSharedRankCache(cacheKey, enriched);
   }
   return res;
@@ -5625,8 +5778,6 @@ export async function getStockBadgeSummary(symbol: string, market: MarketType = 
     // 🚨 [기능 추가 - 사용자 요청: "오늘 만든 장마감 후보군도 뱃지모음에 나오게 해줘"] 각 함수가
     // syncSharedRankCache(cacheKey, ...)를 저장할 때 쓰는 cacheKey와 정확히 동일한 문자열이어야 한다.
     postmarket: `postmarket-${market}`,
-    supplyPostmarketBuy: `supply-postmarket-buy-${market}`,
-    supplyPostmarketSell: `supply-postmarket-sell-${market}`,
   } as const;
 
   // 🚨 [Supabase 공유 캐시 우선 조회] 이 컨테이너 자신의 인메모리 캐시가 비어 있어도, 다른 컨테이너가
@@ -5725,22 +5876,19 @@ export async function getStockBadgeSummary(symbol: string, market: MarketType = 
     });
   });
 
-  // 🚨 [기능 추가 - 사용자 요청: "오늘 만든 장마감 후보군도 뱃지모음에 나오게 해줘"] 두 "장마감 후보군"
-  // 탭 모두 종목당 KIS 라이브 호출(fetchKisDailyPrice)이 여러 건 걸리는 무거운 계산이라, 2일/3일연속과
-  // 동일 원칙으로 여기서 새로 라이브 계산을 트리거하지 않는다 - Supabase 공유캐시나 이 컨테이너의
-  // 인메모리 캐시(postMarketCacheStore/supplyPostMarketCacheStore)에 이미 있는 것만 본다.
+  // 🚨 [기능 추가 - 사용자 요청: "오늘 만든 장마감 후보군도 뱃지모음에 나오게 해줘"] 장마감 후보군 탭도
+  // 종목당 KIS 라이브 호출(fetchKisDailyPrice)이 여러 건 걸리는 무거운 계산이라, 2일/3일연속과 동일
+  // 원칙으로 여기서 새로 라이브 계산을 트리거하지 않는다 - Supabase 공유캐시나 이 컨테이너의 인메모리
+  // 캐시(postMarketCacheStore)에 이미 있는 것만 본다.
   // 7. 장마감 후보군(급등주 기반) - 항상 순매수 단일 방향(fetchKisPostMarketCandidates에 direction 파라미터 자체가 없음)
   {
     const list = shared.get(K.postmarket) || (postMarketCacheStore.get(`postmarket-${market}`)?.data.list as BadgeSourceItem[] | undefined);
     pushIfFound('postmarket', '장마감 후보군', list);
   }
 
-  // 8. 수급 장마감 후보군(3일연속 수급 기반 + 변동폭 축소 조건)
-  (['buy', 'sell'] as const).forEach((direction) => {
-    const key = direction === 'buy' ? K.supplyPostmarketBuy : K.supplyPostmarketSell;
-    const list = shared.get(key) || (supplyPostMarketCacheStore.get(`supply-postmarket-${direction}-${market}`)?.data.list as BadgeSourceItem[] | undefined);
-    pushIfFound(`supply-postmarket-${direction}`, `수급 장마감 후보군 ${direction === 'buy' ? '순매수' : '순매도'}`, list, direction);
-  });
-
+  // 🚨 [기능 재설계 - "토글 필터로 진행해줘"] 예전엔 "수급 장마감 후보군"이 3일연속 전용 4번째 탭이라
+  // 별도 배지 항목(8번)이 필요했다. 지금은 당일/2일연속/3일연속 위에 얹는 "장마감 후보만" 토글일 뿐이라,
+  // 그 토글로 걸러진 종목도 결국 원래 탭(overlap-daily/overlap-2d/overlap-3d, 아래 6번 근방)의 정식
+  // 멤버라 이미 배지가 뜬다 - 별도 항목을 중복으로 만들 필요가 없어졌다(수칙 1-6).
   return badges;
 }

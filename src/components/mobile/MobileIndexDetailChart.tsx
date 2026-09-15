@@ -41,9 +41,11 @@ async function fetchIndexTrend(market: 'KOSPI' | 'KOSDAQ', period: TrendPeriod):
 }
 
 // IndexDetailChart.tsx의 calculateIndexPriceAxis와 동일한 nice-number 방식.
+// 🚨 [버그 수정 - RankingStockDetailChart.tsx와 동일 결함(수칙 1-6)] isFallback으로 "진짜 데이터 없음"과
+// "축 반올림으로 우연히 0이 된 정상 케이스"를 구분한다 - 자세한 사유는 IndexDetailChart.tsx 주석 참고.
 function calculateIndexPriceAxis(minRaw: number, maxRaw: number, targetTicks = 6) {
   if (!minRaw || !maxRaw || minRaw <= 0 || maxRaw <= 0 || maxRaw <= minRaw) {
-    return { minPrice: 0, maxPrice: 100, priceDomain: [0, 100] as [number, number], priceTicks: [0, 20, 40, 60, 80, 100] };
+    return { minPrice: 0, maxPrice: 100, priceDomain: [0, 100] as [number, number], priceTicks: [0, 20, 40, 60, 80, 100], isFallback: true };
   }
   const range = maxRaw - minRaw;
   const pad = Math.max(range * 0.08, 2);
@@ -58,7 +60,7 @@ function calculateIndexPriceAxis(minRaw: number, maxRaw: number, targetTicks = 6
   const endP = Math.ceil(rawMax / step) * step;
   const ticks: number[] = [];
   for (let p = startP; p <= endP + step * 0.01; p += step) ticks.push(Math.round(p * 100) / 100);
-  return { minPrice: startP, maxPrice: endP, priceDomain: [startP, endP] as [number, number], priceTicks: ticks };
+  return { minPrice: startP, maxPrice: endP, priceDomain: [startP, endP] as [number, number], priceTicks: ticks, isFallback: false };
 }
 
 export default function MobileIndexDetailChart({ market, onClose }: MobileIndexDetailChartProps) {
@@ -124,8 +126,11 @@ export default function MobileIndexDetailChart({ market, onClose }: MobileIndexD
     };
   }, [displayTrend]);
 
-  const { minPrice, maxPrice, priceDomain, priceTicks } = React.useMemo(() => {
-    if (displayTrend.length === 0) return calculateIndexPriceAxis(0, 100);
+  const { minPrice, maxPrice, priceDomain, priceTicks, hasValidPriceRange } = React.useMemo(() => {
+    if (displayTrend.length === 0) {
+      const axis = calculateIndexPriceAxis(0, 100);
+      return { ...axis, hasValidPriceRange: false };
+    }
     const highs = displayTrend.map((d) => d.highPrice || d.closePrice);
     const lows = displayTrend.map((d) => d.lowPrice || d.closePrice);
     const ma20s = displayTrend.map((d) => d.ma20).filter((v) => v > 0);
@@ -138,11 +143,12 @@ export default function MobileIndexDetailChart({ market, onClose }: MobileIndexD
         ].filter((v) => v > 0)
       : [];
     const allVals = [...highs, ...lows, ...(showMA20 ? ma20s : []), ...(showMA60 ? ma60s : []), ...disparateVals];
-    return calculateIndexPriceAxis(Math.min(...allVals), Math.max(...allVals), 6);
+    const axis = calculateIndexPriceAxis(Math.min(...allVals), Math.max(...allVals), 6);
+    return { ...axis, hasValidPriceRange: !axis.isFallback };
   }, [displayTrend, showMA20, showMA60, showDisparate, disparateInfo]);
 
   const volumeProfileBins = React.useMemo(() => {
-    if (!showVolumeProfile || displayTrend.length === 0 || minPrice <= 0 || maxPrice <= minPrice) return [];
+    if (!showVolumeProfile || displayTrend.length === 0 || !hasValidPriceRange || maxPrice <= minPrice) return [];
     const BIN_COUNT = 24;
     const binSize = (maxPrice - minPrice) / BIN_COUNT;
     const bins = Array.from({ length: BIN_COUNT }, (_, i) => ({ priceLow: minPrice + i * binSize, priceHigh: minPrice + (i + 1) * binSize, volume: 0 }));
@@ -157,7 +163,7 @@ export default function MobileIndexDetailChart({ market, onClose }: MobileIndexD
     let pocIdx = 0;
     bins.forEach((b, i) => { if (b.volume > bins[pocIdx].volume) pocIdx = i; });
     return bins.map((b, i) => ({ ...b, ratio: b.volume / maxBinVolume, isPoc: i === pocIdx && b.volume > 0 }));
-  }, [showVolumeProfile, displayTrend, minPrice, maxPrice]);
+  }, [showVolumeProfile, displayTrend, minPrice, maxPrice, hasValidPriceRange]);
 
   const formatYPrice = (v: number) => v.toLocaleString(undefined, { maximumFractionDigits: 0 });
   const formatYVol = (v: number) => (v >= 100000000 ? `${Math.round(v / 100000000)}억` : v >= 10000 ? `${Math.round(v / 10000)}만` : v.toLocaleString());

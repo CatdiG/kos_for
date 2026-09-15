@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse, after } from 'next/server';
-import { fetchKisForeignInstitutionRanking, fetchOverlapRankingData, fetchConsecutive2dOverlapRankingData, fetchConsecutive3dOverlapRankingData, fetchKisSupplyPostMarketCandidates, fetchKisInvestorTrend, getKisAccessTokenWithSource, resolveAndCacheMissingCredits, mergeCreditStatusToRanking, assertNoMockLeak } from '@/lib/kisApi';
+import { fetchKisForeignInstitutionRanking, fetchOverlapRankingData, fetchConsecutive2dOverlapRankingData, fetchConsecutive3dOverlapRankingData, fetchKisQuietAccumulationCandidates, fetchKisInvestorTrend, getKisAccessTokenWithSource, resolveAndCacheMissingCredits, mergeCreditStatusToRanking, assertNoMockLeak } from '@/lib/kisApi';
 import { getBatchRankingData, getBatchRankingDataAsync, runTop50BatchCollector } from '@/lib/batchCollector';
 import { MarketType, RankingDirection, RankingPeriod, RankingType } from '@/lib/types';
 
@@ -20,19 +20,31 @@ export async function GET(request: NextRequest) {
   const mode = searchParams.get('mode') || 'daily';
   const limit = parseInt(searchParams.get('limit') || '50', 10);
   const market = (searchParams.get('market') as MarketType) || 'ALL';
+  // 🚨 [기능 재설계 - 사용자 요청: "토글 필터로 진행해줘"] 예전엔 mode='supplyPostmarket'이라는 별도
+  // 4번째 탭이었지만, 지금은 당일/2일연속/3일연속 중 어느 탭이든 위에 얹을 수 있는 독립된 토글이라
+  // mode(기준 탭)와 별개의 쿼리 파라미터로 분리했다(수칙 1-6 - 탭 종류만큼 mode 값을 늘리지 않음).
+  const quietFilter = searchParams.get('quietFilter') === '1';
 
   console.log(`[PERF ROUTE START /api/stock/ranking] type=${type}, direction=${direction}, period=${period}, market=${market}`);
 
   try {
     let responseData: any;
     if (type === 'overlap') {
-      if (mode === 'consecutive2d' || period === 'consecutive2d') {
+      // 🚨 [기능 재설계 - "장마감 후보만" 토글] 실측 백테스트(kisApi.ts의 applyQuietAccumulationFilter
+      // 주석 참고)로 검증한 역발상 점수를, 지금 보고 있는 기준 탭(당일/2일연속/3일연속) 그대로 유지한 채
+      // 얹는다 - 기준 탭 판별 로직 자체는 바로 아래 분기와 동일해야 하므로 한 곳에서 baseMode로 정리한다.
+      const baseMode: 'daily' | 'consecutive2d' | 'consecutive3d' =
+        mode === 'consecutive2d' || period === 'consecutive2d'
+          ? 'consecutive2d'
+          : mode === 'consecutive3d' || period === ('3d_consecutive' as any) || period === 'consecutive3d'
+          ? 'consecutive3d'
+          : 'daily';
+
+      if (quietFilter) {
+        responseData = await fetchKisQuietAccumulationCandidates(baseMode, direction, market, limit);
+      } else if (baseMode === 'consecutive2d') {
         responseData = await fetchConsecutive2dOverlapRankingData(direction, 2, limit, market);
-      } else if (mode === 'supplyPostmarket') {
-        // 🚨 [기능 추가 - 사용자 요청: "3일연속 교집합 옆에 수급 장마감 후보군"] 3일연속 수급 교집합에
-        // 변동폭 축소·고가권 마감·기관 매수 우위 조건을 얹은 버전(kisApi.ts, 수칙 1-6)
-        responseData = await fetchKisSupplyPostMarketCandidates(direction, market, limit);
-      } else if (mode === 'consecutive3d' || period === ('3d_consecutive' as any) || period === 'consecutive3d') {
+      } else if (baseMode === 'consecutive3d') {
         responseData = await fetchConsecutive3dOverlapRankingData(direction, 2, limit, market);
       } else {
         responseData = await fetchOverlapRankingData(direction, period as any, 2, limit, market);

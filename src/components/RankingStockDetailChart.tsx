@@ -484,9 +484,17 @@ function calculateUltraTightKrxPriceAxis(minRaw: number, maxRaw: number) {
     };
   }, [trend]);
 
-  const { minPrice, maxPrice, priceDomain, priceTicks } = React.useMemo(() => {
+  // 🚨 [버그 수정 - 사용자 지적: "120일 매물대가 안떠"] hasValidPriceRange 없이 minPrice<=0 하나로만
+  // "데이터 없음"을 판별했었다 - 성호전자(043260)처럼 120일 구간 고저폭이 넓은(저가 11,790원~고가
+  // 57,700원, 약 4.9배) 종목은 calculateUltraTightKrxPriceAxis의 촘촘눈금 알고리즘이 12,500원 단위
+  // 눈금만 채택하게 되어 Math.floor(11,690/12,500)=0으로 축 하한이 "정상적으로" 0에 반올림된다(실측
+  // 재현: calculateUltraTightKrxPriceAxis(11790, 57700) → {minPrice:0, maxPrice:62500}). 이 경우 캔들
+  // 차트 자체는 문제없이 그려지는데, 아래 volumeProfileBins만 "minPrice<=0=데이터 없음"으로 오판해 매물대를
+  // 통째로 숨겼다. 데이터 자체가 없는 진짜 실패 케이스(라인 489/521)와, 데이터는 있지만 축 반올림으로
+  // 우연히 0이 된 정상 케이스를 hasValidPriceRange 플래그로 명시적으로 구분한다(수칙 1-3 - 매직넘버 추정 금지).
+  const { minPrice, maxPrice, priceDomain, priceTicks, hasValidPriceRange } = React.useMemo(() => {
     if (!displayTrend || displayTrend.length === 0) {
-      return { minPrice: 0, maxPrice: 100, priceDomain: [0, 100] as any, priceTicks: [0, 25, 50, 75, 100] };
+      return { minPrice: 0, maxPrice: 100, priceDomain: [0, 100] as any, priceTicks: [0, 25, 50, 75, 100], hasValidPriceRange: false };
     }
     let min = Infinity;
     let max = -Infinity;
@@ -518,16 +526,16 @@ function calculateUltraTightKrxPriceAxis(minRaw: number, maxRaw: number) {
     }
 
     if (min === Infinity || max === -Infinity || min <= 0) {
-      return { minPrice: 0, maxPrice: 100, priceDomain: [0, 100] as any, priceTicks: [0, 25, 50, 75, 100] };
+      return { minPrice: 0, maxPrice: 100, priceDomain: [0, 100] as any, priceTicks: [0, 25, 50, 75, 100], hasValidPriceRange: false };
     }
 
-    return calculateUltraTightKrxPriceAxis(min, max);
+    return { ...calculateUltraTightKrxPriceAxis(min, max), hasValidPriceRange: true };
   }, [displayTrend, showDisparate, disparateInfo]);
 
   // 매물대(가격대별 누적 거래량) - 하루의 대표가(고가+저가+종가)/3에 그날 실거래량을 배정해
   // 현재 화면 가격구간(minPrice~maxPrice)을 24개 구간으로 나눠 집계한다 (가짜 틱데이터 없이 실 OHLCV만 사용).
   const volumeProfileBins = React.useMemo(() => {
-    if (!showVolumeProfile || !displayTrend || displayTrend.length === 0 || minPrice <= 0 || maxPrice <= minPrice) {
+    if (!showVolumeProfile || !displayTrend || displayTrend.length === 0 || !hasValidPriceRange || maxPrice <= minPrice) {
       return [];
     }
     const BIN_COUNT = 24;
@@ -556,7 +564,7 @@ function calculateUltraTightKrxPriceAxis(minRaw: number, maxRaw: number) {
     bins.forEach((b, i) => { if (b.volume > bins[pocIdx].volume) pocIdx = i; });
 
     return bins.map((b, i) => ({ ...b, ratio: b.volume / maxBinVolume, isPoc: i === pocIdx && b.volume > 0 }));
-  }, [showVolumeProfile, displayTrend, minPrice, maxPrice]);
+  }, [showVolumeProfile, displayTrend, minPrice, maxPrice, hasValidPriceRange]);
 
   // Subplot 2 Daily Supply Domain Calculation (for grouped daily net buy/sell bars)
   const supplyDomain = React.useMemo(() => {

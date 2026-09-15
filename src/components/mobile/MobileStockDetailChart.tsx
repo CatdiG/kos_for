@@ -40,9 +40,15 @@ interface MobileStockDetailChartProps {
 
 // 종목 상세 차트(calculateUltraTightKrxPriceAxis)만큼 KRX 호가단위에 딱 맞진 않지만, 지수 상세 차트와
 // 동일한 단순 nice-number 방식으로 충분히 커버한다.
+// 🚨 [버그 수정 - 데스크톱 RankingStockDetailChart.tsx와 동일 결함(수칙 1-6)] isFallback 없이 그냥
+// [0,100] 반환 여부만으로 "데이터 없음"을 판별하면, 고저폭이 넓은 종목(예: 성호전자 043260 - 120일
+// 저가 11,790원~고가 57,700원)은 nice-number step이 rawMin보다 커져 Math.floor(rawMin/step)=0으로
+// 축 하한이 "정상적으로" 0에 반올림되는데, 이걸 진짜 데이터 없음과 구분 못 해 매물대가 숨어버렸다.
+// isFallback 플래그로 "진짜 실패(호출부에서 0/100 명시 전달 또는 min/max 자체가 무효)"와 "데이터는
+// 있지만 축 반올림으로 우연히 0이 된 정상 케이스"를 명시적으로 구분한다.
 function calculatePriceAxis(minRaw: number, maxRaw: number, targetTicks = 6) {
   if (!minRaw || !maxRaw || minRaw <= 0 || maxRaw <= 0 || maxRaw <= minRaw) {
-    return { priceDomain: [0, 100] as [number, number], priceTicks: [0, 20, 40, 60, 80, 100] };
+    return { priceDomain: [0, 100] as [number, number], priceTicks: [0, 20, 40, 60, 80, 100], isFallback: true };
   }
   const range = maxRaw - minRaw;
   const pad = Math.max(range * 0.08, 1);
@@ -57,7 +63,7 @@ function calculatePriceAxis(minRaw: number, maxRaw: number, targetTicks = 6) {
   const endP = Math.ceil(rawMax / step) * step;
   const ticks: number[] = [];
   for (let p = startP; p <= endP + step * 0.01; p += step) ticks.push(Math.round(p));
-  return { priceDomain: [startP, endP] as [number, number], priceTicks: ticks };
+  return { priceDomain: [startP, endP] as [number, number], priceTicks: ticks, isFallback: false };
 }
 
 export default function MobileStockDetailChart({ trend, stockInfo, isLoading }: MobileStockDetailChartProps) {
@@ -74,6 +80,27 @@ export default function MobileStockDetailChart({ trend, stockInfo, isLoading }: 
   const [showMA60, setShowMA60] = useState(false);
   const [showMA120, setShowMA120] = useState(false);
   const [showVolumeProfile, setShowVolumeProfile] = useState(true);
+  // 🚨 [버그 수정 - 사용자 요청: "다른곳 누르면 팝업 안뜨게"] 가격/순매수/거래량 3분할 차트의 클릭식
+  // 팝업(Tooltip trigger="click", 아래 참고)은 Recharts 내부 상태라 바깥에서 직접 "닫아라"라고 지시할
+  // 공개 API가 없다 - 차트 3개를 감싼 dailyChartClusterRef 바깥을 탭하면 이 key를 1 증가시켜 3개
+  // ComposedChart를 강제로 리마운트시키는 방식으로 팝업을 닫는다(수칙 1-3 - 라이브러리 내부를 직접
+  // 건드리는 대신 검증 가능한 표준 React 패턴만 사용).
+  const [outsideTapKey, setOutsideTapKey] = useState(0);
+  const dailyChartClusterRef = React.useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (activeTab !== 'daily') return;
+    const handleOutsideTap = (e: MouseEvent | TouchEvent) => {
+      if (dailyChartClusterRef.current && !dailyChartClusterRef.current.contains(e.target as Node)) {
+        setOutsideTapKey((k) => k + 1);
+      }
+    };
+    document.addEventListener('mousedown', handleOutsideTap);
+    document.addEventListener('touchstart', handleOutsideTap);
+    return () => {
+      document.removeEventListener('mousedown', handleOutsideTap);
+      document.removeEventListener('touchstart', handleOutsideTap);
+    };
+  }, [activeTab]);
   const [showDisparate, setShowDisparate] = useState(false);
   // 🚨 [기능 추가] 데스크톱(RankingStockDetailChart.tsx)엔 있는 "4대 주체 일별 순매수/순매도 수급"
   // 막대그래프가 모바일엔 아예 없었다(사용자 지적) - 토글 상태부터 동일하게 이식(수칙 1-6).
@@ -273,8 +300,11 @@ export default function MobileStockDetailChart({ trend, stockInfo, isLoading }: 
     baselineBadgeInfo && baselineBadgeInfo.statusBadge && baselineBadgeInfo.statusBadge !== disparateInfo.badge
   );
 
-  const { minPrice, maxPrice, priceDomain, priceTicks } = React.useMemo(() => {
-    if (displayTrend.length === 0) return { minPrice: 0, maxPrice: 100, ...calculatePriceAxis(0, 100) };
+  const { minPrice, maxPrice, priceDomain, priceTicks, hasValidPriceRange } = React.useMemo(() => {
+    if (displayTrend.length === 0) {
+      const axis = calculatePriceAxis(0, 100);
+      return { minPrice: 0, maxPrice: 100, hasValidPriceRange: false, ...axis };
+    }
     const highs = displayTrend.map((d) => d.highPrice || d.closePrice);
     const lows = displayTrend.map((d) => d.lowPrice || d.closePrice);
     const ma20s = showMA20 ? displayTrend.map((d) => d.ma20).filter((v) => v > 0) : [];
@@ -292,13 +322,13 @@ export default function MobileStockDetailChart({ trend, stockInfo, isLoading }: 
     const min = Math.min(...allVals);
     const max = Math.max(...allVals);
     const axis = calculatePriceAxis(min, max);
-    return { minPrice: axis.priceDomain[0], maxPrice: axis.priceDomain[1], ...axis };
+    return { minPrice: axis.priceDomain[0], maxPrice: axis.priceDomain[1], hasValidPriceRange: !axis.isFallback, ...axis };
   }, [displayTrend, showMA20, showMA60, showMA120, showDisparate, disparateInfo]);
 
   // 매물대(가격대별 누적 거래량) - 대표가(고가+저가+종가)/3에 그날 실거래량을 배정한다(가짜 틱데이터 없이
   // 실 OHLCV만 사용, IndexDetailChart.tsx와 동일 검증된 패턴).
   const volumeProfileBins = React.useMemo(() => {
-    if (!showVolumeProfile || displayTrend.length === 0 || minPrice <= 0 || maxPrice <= minPrice) return [];
+    if (!showVolumeProfile || displayTrend.length === 0 || !hasValidPriceRange || maxPrice <= minPrice) return [];
     const BIN_COUNT = 24;
     const binSize = (maxPrice - minPrice) / BIN_COUNT;
     const bins = Array.from({ length: BIN_COUNT }, (_, i) => ({ priceLow: minPrice + i * binSize, priceHigh: minPrice + (i + 1) * binSize, volume: 0 }));
@@ -318,7 +348,7 @@ export default function MobileStockDetailChart({ trend, stockInfo, isLoading }: 
     let pocIdx = 0;
     bins.forEach((b, i) => { if (b.volume > bins[pocIdx].volume) pocIdx = i; });
     return bins.map((b, i) => ({ ...b, ratio: b.volume / maxBinVolume, isPoc: i === pocIdx && b.volume > 0 }));
-  }, [showVolumeProfile, displayTrend, minPrice, maxPrice]);
+  }, [showVolumeProfile, displayTrend, minPrice, maxPrice, hasValidPriceRange]);
 
   const formatYPrice = (v: number) => v.toLocaleString(undefined, { maximumFractionDigits: 0 });
   const formatYVol = (v: number) => (v >= 100000000 ? `${Math.round(v / 100000000)}억` : v >= 10000 ? `${Math.round(v / 10000)}만` : v.toLocaleString());
@@ -537,7 +567,7 @@ export default function MobileStockDetailChart({ trend, stockInfo, isLoading }: 
             onClick={() => { setPeriod('60d'); setShow120dView(true); }}
             className={`px-2.5 py-1 rounded-md font-bold transition ${show120dView ? 'bg-white dark:bg-[#2a2e39] text-slate-900 dark:text-white shadow-sm' : 'text-slate-500 dark:text-[#787b86]'}`}
           >
-            120D
+            120일
           </button>
         </div>
         {[
@@ -604,7 +634,7 @@ export default function MobileStockDetailChart({ trend, stockInfo, isLoading }: 
       </div>
 
       {/* 캔들스틱 - Y축 가격은 스크롤 안 되는 고정 컬럼, 캔들/거래량은 가로 스크롤(3분봉과 동일 패턴) */}
-      <div className="flex">
+      <div className="flex" ref={dailyChartClusterRef}>
         <div className="shrink-0 relative" style={{ width: 52, height: PRICE_CHART_CONFIG.containerHeight }}>
           {priceTicks.map((t) => (
             <div
@@ -623,7 +653,7 @@ export default function MobileStockDetailChart({ trend, stockInfo, isLoading }: 
             이전 폭(예: 960px)에 그대로 멈춰 있는 걸 실측으로 확인했다(늘어나는 방향은 정상 반영됨 - 편도
             버그). key를 chartWidth에 묶어 폭이 바뀔 때마다 강제로 새로 마운트시켜 매번 정확히 재측정하게
             한다. */}
-        <ResponsiveContainer key={`price-${chartWidth}`} width="100%" height={PRICE_CHART_CONFIG.containerHeight}>
+        <ResponsiveContainer key={`price-${chartWidth}-${outsideTapKey}`} width="100%" height={PRICE_CHART_CONFIG.containerHeight}>
           {/* 🚨 [버그 수정] 데스크톱(RankingStockDetailChart.tsx:1353/1532/1603)은 캔들·4대주체·거래량
               3개 차트가 전부 같은 syncId를 공유해서 하나를 탭하면 세 팝업이 동시에 뜨고 동시에 사라진다.
               모바일은 이 syncId가 아예 없어서 차트마다 따로 놀았다(사용자 지적) - 3개 전부 동일한
@@ -636,7 +666,7 @@ export default function MobileStockDetailChart({ trend, stockInfo, isLoading }: 
                 모바일 화면에서 서로 겹쳐서 아래 팝업이 가려졌다 - 세 정보를 한 카드로 합친
                 CustomUnifiedMobileTooltip 하나만 여기(캔들 차트)에 띄우고, 나머지 두 차트는 세로
                 기준선(cursor)만 유지한 채 팝업 내용은 비운다(아래 두 Tooltip 참고). */}
-            <Tooltip content={<CustomUnifiedMobileTooltip priceLabel="원" />} cursor={{ stroke: '#94a3b8', strokeWidth: 1, strokeDasharray: '3 3' }} />
+            <Tooltip trigger="click" content={<CustomUnifiedMobileTooltip priceLabel="원" />} cursor={{ stroke: '#94a3b8', strokeWidth: 1, strokeDasharray: '3 3' }} />
             <Bar dataKey="closePrice" name="캔들스틱" shape={(props: any) => <CandlestickBar {...props} minPrice={minPrice} maxPrice={maxPrice} topPadding={PRICE_CHART_CONFIG.margin.top} plotHeight={PRICE_CHART_CONFIG.plotHeight} />} isAnimationActive={false} />
             {showMA5 && <Line type="linear" dataKey="ma5" name="5일 이동평균" stroke="#f59e0b" strokeWidth={1.5} dot={false} activeDot={false} connectNulls={true} />}
             {showMA20 && <Line type="linear" dataKey="ma20" name="20일 이동평균" stroke="#a855f7" strokeWidth={1.5} dot={false} activeDot={false} connectNulls={true} />}
@@ -684,7 +714,7 @@ export default function MobileStockDetailChart({ trend, stockInfo, isLoading }: 
             <span>4대 주체 일별 순매수</span>
             <span className="text-[9px] text-slate-400 font-mono">0점 기준</span>
           </div>
-          <ResponsiveContainer key={`supply-${chartWidth}`} width="100%" height={70}>
+          <ResponsiveContainer key={`supply-${chartWidth}-${outsideTapKey}`} width="100%" height={70}>
             <ComposedChart syncId="mobile-stock-detail-chart" data={displayTrend} margin={{ top: 5, right: 15, left: -10, bottom: 0 }} barGap={0} barCategoryGap="18%">
               <CartesianGrid strokeDasharray="3 3" stroke={gridColor} opacity={0.7} />
               <XAxis dataKey="formattedDate" hide={true} />
@@ -703,7 +733,7 @@ export default function MobileStockDetailChart({ trend, stockInfo, isLoading }: 
             (수칙 1-6, 아래 참고). 캔들과 같은 chartWidth 컨테이너 안에 있어야 가로 스크롤해도 x축이
             어긋나지 않는다 - Y축(거래량 눈금)은 3분봉과 동일하게 스크롤 대상에 포함. */}
         <div className="mt-1">
-          <ResponsiveContainer key={`vol-${chartWidth}`} width="100%" height={70}>
+          <ResponsiveContainer key={`vol-${chartWidth}-${outsideTapKey}`} width="100%" height={70}>
             <ComposedChart syncId="mobile-stock-detail-chart" data={displayTrend} margin={{ top: 5, right: 15, left: -10, bottom: 0 }}>
               <XAxis dataKey="formattedDate" stroke={axisColor} tick={{ fontSize: 8 }} />
               <YAxis stroke={axisColor} tickFormatter={formatYVol} tick={{ fontSize: 8 }} width={52} />

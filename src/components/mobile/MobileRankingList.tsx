@@ -30,19 +30,26 @@ import {
   RankingType,
   SurgingMode,
 } from '@/lib/types';
-import { Rocket, Trophy, Globe2, Landmark, Cpu, Flame, ShieldCheck, ArrowUpDown, TrendingDown, RotateCcw, TrendingUp, Coins, Filter, ChevronDown, ChevronUp } from 'lucide-react';
+import { Rocket, Trophy, Globe2, Landmark, Cpu, Flame, ShieldCheck, ArrowUpDown, TrendingDown, RotateCcw, TrendingUp, Coins, Filter, ChevronDown, ChevronUp, Target } from 'lucide-react';
 import MobileStockDetailPanel from './MobileStockDetailPanel';
 import MobileLoadingSpinner from './MobileLoadingSpinner';
+
+// 🚨 [기능 추가 - 사용자 요청: "모바일에는 장마감 후보군 업데이트한거 안뜨던데"] 데스크톱 InvestorRankingTable.tsx
+// 595~604번 줄(postmarket 최상위 탭)과 동일한 값 그대로 이식(수칙 1-6, 새 타입/새 API 만들지 않음).
+type OverlapMode = 'daily' | 'consecutive2d' | 'consecutive3d';
 
 async function fetchRanking(
   type: RankingType,
   direction: RankingDirection,
   period: RankingPeriod,
-  mode: 'daily' | 'consecutive2d' | 'consecutive3d',
-  market: MarketType
+  mode: OverlapMode,
+  market: MarketType,
+  // 🚨 [기능 재설계 - "토글 필터로 진행해줘"] mode(기준 탭)와 독립된 쿼리 파라미터 - 데스크톱
+  // InvestorRankingTable.tsx·route.ts와 동일한 이름/의미(수칙 1-6).
+  quietFilter: boolean = false
 ): Promise<InvestorRankingResponse> {
   const res = await fetch(
-    `/api/stock/ranking?type=${type}&direction=${direction}&period=${period}&mode=${mode}&limit=50&market=${market}`
+    `/api/stock/ranking?type=${type}&direction=${direction}&period=${period}&mode=${mode}&limit=50&market=${market}${quietFilter ? '&quietFilter=1' : ''}`
   );
   if (!res.ok) {
     const errJson = await res.json().catch(() => null);
@@ -86,6 +93,8 @@ async function fetchDropouts(direction: RankingDirection, market: MarketType, sc
 const TABS: { id: RankingType; label: string; icon: any; badge?: string }[] = [
   { id: 'surging', label: '급등주', icon: Rocket, badge: 'LIVE' },
   { id: 'comprehensive', label: '단타종합', icon: Trophy, badge: 'SCORE' },
+  // 데스크톱 InvestorRankingTable.tsx 600번 줄과 동일 위치(단타종합-외국인 사이)·동일 아이콘/라벨.
+  { id: 'postmarket', label: '장마감 후보군', icon: Target, badge: 'NEW' },
   { id: 'foreign', label: '외국인', icon: Globe2 },
   { id: 'organ', label: '기관', icon: Landmark },
   { id: 'program', label: '프로그램', icon: Cpu },
@@ -151,8 +160,9 @@ function formatEok(v: number | undefined) {
 // 데스크톱 1597~1668번 줄의 AI Pick 별 배지를 모바일 카드 폭에 맞춰 이모지 한 글자로 단순화.
 const AI_PICK_EMOJI: Record<number, string> = { 1: '🥇', 2: '🥈', 3: '🥉', 4: '⭐', 5: '⭐' };
 
-// 수급교집합 카드 서브라인 - 데스크톱 1721~1783번 줄(statusBadge + ranksByType)을 한 줄로 압축.
-function buildOverlapSubLine(item: RankingItem, overlapMode: 'daily' | 'consecutive2d' | 'consecutive3d'): string {
+// 수급교집합 카드 서브라인 - 데스크톱 1721~1789번 줄(statusBadge + ranksByType + "장마감 후보만" 토글
+// 전용 역발상 지표)을 한 줄 텍스트로 압축.
+function buildOverlapSubLine(item: RankingItem, overlapMode: OverlapMode, quietAccumFilter: boolean): string {
   const parts: string[] = [];
   if (item.statusBadge) parts.push(item.statusBadge);
   (item.ranksByType || []).forEach((r) => {
@@ -161,10 +171,18 @@ function buildOverlapSubLine(item: RankingItem, overlapMode: 'daily' | 'consecut
       : (r.isRanked === false || !r.rank || r.rank <= 0 ? '순위밖' : `${r.rank}위`);
     parts.push(`${r.label} ${text}`);
   });
+  // 🚨 [기능 재설계 - "장마감 후보만" 토글] 데스크톱과 동일한 역발상 지표(종가위치·거래량배율·5일누적
+  // 수익률 - 셋 다 낮을수록 좋음, kisApi.ts의 applyQuietAccumulationFilter 주석 참고)를 텍스트로 이어붙인다.
+  if (quietAccumFilter && item.closePositionPct !== undefined) {
+    parts.push(`종가위치 ${item.closePositionPct}% · 거래량 ${item.volRatioPct}%`);
+  }
+  if (quietAccumFilter && item.cum5dReturnPct !== undefined) {
+    parts.push(`5일누적 ${item.cum5dReturnPct >= 0 ? '+' : ''}${item.cum5dReturnPct}%`);
+  }
   return parts.join(' · ') || item.investorBadge || '-';
 }
 
-function RankingCard({ item, activeTab, overlapMode, isExpanded, onClick }: { item: RankingItem; activeTab: RankingType; overlapMode: 'daily' | 'consecutive2d' | 'consecutive3d'; isExpanded: boolean; onClick?: () => void }) {
+function RankingCard({ item, activeTab, overlapMode, quietAccumFilter, isExpanded, onClick }: { item: RankingItem; activeTab: RankingType; overlapMode: OverlapMode; quietAccumFilter: boolean; isExpanded: boolean; onClick?: () => void }) {
   const isUp = item.change >= 0;
   return (
     <div
@@ -189,8 +207,8 @@ function RankingCard({ item, activeTab, overlapMode, isExpanded, onClick }: { it
         </div>
         <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate mt-0.5">
           {activeTab === 'overlap'
-            ? buildOverlapSubLine(item, overlapMode)
-            : activeTab === 'surging'
+            ? buildOverlapSubLine(item, overlapMode, quietAccumFilter)
+            : activeTab === 'surging' || activeTab === 'postmarket'
             ? (item.surgingBadge || `거래량 ${item.volume?.toLocaleString() || '-'}`)
             : activeTab === 'comprehensive'
             ? `종합점수 ${item.scoreBreakdown?.totalScore ?? '-'}점`
@@ -207,7 +225,7 @@ function RankingCard({ item, activeTab, overlapMode, isExpanded, onClick }: { it
               써야 하는 값인데 안 보인다"고 지적했다 - 현재가/등락률과 동일하게 오른쪽 상단 눈에 띄는
               자리에 굵게 세 번째 줄로 노출한다(데스크톱 1827~1830번 줄의 "거래대금 (억원) - 빨간색
               포맷팅" 강조 방식과 동일 취지). */}
-          {activeTab === 'surging' && (
+          {(activeTab === 'surging' || activeTab === 'postmarket') && (
             <div className="text-[11px] font-mono font-bold text-amber-600 dark:text-amber-400">
               {(item.amountEok || 0).toLocaleString()}억
             </div>
@@ -248,7 +266,10 @@ export default function MobileRankingList() {
   const [direction, setDirection] = useState<RankingDirection>('buy');
   const [period, setPeriod] = useState<RankingPeriod>('1d');
   const [surgingMode, setSurgingMode] = useState<SurgingMode>('fluctuation');
-  const [overlapMode, setOverlapMode] = useState<'daily' | 'consecutive2d' | 'consecutive3d'>('daily');
+  const [overlapMode, setOverlapMode] = useState<OverlapMode>('daily');
+  // 🚨 [기능 재설계 - 사용자 요청: "토글 필터로 진행해줘"] 데스크톱과 동일하게, 예전엔 3일연속 전용
+  // 4번째 버튼("수급 장마감 후보군")이었던 걸 당일/2일연속/3일연속 어디서나 켤 수 있는 독립 토글로 분리.
+  const [quietAccumFilter, setQuietAccumFilter] = useState(false);
   const [market, setMarket] = useState<MarketType>('ALL');
   const [creditOnly, setCreditOnly] = useState(false);
   const [entryReadyOnly, setEntryReadyOnly] = useState(false);
@@ -260,17 +281,21 @@ export default function MobileRankingList() {
   // 아코디언과 동일하게 한 번에 1개만 펼침).
   const [expandedSymbol, setExpandedSymbol] = useState<string>('');
 
-  const isSurging = activeTab === 'surging' || activeTab === 'comprehensive';
+  // 🚨 [기능 추가 - "모바일에는 장마감 후보군 안뜨던데"] 데스크톱 InvestorRankingTable.tsx 84번 줄과 동일 -
+  // postmarket도 surgingMode 서브탭과 무관하게 항상 고정된 모드(postmarket)로 fetchSurging을 재사용한다.
+  const isSurging = activeTab === 'surging' || activeTab === 'comprehensive' || activeTab === 'postmarket';
   const isComprehensive = activeTab === 'comprehensive';
+
+  const surgingQueryMode = activeTab === 'comprehensive' ? 'comprehensive' : activeTab === 'postmarket' ? 'postmarket' : surgingMode;
 
   const { data, isLoading, isError } = useQuery<InvestorRankingResponse>({
     queryKey: isSurging
-      ? ['m-surging', activeTab === 'comprehensive' ? 'comprehensive' : surgingMode, market]
-      : ['m-ranking', activeTab, direction, period, overlapMode, market],
+      ? ['m-surging', surgingQueryMode, market]
+      : ['m-ranking', activeTab, direction, period, overlapMode, market, quietAccumFilter],
     queryFn: () =>
       isSurging
-        ? fetchSurging(activeTab === 'comprehensive' ? 'comprehensive' : surgingMode, market)
-        : fetchRanking(activeTab, direction, period, overlapMode, market),
+        ? fetchSurging(surgingQueryMode, market)
+        : fetchRanking(activeTab, direction, period, overlapMode, market, activeTab === 'overlap' && quietAccumFilter),
     staleTime: 30 * 1000,
     // 🚨 [버그 수정] 프로그램 탭이 콜드스타트 직후(더미 시그니처가 섞인 stillWarming:true 상태)일 때
     // 데스크톱(InvestorRankingTable.tsx:121)은 50초마다 자동 재조회해서 예열이 끝나는 대로 화면이
@@ -298,7 +323,7 @@ export default function MobileRankingList() {
     setExpandedSymbol('');
     setCreditOnly(false);
     setEntryReadyOnly(false);
-  }, [activeTab, surgingMode, market, direction, period, overlapMode]);
+  }, [activeTab, surgingMode, market, direction, period, overlapMode, quietAccumFilter]);
 
   let list = data?.list || [];
   // 데스크톱 494~503번 줄과 동일: 필터로 걸러진 뒤에는 순위를 1,2,3...으로 다시 매긴다(원래 순위가
@@ -429,6 +454,20 @@ export default function MobileRankingList() {
           >
             <Filter className="w-3 h-3" />
             진입가능만
+          </button>
+        )}
+        {/* 🚨 [기능 재설계 - 사용자 요청: "토글 필터로 진행해줘"] 당일/2일연속/3일연속 어디서나 켤 수 있는
+            "장마감 후보만" 토글 - 데스크톱 InvestorRankingTable.tsx와 동일 위치(진입가능만 옆)·동일 문구. */}
+        {activeTab === 'overlap' && !showDropouts && (
+          <button
+            onClick={() => setQuietAccumFilter((v) => !v)}
+            title="지금 보고 있는 교집합 명단을, 저가마감·조용한 거래량·최근 눌림 기준으로 재정렬한 상위 후보만 추려서 봅니다 (실측 백테스트 검증)"
+            className={`flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-bold border transition ${
+              quietAccumFilter ? 'bg-gradient-to-r from-emerald-600 to-teal-600 text-white border-transparent' : 'bg-slate-50 dark:bg-[#131722] text-slate-400 border-slate-200 dark:border-[#2a2e39]'
+            }`}
+          >
+            <Target className="w-3 h-3" />
+            장마감 후보만
           </button>
         )}
       </div>
@@ -579,6 +618,7 @@ export default function MobileRankingList() {
                   item={item}
                   activeTab={activeTab}
                   overlapMode={overlapMode}
+                  quietAccumFilter={quietAccumFilter}
                   isExpanded={isExpanded}
                   onClick={() => setExpandedSymbol((prev) => (prev === item.symbol ? '' : item.symbol))}
                 />
