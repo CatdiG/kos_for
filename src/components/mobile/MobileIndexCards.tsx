@@ -1,31 +1,30 @@
 'use client';
 
 // 데스크톱 IndexCards.tsx의 모바일판 - 코스피/코스닥을 가로로 나란히 두면 375px 화면에서 잘려나가는
-// 문제(오늘 Browser 도구로 실측 확인)를 세로로 쌓아서 해결한다. 데이터 소스는 기존 API를 그대로 쓴다
-// (수칙 1-6, 새 엔드포인트 불필요) - IndexCards.tsx의 fetchIndexSummary와 동일한 요청.
+// 문제(오늘 Browser 도구로 실측 확인)를 세로로 쌓아서 해결한다. 데이터 소스는 IndexCards.tsx·
+// IndexDetailChart.tsx와 완전히 동일한 src/lib/indexClient.ts를 공유한다(수칙 1-6).
 // 🚨 [기능 추가] Phase 1에서는 비대화형이었으나, MobileIndexDetailChart 연결에 맞춰 데스크톱
 // IndexCards.tsx와 동일하게 탭하면 선택 상태가 되도록 selected/onSelect props를 추가한다.
 
 import { useQuery } from '@tanstack/react-query';
 import { IndexTrendResponse } from '@/lib/types';
 import { TrendingUp, TrendingDown } from 'lucide-react';
+import { fetchIndexTrend, indexTrendQueryKey, INDEX_REFETCH_INTERVAL_MS } from '@/lib/indexClient';
 
 interface MobileIndexCardsProps {
   selected: 'KOSPI' | 'KOSDAQ' | null;
   onSelect: (market: 'KOSPI' | 'KOSDAQ') => void;
 }
 
-async function fetchIndexSummary(market: 'KOSPI' | 'KOSDAQ'): Promise<IndexTrendResponse> {
-  const res = await fetch(`/api/stock/index-trend?market=${market}&period=5d&summaryOnly=1`);
-  if (!res.ok) throw new Error('지수 조회 실패');
-  return res.json();
-}
+// 🚨 [버그 수정 - "카드랑 차트 숫자가 달라"] MobileIndexDetailChart.tsx와 완전히 동일한 fetch 함수·
+// 쿼리키를 공유한다(src/lib/indexClient.ts, 수칙 1-6).
+const CARD_PERIOD = '5d' as const;
 
 function MobileIndexCard({ market, selected, onSelect }: { market: 'KOSPI' | 'KOSDAQ' } & MobileIndexCardsProps) {
   const { data, isLoading } = useQuery<IndexTrendResponse>({
-    queryKey: ['indexSummary', market],
-    queryFn: () => fetchIndexSummary(market),
-    refetchInterval: 30 * 1000,
+    queryKey: indexTrendQueryKey(market, CARD_PERIOD),
+    queryFn: () => fetchIndexTrend(market, CARD_PERIOD),
+    refetchInterval: INDEX_REFETCH_INTERVAL_MS,
   });
 
   const info = data?.indexInfo;

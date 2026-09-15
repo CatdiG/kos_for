@@ -5,24 +5,23 @@
 import { useQuery } from '@tanstack/react-query';
 import { IndexTrendResponse } from '@/lib/types';
 import { TrendingUp, TrendingDown } from 'lucide-react';
+import { fetchIndexTrend, indexTrendQueryKey, INDEX_REFETCH_INTERVAL_MS } from '@/lib/indexClient';
 
 interface IndexCardsProps {
   selected: 'KOSPI' | 'KOSDAQ' | null;
   onSelect: (market: 'KOSPI' | 'KOSDAQ') => void;
 }
 
-async function fetchIndexSummary(market: 'KOSPI' | 'KOSDAQ'): Promise<IndexTrendResponse> {
-  // 카드는 현재가/등락률만 표시하므로 일봉 배열이 필요 없다 - summaryOnly로 KIS 호출을 절반(2회→1회)으로 줄인다.
-  const res = await fetch(`/api/stock/index-trend?market=${market}&period=5d&summaryOnly=1`);
-  if (!res.ok) throw new Error('지수 조회 실패');
-  return res.json();
-}
+// 🚨 [버그 수정 - "카드랑 차트 숫자가 달라"] IndexDetailChart.tsx와 완전히 동일한 fetch 함수·쿼리키를
+// 공유한다(src/lib/indexClient.ts, 수칙 1-6) - 상세 패널이 기본 기간(5일)으로 열려 있을 때는 이 카드와
+// 정확히 같은 쿼리 하나를 같이 보게 되어 두 화면이 서로 다른 숫자를 보여줄 수가 없다.
+const CARD_PERIOD = '5d' as const;
 
 function IndexCard({ market, selected, onSelect }: { market: 'KOSPI' | 'KOSDAQ' } & IndexCardsProps) {
   const { data, isLoading } = useQuery<IndexTrendResponse>({
-    queryKey: ['indexSummary', market],
-    queryFn: () => fetchIndexSummary(market),
-    refetchInterval: 30 * 1000,
+    queryKey: indexTrendQueryKey(market, CARD_PERIOD),
+    queryFn: () => fetchIndexTrend(market, CARD_PERIOD),
+    refetchInterval: INDEX_REFETCH_INTERVAL_MS,
   });
 
   const info = data?.indexInfo;

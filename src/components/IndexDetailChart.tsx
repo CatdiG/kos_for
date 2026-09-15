@@ -22,21 +22,13 @@ import {
 } from 'recharts';
 import { IndexTrendResponse, TrendPeriod } from '@/lib/types';
 import { useTheme } from '@/providers/ThemeProvider';
-import { PRICE_CHART_CONFIG, CandlestickBar, CustomCandleTooltip, getTrendBadgeInfo } from '@/components/chart/CandlestickPrimitives';
+import { PRICE_CHART_CONFIG, CandlestickBar, CustomCandleTooltip, CustomDailyVolumeTooltip, getTrendBadgeInfo } from '@/components/chart/CandlestickPrimitives';
 import { TrendingUp, TrendingDown, X, RefreshCw } from 'lucide-react';
+import { fetchIndexTrend, indexTrendQueryKey, INDEX_REFETCH_INTERVAL_MS } from '@/lib/indexClient';
 
 interface IndexDetailChartProps {
   market: 'KOSPI' | 'KOSDAQ';
   onClose?: () => void;
-}
-
-async function fetchIndexTrend(market: 'KOSPI' | 'KOSDAQ', period: TrendPeriod): Promise<IndexTrendResponse> {
-  const res = await fetch(`/api/stock/index-trend?market=${market}&period=${period}&t=${Date.now()}`);
-  if (!res.ok) {
-    const errJson = await res.json().catch(() => null);
-    throw new Error(errJson?.error || '지수 데이터를 불러오는데 실패했습니다.');
-  }
-  return res.json();
 }
 
 /**
@@ -79,9 +71,14 @@ export default function IndexDetailChart({ market, onClose }: IndexDetailChartPr
   const [showVolumeProfile, setShowVolumeProfile] = useState(true);
   const [showDisparate, setShowDisparate] = useState(false);
 
+  // 🚨 [버그 수정 - 사용자 지적: "카드랑 차트 숫자가 달라. 하나로 통일해서 가장 최신것으로"] 이 쿼리에
+  // 재조회 주기가 아예 없어서 패널을 연 시점에 한 번만 조회되고 그 뒤로 전혀 갱신되지 않았다 - 카드
+  // (IndexCards.tsx, 30초마다 갱신)와 같은 fetch 함수·쿼리키(src/lib/indexClient.ts)를 쓰고 동일한
+  // 30초 주기를 걸어서, 기본 기간(5일)이 겹칠 때는 카드와 완전히 같은 캐시 엔트리를 공유한다.
   const { data, isLoading, isError, error, refetch, isFetching } = useQuery<IndexTrendResponse>({
-    queryKey: ['indexTrend', market, period],
+    queryKey: indexTrendQueryKey(market, period),
     queryFn: () => fetchIndexTrend(market, period),
+    refetchInterval: INDEX_REFETCH_INTERVAL_MS,
   });
 
   const rawTrend = data?.trend || [];
@@ -434,10 +431,11 @@ export default function IndexDetailChart({ market, onClose }: IndexDetailChartPr
                 <CartesianGrid strokeDasharray="3 3" stroke={gridColor} opacity={0.7} />
                 <XAxis dataKey="formattedDate" stroke={axisColor} tick={{ fontSize: 9 }} />
                 <YAxis stroke={axisColor} tickFormatter={formatYVol} tick={{ fontSize: 9 }} width={60} />
-                <Tooltip
-                  formatter={(v: any) => [Number(v).toLocaleString(), '거래량']}
-                  contentStyle={{ fontSize: 11, borderRadius: 8 }}
-                />
+                {/* 🚨 [버그 수정 - 사용자 지적: "코스피, 코스닥 차트 거래량 팝업 못생김. 다른 차트들처럼
+                    맞춰줘"] 기본 Recharts Tooltip(formatter만 지정)이 스타일 없는 밋밋한 흰 박스로
+                    나오던 걸, 종목 상세 차트(RankingStockDetailChart.tsx)가 이미 쓰고 있는
+                    CustomDailyVolumeTooltip으로 통일한다(수칙 1-6 - 새 스타일 만들지 않음). */}
+                <Tooltip content={<CustomDailyVolumeTooltip />} cursor={{ fill: isDark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.04)' }} />
                 <Bar dataKey="volume" name="거래량" radius={[2, 2, 0, 0]}>
                   {displayTrend.map((d, i) => (
                     <Cell key={`vol-${i}`} fill={d.closePrice >= d.openPrice ? '#ef4444' : '#3b82f6'} fillOpacity={0.6} />

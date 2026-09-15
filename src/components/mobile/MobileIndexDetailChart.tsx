@@ -22,23 +22,16 @@ import {
 } from 'recharts';
 import { IndexTrendResponse, TrendPeriod } from '@/lib/types';
 import { useTheme } from '@/providers/ThemeProvider';
-import { PRICE_CHART_CONFIG, CandlestickBar, CustomCandleTooltip, getTrendBadgeInfo } from '@/components/chart/CandlestickPrimitives';
+import { PRICE_CHART_CONFIG, CandlestickBar, CustomCandleTooltip, CustomDailyVolumeTooltip, getTrendBadgeInfo } from '@/components/chart/CandlestickPrimitives';
 import { TrendingUp, TrendingDown, X, RefreshCw } from 'lucide-react';
 import MobileLoadingSpinner from './MobileLoadingSpinner';
+import { fetchIndexTrend, indexTrendQueryKey, INDEX_REFETCH_INTERVAL_MS } from '@/lib/indexClient';
 
 interface MobileIndexDetailChartProps {
   market: 'KOSPI' | 'KOSDAQ';
   onClose?: () => void;
 }
 
-async function fetchIndexTrend(market: 'KOSPI' | 'KOSDAQ', period: TrendPeriod): Promise<IndexTrendResponse> {
-  const res = await fetch(`/api/stock/index-trend?market=${market}&period=${period}&t=${Date.now()}`);
-  if (!res.ok) {
-    const errJson = await res.json().catch(() => null);
-    throw new Error(errJson?.error || '지수 데이터를 불러오는데 실패했습니다.');
-  }
-  return res.json();
-}
 
 // IndexDetailChart.tsx의 calculateIndexPriceAxis와 동일한 nice-number 방식.
 // 🚨 [버그 수정 - RankingStockDetailChart.tsx와 동일 결함(수칙 1-6)] isFallback으로 "진짜 데이터 없음"과
@@ -76,9 +69,13 @@ export default function MobileIndexDetailChart({ market, onClose }: MobileIndexD
   const [showVolumeProfile, setShowVolumeProfile] = useState(true);
   const [showDisparate, setShowDisparate] = useState(false);
 
+  // 🚨 [버그 수정 - 사용자 지적: "카드랑 차트 숫자가 달라. 하나로 통일해서 가장 최신것으로"] 데스크톱
+  // IndexDetailChart.tsx와 동일한 이유(src/lib/indexClient.ts 주석 참고) - 카드(MobileIndexCards.tsx)
+  // 와 같은 fetch 함수·쿼리키·30초 재조회 주기를 공유한다.
   const { data, isLoading, isError, error, refetch, isFetching } = useQuery<IndexTrendResponse>({
-    queryKey: ['indexTrend', market, period],
+    queryKey: indexTrendQueryKey(market, period),
     queryFn: () => fetchIndexTrend(market, period),
+    refetchInterval: INDEX_REFETCH_INTERVAL_MS,
   });
 
   const rawTrend = data?.trend || [];
@@ -340,7 +337,11 @@ export default function MobileIndexDetailChart({ market, onClose }: MobileIndexD
               <ComposedChart data={displayTrend} margin={{ top: 5, right: 15, left: -10, bottom: 0 }}>
                 <XAxis dataKey="formattedDate" stroke={axisColor} tick={{ fontSize: 8 }} />
                 <YAxis stroke={axisColor} tickFormatter={formatYVol} tick={{ fontSize: 8 }} width={52} />
-                <Tooltip formatter={(v: any) => [Number(v).toLocaleString(), '거래량']} contentStyle={{ fontSize: 11, borderRadius: 8 }} />
+                {/* 🚨 [버그 수정 - 사용자 지적: "코스피, 코스닥 차트 거래량 팝업 못생김. 다른 차트들처럼
+                    맞춰줘"] 기본 Recharts Tooltip(formatter만 지정)이 스타일 없는 밋밋한 흰 박스로
+                    나오던 걸, 종목 상세 차트(MobileStockDetailChart.tsx 계열)가 이미 쓰고 있는
+                    CustomDailyVolumeTooltip으로 통일한다(수칙 1-6 - 새 스타일 만들지 않음). */}
+                <Tooltip content={<CustomDailyVolumeTooltip />} cursor={{ fill: isDark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.04)' }} />
                 <Bar dataKey="volume" name="거래량" radius={[2, 2, 0, 0]}>
                   {displayTrend.map((d, i) => (
                     <Cell key={`vol-${i}`} fill={d.closePrice >= d.openPrice ? '#ef4444' : '#3b82f6'} fillOpacity={0.6} />
