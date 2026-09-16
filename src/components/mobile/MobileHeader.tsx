@@ -17,12 +17,16 @@ interface MobileHeaderProps {
   desktopHref?: string;
 }
 
+// 🚨 [버그 수정 - 프로덕션 실측 React Hydration 에러 #418] now.getHours() 등 로컬 타임존 기반
+// 함수를 그대로 쓰면, Vercel 서버(UTC 실행)와 사용자 브라우저(KST)의 계산 결과가 9시간 어긋나
+// SSR·클라이언트 렌더 결과가 달라진다(로컬 dev는 서버·클라이언트가 같은 시스템 시간대라 재현
+// 자체가 안 됐다) - Header.tsx와 동일하게 KST로 명시 변환한다(수칙 1-6).
 function getMarketStatus() {
   const now = new Date();
-  const day = now.getDay();
-  const hours = now.getHours();
-  const minutes = now.getMinutes();
-  const timeNum = hours * 100 + minutes;
+  const utc = now.getTime() + now.getTimezoneOffset() * 60000;
+  const kst = new Date(utc + 9 * 60 * 60000);
+  const day = kst.getDay();
+  const timeNum = kst.getHours() * 100 + kst.getMinutes();
 
   if (day === 0 || day === 6) {
     return { label: '주말 휴장', color: 'text-slate-600 dark:text-gray-400', dotColor: 'text-slate-400 dark:text-gray-500' };
@@ -40,16 +44,26 @@ function getMarketStatus() {
 
 export default function MobileHeader({ desktopHref = '/' }: MobileHeaderProps) {
   const [timeStr, setTimeStr] = useState<string>('');
+  // 🚨 [버그 수정 - 프로덕션 실측 React Hydration 에러 #418] KST 변환만으론 부족하다 - SSR 실행 순간과
+  // 클라이언트 hydrate 순간 사이 시차가 마침 09:00/15:30/16:00/20:00 경계를 넘으면 여전히 어긋날 수
+  // 있다. timeStr과 동일하게 초기값은 빈 값(서버·클라이언트 100% 일치)으로 두고 마운트 후에만 계산한다.
+  const [marketStatus, setMarketStatus] = useState<{ label: string; color: string; dotColor: string }>({
+    label: '',
+    color: '',
+    dotColor: '',
+  });
   const { theme, toggleTheme } = useTheme();
 
   useEffect(() => {
-    const update = () => setTimeStr(new Date().toLocaleTimeString('ko-KR', { hour12: false, hour: '2-digit', minute: '2-digit' }));
+    const update = () => {
+      setTimeStr(new Date().toLocaleTimeString('ko-KR', { hour12: false, hour: '2-digit', minute: '2-digit' }));
+      setMarketStatus(getMarketStatus());
+    };
     update();
     const id = setInterval(update, 1000 * 30);
     return () => clearInterval(id);
   }, []);
 
-  const marketStatus = getMarketStatus();
   const desktopToggleHref = `${desktopHref}${desktopHref.includes('?') ? '&' : '?'}view=desktop`;
 
   return (

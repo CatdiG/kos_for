@@ -5,8 +5,63 @@ import Link from 'next/link';
 import { Activity, ShieldCheck, Clock, TrendingUp, Sun, Moon, History } from 'lucide-react';
 import { useTheme } from '@/providers/ThemeProvider';
 
+// 평일 09:00~15:30(정규장)/16:00~20:00(애프터마켓) 기준 KST 장 상태 판단 - Header.tsx/MobileHeader.tsx
+// 공용(수칙 1-6). 반드시 KST로 명시 변환해서 계산해야 한다 - Vercel 서버는 UTC로 실행되는데
+// now.getHours() 등 로컬 타임존 기반 함수를 그대로 쓰면 SSR(서버=UTC)과 클라이언트(브라우저=KST) 사이에
+// "장중"/"장마감" 결과가 9시간 어긋나게 계산돼 React Hydration 에러(#418)를 낸다(실측: 프로덕션
+// 배포 후 콘솔에서 발견 - 로컬 dev는 서버·클라이언트가 같은 시스템 시간대라 재현이 아예 안 됐다).
+function getMarketStatus() {
+  const now = new Date();
+  const utc = now.getTime() + now.getTimezoneOffset() * 60000;
+  const kst = new Date(utc + 9 * 60 * 60000);
+  const day = kst.getDay();
+  const timeNum = kst.getHours() * 100 + kst.getMinutes();
+
+  if (day === 0 || day === 6) {
+    return {
+      label: '주말 휴장',
+      color: 'text-slate-600 dark:text-gray-400',
+      dotColor: 'bg-slate-400 dark:bg-gray-500',
+    };
+  }
+
+  if (timeNum >= 900 && timeNum < 1530) {
+    return {
+      label: '장중 실시간 반영 중',
+      color: 'text-emerald-600 dark:text-emerald-400',
+      dotColor: 'text-emerald-600 dark:text-emerald-400',
+    };
+  }
+  // 🚨 [버그 수정 - 사용자 지적: "그 전에는 애프터마켓이 없었어서 다 15시30분에 멈춘걸거야"] 2026-09-14
+  // KRX 애프터마켓(16:00~20:00, 실시간 체결) 도입 전에는 15:30 이후를 전부 "장마감"으로 표시해도
+  // 맞았지만, 지금은 19시대에도 실거래가 진행 중인데 "장마감"이라고 잘못 표시되고 있었다(실측:
+  // 모바일 헤더가 19:33에도 "장마감"). kisApi.ts의 getDynamicRankingTtl() 등과 동일한 경계(수칙 1-6).
+  if (timeNum >= 1600 && timeNum < 2000) {
+    return {
+      label: '애프터마켓 실시간 반영 중',
+      color: 'text-sky-600 dark:text-sky-400',
+      dotColor: 'text-sky-600 dark:text-sky-400',
+    };
+  }
+  return {
+    label: '장마감 (종가 반영)',
+    color: 'text-indigo-600 dark:text-indigo-400',
+    dotColor: 'text-indigo-600 dark:text-indigo-400',
+  };
+}
+
 export default function Header() {
   const [timeStr, setTimeStr] = useState<string>('');
+  // 🚨 [버그 수정 - 프로덕션 실측 React Hydration 에러 #418] 위 KST 변환만으로는 부족하다 - SSR이
+  // 실행되는 순간과 클라이언트가 hydrate하는 순간 사이에도 수 초~수십 초 시차가 있어, 마침 그 사이에
+  // 09:00/15:30/16:00/20:00 경계를 넘으면 여전히 서버·클라이언트 결과가 어긋날 수 있다. timeStr과
+  // 완전히 동일한 패턴(초기값은 빈 값으로 서버·클라이언트 100% 일치, 실제 계산은 마운트 후 useEffect
+  // 에서만)으로 통일해 근본적으로 차단한다.
+  const [marketStatus, setMarketStatus] = useState<{ label: string; color: string; dotColor: string }>({
+    label: '',
+    color: '',
+    dotColor: '',
+  });
   const { theme, toggleTheme } = useTheme();
 
   useEffect(() => {
@@ -20,54 +75,12 @@ export default function Header() {
           second: '2-digit',
         })
       );
+      setMarketStatus(getMarketStatus());
     };
     updateTime();
     const interval = setInterval(updateTime, 1000);
     return () => clearInterval(interval);
   }, []);
-
-  // 장중 상태 판단 (평일 09:00 ~ 15:30)
-  const getMarketStatus = () => {
-    const now = new Date();
-    const day = now.getDay();
-    const hours = now.getHours();
-    const minutes = now.getMinutes();
-    const timeNum = hours * 100 + minutes;
-
-    if (day === 0 || day === 6) {
-      return {
-        label: '주말 휴장',
-        color: 'text-slate-600 dark:text-gray-400',
-        dotColor: 'bg-slate-400 dark:bg-gray-500',
-      };
-    }
-
-    if (timeNum >= 900 && timeNum < 1530) {
-      return {
-        label: '장중 실시간 반영 중',
-        color: 'text-emerald-600 dark:text-emerald-400',
-        dotColor: 'text-emerald-600 dark:text-emerald-400',
-      };
-    }
-    // 🚨 [버그 수정 - 사용자 지적: "그 전에는 애프터마켓이 없었어서 다 15시30분에 멈춘걸거야"] 2026-09-14
-    // KRX 애프터마켓(16:00~20:00, 실시간 체결) 도입 전에는 15:30 이후를 전부 "장마감"으로 표시해도
-    // 맞았지만, 지금은 19시대에도 실거래가 진행 중인데 "장마감"이라고 잘못 표시되고 있었다(실측:
-    // 모바일 헤더가 19:33에도 "장마감"). kisApi.ts의 getDynamicRankingTtl() 등과 동일한 경계(수칙 1-6).
-    if (timeNum >= 1600 && timeNum < 2000) {
-      return {
-        label: '애프터마켓 실시간 반영 중',
-        color: 'text-sky-600 dark:text-sky-400',
-        dotColor: 'text-sky-600 dark:text-sky-400',
-      };
-    }
-    return {
-      label: '장마감 (종가 반영)',
-      color: 'text-indigo-600 dark:text-indigo-400',
-      dotColor: 'text-indigo-600 dark:text-indigo-400',
-    };
-  };
-
-  const marketStatus = getMarketStatus();
 
   return (
     <header className="w-full bg-white dark:bg-[#131722] border-b border-slate-200 dark:border-[#2a2e39] px-4 py-3 sticky top-0 z-50 shadow-sm dark:shadow-none transition-colors duration-200">
