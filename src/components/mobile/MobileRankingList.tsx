@@ -374,9 +374,13 @@ export default function MobileRankingList() {
 
   // 🎯 [재설계 - 데스크톱과 동일] queryKey에 탭/서브모드/시장이 들어있어 탭이 바뀌면 감시 대상도 자동
   // 전환된다(수동 리셋/토큰 관리 불필요).
+  // 🚨 [버그 수정 - 사용자 지적: "영원히 로딩중인데?" 데스크톱(InvestorRankingTable.tsx)과 동일 원인
+  // (수칙 1-6) - data?.list 순서가 서버리스 인스턴스마다 미세하게 달라 요청마다 흔들릴 수 있는데,
+  // 정렬 안 된 join(',')을 그대로 queryKey에 쓰면 순서만 바뀌어도 새 쿼리로 오인해 무한 재요청된다.
   const vwapWatchSymbols = (data?.list || []).map((item) => item.symbol).filter(Boolean);
+  const vwapWatchSymbolsKey = [...vwapWatchSymbols].sort().join(',');
   const { data: vwapReclaimMap, isFetching: vwapWatchFetching } = useQuery<Map<string, VwapReclaimSignal>>({
-    queryKey: ['m-vwap-watch', activeTab, surgingMode, market, direction, period, overlapMode, quietAccumFilter, vwapWatchSymbols.join(',')],
+    queryKey: ['m-vwap-watch', activeTab, surgingMode, market, direction, period, overlapMode, quietAccumFilter, vwapWatchSymbolsKey],
     queryFn: () => fetchVwapWatchSignals(vwapWatchSymbols),
     enabled: vwapWatchEnabled && vwapWatchSymbols.length > 0,
     refetchInterval: vwapWatchEnabled ? 15 * 1000 : false,
@@ -384,7 +388,7 @@ export default function MobileRankingList() {
   });
 
   const { data: pivotReclaimMap, isFetching: pivotWatchFetching } = useQuery<Map<string, PivotReclaimSignal>>({
-    queryKey: ['m-pivot-watch', activeTab, surgingMode, market, direction, period, overlapMode, quietAccumFilter, vwapWatchSymbols.join(',')],
+    queryKey: ['m-pivot-watch', activeTab, surgingMode, market, direction, period, overlapMode, quietAccumFilter, vwapWatchSymbolsKey],
     queryFn: () => fetchPivotWatchSignals(vwapWatchSymbols),
     enabled: pivotWatchEnabled && vwapWatchSymbols.length > 0,
     refetchInterval: pivotWatchEnabled ? 15 * 1000 : false,

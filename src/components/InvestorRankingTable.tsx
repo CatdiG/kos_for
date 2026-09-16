@@ -155,9 +155,17 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
   // 결정짓는 값이 전부 들어있어서, 조회 도중 탭이 바뀌면 react-query가 그 시점 이후로는 이전 queryKey의
   // 응답을 새 화면에 반영하지 않는다(수동 토큰 관리 불필요 - 예전 온디맨드 버전에서 겪었던 경쟁 상태가
   // 구조적으로 발생할 수 없음).
+  // 🚨 [버그 수정 - 사용자 지적: "영원히 로딩중인데?" 프로덕션 실측(kos-for.vercel.app)으로 발견]
+  // data?.list의 종목 "순서"는 서버리스 인스턴스마다 미세하게 다르게 캐시돼 있어서(같은 종목 구성이라도
+  // 정렬 결과가 흔들릴 수 있음) 요청마다 바뀔 수 있는데, 정렬 안 된 vwapWatchSymbols.join(',')를 그대로
+  // queryKey에 넣으면 순서가 바뀔 때마다 react-query가 "완전히 새로운 쿼리"로 오인해 staleTime:0과
+  // 맞물려 응답이 오기도 전에 다음 요청을 또 새로 시작 - 500개 넘는 요청이 순식간에 몰리는 무한 루프가
+  // 되어 화면이 계속 "로딩 중"으로 보였다(실측: Network 탭에 동일 순간 512개+ 요청). 감시 대상은
+  // "이 종목들의 집합"이지 "이 순서"가 아니므로, 정렬해서 순서 변화만으로는 키가 안 바뀌게 한다.
   const vwapWatchSymbols = (data?.list || []).map((item) => item.symbol).filter(Boolean);
+  const vwapWatchSymbolsKey = [...vwapWatchSymbols].sort().join(',');
   const { data: vwapReclaimMap, isFetching: vwapWatchFetching } = useQuery<Map<string, VwapReclaimSignal>>({
-    queryKey: ['vwap-watch', activeTab, surgingMode, market, direction, period, overlapMode, overlapLimit, quietAccumFilter, vwapWatchSymbols.join(',')],
+    queryKey: ['vwap-watch', activeTab, surgingMode, market, direction, period, overlapMode, overlapLimit, quietAccumFilter, vwapWatchSymbolsKey],
     queryFn: () => fetchVwapWatchSignals(vwapWatchSymbols),
     enabled: vwapWatchEnabled && vwapWatchSymbols.length > 0,
     refetchInterval: vwapWatchEnabled ? 15 * 1000 : false,
@@ -168,7 +176,7 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
   // VWAP과 독립적으로 켜고 끌 수 있고, 둘 다 켜도 같이 볼 수 있다(사용자 확인: "각각해도 다 같이
   // 볼수있는거지?").
   const { data: pivotReclaimMap, isFetching: pivotWatchFetching } = useQuery<Map<string, PivotReclaimSignal>>({
-    queryKey: ['pivot-watch', activeTab, surgingMode, market, direction, period, overlapMode, overlapLimit, quietAccumFilter, vwapWatchSymbols.join(',')],
+    queryKey: ['pivot-watch', activeTab, surgingMode, market, direction, period, overlapMode, overlapLimit, quietAccumFilter, vwapWatchSymbolsKey],
     queryFn: () => fetchPivotWatchSignals(vwapWatchSymbols),
     enabled: pivotWatchEnabled && vwapWatchSymbols.length > 0,
     refetchInterval: pivotWatchEnabled ? 15 * 1000 : false,
