@@ -6108,7 +6108,26 @@ async function getPivotLevelsForSymbol(symbol: string): Promise<PivotLevels | nu
     // R1/R2 계산에 필요한 건 "직전 확정 거래일의 고가/저가/종가" 3개 숫자뿐이라, 바로 위 "장마감 후보만"
     // 기능이 동일한 문제를 이미 fetchKisRecentDailyBars(inquire-daily-itemchartprice 단 1회 호출)로
     // 풀어뒀던 것을 그대로 재사용한다(수칙 1-6 - 새 KIS 호출/새 TR 추가 없음).
-    const bars = await fetchKisRecentDailyBars(symbol);
+    //
+    // 🚨 [성능 개선 - 사용자 지적: "피봇감시는 왜 바로 안뜨고 로딩이 걸리는거야? 시간 못줄이나"] 그런데
+    // fetchKisRecentDailyBars(공용 래퍼)는 kisQueue.enqueue(LOW, 최소 200ms 간격)로 완전 직렬화된다.
+    // 피봇 워치는 이미 자체적으로 20개씩 청크 병렬 처리(runInChunks) 중인데, 그 안에서 다시 캐시 미스인
+    // 종목들이 kisQueue로 한 줄로 서서 하나씩 처리되면 20개면 최소 4초, 60개 전부 미스면 최소 12초가
+    // 그대로 더해진다(실측: 프로덕션 60종목 12.8초 - 200ms×60=12초와 정확히 일치). "장마감 후보만"은
+    // 백그라운드성이라 이 지연이 문제없지만 피봇 워치는 실시간성이 핵심이라 못 견딘다. 순수 fetch 로직
+    // (executeKisRecentDailyBarsFetch, 큐 미사용)을 큐 없이 직접 호출하되, 캐시(recentDailyBarsCache)는
+    // "장마감 후보만"과 그대로 공유해서 중복 라이브 호출을 막는다 - VWAP 감시의 fetchKisLiveVwapSample이
+    // 동일한 이유로 이미 큐를 안 쓰는 선례가 있다(수칙 1-6, 캐시는 공유하되 동시성 정책만 분리).
+    const dailyBarsCached = recentDailyBarsCache.get(symbol);
+    let bars: Array<{ date: string; open: number; high: number; low: number; close: number; volume: number }> | undefined;
+    if (dailyBarsCached && Date.now() - dailyBarsCached.timestamp < getDynamicRankingTtl()) {
+      bars = dailyBarsCached.data;
+    } else {
+      bars = await fetchWithRetry(() => executeKisRecentDailyBarsFetch(symbol));
+      if (bars && bars.length > 0) {
+        recentDailyBarsCache.set(symbol, { data: bars, timestamp: Date.now() });
+      }
+    }
     if (!bars || bars.length === 0) return null;
 
     const pastDailies = bars.filter((b) => b.date !== todayStr && b.high > 0 && b.low > 0 && b.close > 0);
