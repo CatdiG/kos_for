@@ -400,6 +400,19 @@ function getKstTodayStr(): string {
   return `${kstDate.getFullYear()}${String(kstDate.getMonth() + 1).padStart(2, '0')}${String(kstDate.getDate()).padStart(2, '0')}`;
 }
 
+// 🚨 [버그 수정 - 코드 리뷰 발견: 15:30~16:00 휴장이 "장중"으로 오판됨] 이 파일 곳곳에 있던
+// `timeNum >= 900 && timeNum < 2000`(정규장 09:00~애프터마켓 20:00을 하나의 연속 구간으로 취급)은
+// 정규장(09:00~15:30)과 애프터마켓(16:00~20:00) 사이의 실제 휴장 30분(15:30~16:00)을 장중으로
+// 잘못 포함시킨다 - Header.tsx의 장 상태 배지는 이미 두 구간을 OR로 분리해 판정하고 있어서, 그
+// 30분 동안 헤더는 "장마감"을 보여주는데 랭킹 데이터는 "장중 실시간"으로 취급하는 모순이 있었다.
+// 하나의 공통 함수로 합쳐 앞으로 이 판정이 또 따로따로 어긋나지 않게 한다(수칙 1-6).
+function isKrxMarketOpen(dayOfWeek: number, timeNum: number): boolean {
+  const isWeekday = dayOfWeek >= 1 && dayOfWeek <= 5;
+  const isRegularSession = timeNum >= 900 && timeNum < 1530;
+  const isAfterMarketSession = timeNum >= 1600 && timeNum < 2000;
+  return isWeekday && (isRegularSession || isAfterMarketSession);
+}
+
 /** ISO 시각 문자열(또는 생략 시 지금)을 KST 기준 "HH:MM 최초포착" 표시 문구로 변환한다. */
 function formatKstFirstSeenLabel(isoTime?: string): string {
   const d = isoTime ? new Date(isoTime) : new Date();
@@ -424,7 +437,7 @@ export function getDynamicRankingTtl(): number {
   // "장마감 후 익일 08:30까지 불변 캐시" 정책이 15:30부터 적용돼, 실측(급등주 탭)으로 확인한 것처럼
   // 애프터마켓 4시간 내내 살아있는 시세를 이 앱만 15:30 시점에 얼려서 보여주고 있었다. 정규장+애프터
   // 마켓을 하나의 "장중"으로 보고 경계를 20:00으로 옮긴다.
-  const isMarketOpen = dayOfWeek >= 1 && dayOfWeek <= 5 && timeNum >= 900 && timeNum < 2000;
+  const isMarketOpen = isKrxMarketOpen(dayOfWeek, timeNum);
 
   // 1. 장중(정규장 09:00~15:30 + 애프터마켓 16:00~20:00): 짧은 캐시로 실시간 가집계 반영
   // 🚨 [사용자 요청 반영] 원래 30초였는데, 실측(같은 종목 반복 조회) 결과 30초가 지나면 "이미 눌러본
@@ -482,7 +495,7 @@ export function getSharedCacheMaxAgeMs(): number {
   const minute = kstDate.getMinutes();
   const timeNum = hour * 100 + minute;
   const dayOfWeek = kstDate.getDay();
-  const isMarketOpen = dayOfWeek >= 1 && dayOfWeek <= 5 && timeNum >= 900 && timeNum < 2000;
+  const isMarketOpen = isKrxMarketOpen(dayOfWeek, timeNum);
 
   // 1. 장중(정규장+애프터마켓): 위 getDynamicRankingTtl()과 동일하게 60초 - 경계 계산이 필요 없다.
   if (isMarketOpen) {
@@ -524,7 +537,7 @@ export function getLiveOrSettledAsOfLabel(): string {
   const minute = kstDate.getMinutes();
   const timeNum = hour * 100 + minute;
   const dayOfWeek = kstDate.getDay();
-  const isMarketOpen = dayOfWeek >= 1 && dayOfWeek <= 5 && timeNum >= 900 && timeNum < 2000;
+  const isMarketOpen = isKrxMarketOpen(dayOfWeek, timeNum);
   if (!isMarketOpen) return getSettledAsOfDateLabel();
   const timeStr = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
   return `당일 가집계 (${timeStr} 기준)`;
@@ -1229,7 +1242,7 @@ async function executeKisInvestorTrendFetch(
   // 🚨 [버그 수정 - 애프터마켓 도입] getDynamicRankingTtl()과 동일한 이유로 15:30 ➔ 20:00 - 라벨을
   // "당일 실시간"으로 보여줄지 결정하는 경계다. isWeekdayPostMarket(가집계 추정치 폴백 시도 여부)은
   // 원래도 상한이 없어(>=1530) 애프터마켓 시간대를 이미 포함하고 있었으므로 그대로 둔다.
-  const isMarketOpen = dayOfWeek >= 1 && dayOfWeek <= 5 && timeNum >= 900 && timeNum < 2000;
+  const isMarketOpen = isKrxMarketOpen(dayOfWeek, timeNum);
   const isWeekdayPostMarket = dayOfWeek >= 1 && dayOfWeek <= 5 && timeNum >= 1530;
   const timeStr = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
 
@@ -1487,7 +1500,7 @@ export async function fetchKisProgramTrade(
         const timeNum = hour * 100 + minute;
         const dayOfWeek = kstDate.getDay();
         // 🚨 [버그 수정 - 애프터마켓 도입] getDynamicRankingTtl()과 동일한 이유로 15:30 ➔ 20:00.
-        const isMarketOpen = dayOfWeek >= 1 && dayOfWeek <= 5 && timeNum >= 900 && timeNum < 2000;
+        const isMarketOpen = isKrxMarketOpen(dayOfWeek, timeNum);
 
         const latestTime = latest.bsop_hour && latest.bsop_hour.length >= 4
           ? `${latest.bsop_hour.slice(0, 2)}:${latest.bsop_hour.slice(2, 4)}`
@@ -2345,7 +2358,7 @@ async function executeKisForeignInstitutionRankingFetch(
     // 🚨 [버그 수정 - 사용자 지적: "애프터마켓까지 살아있게 고치는게 맞지않을까?"] 15:30 ➔ 20:00 -
     // 이 경계가 false가 되는 순간 아래에서 전 종목을 마감 확정치로 굳혀버리는데(다음 영업일 08:30까지
     // 다시 안 풂), 애프터마켓 도입 전엔 15:30이 진짜 마감이라 맞았지만 지금은 20:00까지 실거래가 있다.
-    const isMarketOpen = dayOfWeek >= 1 && dayOfWeek <= 5 && timeNum >= 900 && timeNum < 2000;
+    const isMarketOpen = isKrxMarketOpen(dayOfWeek, timeNum);
     const timeStr = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
 
     // 1주일(1w)/1개월(1m) 탭이거나 장마감 후(!isMarketOpen)에는 상단 카드와 100% 동일한 FHKST01010900 마감 확정치로 전수 보정 및 재정렬
@@ -2488,7 +2501,7 @@ async function enrichRankingWithRawInvestorData(
                 const dWeekObj = kstObj.getDay();
                 // 🚨 [버그 수정 - 애프터마켓 도입] 위 executeKisForeignInstitutionRankingFetch와 동일한
                 // 이유로 15:30 ➔ 20:00.
-                const isMarketOpenNow = dWeekObj >= 1 && dWeekObj <= 5 && tNumObj >= 900 && tNumObj < 2000;
+                const isMarketOpenNow = isKrxMarketOpen(dWeekObj, tNumObj);
 
                 if (!isMarketOpenNow || rawPbmn === 0) {
                   item.asOfDateLabel = getSettledAsOfDateLabel();
@@ -5897,6 +5910,10 @@ interface VwapWatchSample {
 // 전환됐는지"(crossCount)는 표본 창 크기와 무관하게 감시가 시작된 이후 영구 보존한다 - 최근 표본 창
 // (samples)만 잘라내면서 그 증거까지 같이 유실됐던 게 "5분만 지나면 재돌파가 사라지는" 버그의 원인이었다.
 interface VwapWatchState {
+  dateStr: string; // 🚨 [버그 수정 - 코드 리뷰 발견: 자정을 넘겨도 상태가 안 지워짐] 이 상태가 어느
+  // 거래일 것인지 - 이게 없으면 프로세스가 자정을 넘겨 살아있는 동안(서버리스 웜 인스턴스) 어제자
+  // hasBeenBelow/crossCount가 오늘 판정에 그대로 섞여 들어간다. pivotLevelsCache가 이미 쓰던 것과
+  // 동일한 패턴(수칙 1-6).
   samples: VwapWatchSample[]; // 최근 N개(추세/거래량 비교용) - approaching·volSurge 계산 전용
   hasBeenBelow: boolean; // 감시 시작 후 한 번이라도 VWAP 아래였는지 - 영구 보존(창 밖으로 안 밀려남)
   crossCount: number; // 감시 시작 후 below→above 전환 누적 횟수 - 영구 보존
@@ -5988,12 +6005,13 @@ async function computeVwapSignalFromLive(symbol: string, live: { price: number; 
   const vwap = live.cumVal / live.cumVol;
   const todayStr = getKstTodayStr();
   let state = vwapWatchHistory.get(symbol);
-  if (!state) {
+  if (!state || state.dateStr !== todayStr) {
     // 🚨 [버그 수정 - 사용자 지적: "저걸 어떻게 고치지" (재시작/서버리스 콜드스타트에 플래그 유실)]
-    // 이 프로세스에서 이 심볼을 아직 한 번도 감시 안 한 시점(맵에 없음) - 오늘자로 이미 Supabase에
+    // 이 프로세스에서 이 심볼을 아직 한 번도 감시 안 한 시점(맵에 없음)이거나, 날짜가 바뀐 시점(맵에는
+    // 있지만 어제자 - 코드 리뷰에서 발견된 자정 경계 미처리 버그 수정) - 오늘자로 이미 Supabase에
     // 저장된 플래그가 있으면 그걸로 복구하고, 없으면(진짜 처음이거나 Supabase 미설정) 빈 상태로 시작.
     const persisted = await fetchWatchSignalState(todayStr, symbol);
-    state = { samples: [], hasBeenBelow: persisted?.vwapHasBeenBelow ?? false, crossCount: persisted?.vwapCrossCount ?? 0, wasAbove: null };
+    state = { dateStr: todayStr, samples: [], hasBeenBelow: persisted?.vwapHasBeenBelow ?? false, crossCount: persisted?.vwapCrossCount ?? 0, wasAbove: null };
   }
   const lastStoredSample = state.samples[state.samples.length - 1];
   // 누적거래량이 실제로 늘어난 새 체결일 때만 표본으로 기록 - 체결 없이 호가만 바뀐 중복 조회 방지.
@@ -6173,6 +6191,9 @@ interface PivotLevelState {
 }
 
 interface PivotWatchState {
+  dateStr: string; // 🚨 [버그 수정 - 코드 리뷰 발견: 자정을 넘겨도 상태가 안 지워짐] VwapWatchState와
+  // 동일한 이유(위 5899번 줄 주석 참고, 수칙 1-6) - 이게 없으면 어제자 hasBroken/hasBeenBelowAfterBreak가
+  // 오늘 판정에 그대로 섞여 들어간다.
   samples: PivotSample[];
   r1: PivotLevelState;
   r2: PivotLevelState;
@@ -6244,12 +6265,14 @@ async function computePivotSignalFromLive(
 
   const todayStr = getKstTodayStr();
   let state = pivotWatchHistory.get(symbol);
-  if (!state) {
+  if (!state || state.dateStr !== todayStr) {
     // 🚨 [버그 수정 - 사용자 지적: "저걸 어떻게 고치지" (재시작/서버리스 콜드스타트에 플래그 유실)]
-    // VWAP 감시와 동일한 이유(수칙 1-6) - 이 프로세스에서 이 심볼을 처음 감시하는 시점이면 오늘자로
-    // 이미 Supabase에 저장된 R1/R2 돌파 플래그가 있는지 먼저 확인해서 복구한다.
+    // VWAP 감시와 동일한 이유(수칙 1-6) - 이 프로세스에서 이 심볼을 처음 감시하는 시점이거나 날짜가
+    // 바뀐 시점(코드 리뷰에서 발견된 자정 경계 미처리 버그 수정)이면 오늘자로 이미 Supabase에 저장된
+    // R1/R2 돌파 플래그가 있는지 먼저 확인해서 복구한다.
     const persisted = await fetchWatchSignalState(todayStr, symbol);
     state = {
+      dateStr: todayStr,
       samples: [],
       r1: { hasBroken: persisted?.pivotR1HasBroken ?? false, hasBeenBelowAfterBreak: persisted?.pivotR1HasBeenBelowAfterBreak ?? false, wasAbove: null },
       r2: { hasBroken: persisted?.pivotR2HasBroken ?? false, hasBeenBelowAfterBreak: persisted?.pivotR2HasBeenBelowAfterBreak ?? false, wasAbove: null },

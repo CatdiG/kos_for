@@ -444,8 +444,12 @@ export default function MobileRankingList() {
   // 🚨 [버그 수정 - 데스크톱과 동일] react-query는 enabled가 false여도 마지막 데이터를 들고 있으므로,
   // vwapWatchEnabled가 켜져 있을 때만 필터를 적용한다 - 안 그러면 꺼도 원래 목록으로 안 돌아온다.
   // 🎯 [기능 추가 - 데스크톱과 동일] VWAP·피봇 감시를 둘 다 켜면 OR로 합쳐서 보여준다.
-  const vwapWatchActive = vwapWatchEnabled && !!vwapReclaimMap;
-  const pivotWatchActive = pivotWatchEnabled && !!pivotReclaimMap;
+  // 🚨 [버그 수정 - 코드 리뷰 발견: 다른 탭으로 이동해도 필터가 안 꺼짐] 데스크톱과 동일한 문제
+  // (InvestorRankingTable.tsx) - 토글 버튼은 (activeTab === 'surging' || activeTab === 'overlap') &&
+  // !showDropouts일 때만 렌더링되는데, 이 필터는 activeTab과 무관하게 적용되고 있었다.
+  const watchTogglesVisible = (activeTab === 'surging' || activeTab === 'overlap') && !showDropouts;
+  const vwapWatchActive = watchTogglesVisible && vwapWatchEnabled && !!vwapReclaimMap;
+  const pivotWatchActive = watchTogglesVisible && pivotWatchEnabled && !!pivotReclaimMap;
   if (vwapWatchActive || pivotWatchActive) {
     list = list
       .filter((item) => {

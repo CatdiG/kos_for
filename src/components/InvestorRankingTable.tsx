@@ -581,8 +581,14 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
   // volSurge는 배지에 부가 정보로만 표시한다(숨기지 않음).
   // 🎯 [기능 추가 - 사용자 확인: "각각해도 다 같이 볼수있는거지?"] VWAP 감시와 피봇(R1/R2) 감시를 둘 다
   // 켜면 OR로 합쳐서 보여준다 - 둘 중 하나라도 걸리면 노출.
-  const vwapWatchActive = vwapWatchEnabled && !!vwapReclaimMap;
-  const pivotWatchActive = pivotWatchEnabled && !!pivotReclaimMap;
+  // 🚨 [버그 수정 - 코드 리뷰 발견: 다른 탭으로 이동해도 필터가 안 꺼짐] 토글 버튼 자체는
+  // activeTab === 'surging' 또는 (activeTab === 'overlap' && !showDropouts)일 때만 화면에 렌더링되는데
+  // (아래 "surging"/"overlap" 탭 전용 컨트롤 바), 이 필터는 activeTab과 무관하게 적용되고 있었다 -
+  // 예: 급등주 탭에서 켜둔 채로 외국인/기관 탭으로 이동하면 끌 방법 없이 그 탭 목록까지 걸러졌다.
+  // 토글이 실제로 보이는 탭에서만 필터를 적용하도록 맞춘다.
+  const watchTogglesVisible = activeTab === 'surging' || (activeTab === 'overlap' && !showDropouts);
+  const vwapWatchActive = watchTogglesVisible && vwapWatchEnabled && !!vwapReclaimMap;
+  const pivotWatchActive = watchTogglesVisible && pivotWatchEnabled && !!pivotReclaimMap;
   if (vwapWatchActive || pivotWatchActive) {
     displayList = displayList
       .filter((item) => {
