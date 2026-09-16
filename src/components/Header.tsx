@@ -48,13 +48,23 @@ export default function Header() {
         color: 'text-emerald-600 dark:text-emerald-400',
         dotColor: 'text-emerald-600 dark:text-emerald-400',
       };
-    } else {
+    }
+    // 🚨 [버그 수정 - 사용자 지적: "그 전에는 애프터마켓이 없었어서 다 15시30분에 멈춘걸거야"] 2026-09-14
+    // KRX 애프터마켓(16:00~20:00, 실시간 체결) 도입 전에는 15:30 이후를 전부 "장마감"으로 표시해도
+    // 맞았지만, 지금은 19시대에도 실거래가 진행 중인데 "장마감"이라고 잘못 표시되고 있었다(실측:
+    // 모바일 헤더가 19:33에도 "장마감"). kisApi.ts의 getDynamicRankingTtl() 등과 동일한 경계(수칙 1-6).
+    if (timeNum >= 1600 && timeNum < 2000) {
       return {
-        label: '장마감 (종가 반영)',
-        color: 'text-indigo-600 dark:text-indigo-400',
-        dotColor: 'text-indigo-600 dark:text-indigo-400',
+        label: '애프터마켓 실시간 반영 중',
+        color: 'text-sky-600 dark:text-sky-400',
+        dotColor: 'text-sky-600 dark:text-sky-400',
       };
     }
+    return {
+      label: '장마감 (종가 반영)',
+      color: 'text-indigo-600 dark:text-indigo-400',
+      dotColor: 'text-indigo-600 dark:text-indigo-400',
+    };
   };
 
   const marketStatus = getMarketStatus();

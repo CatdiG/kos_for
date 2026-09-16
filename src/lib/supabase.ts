@@ -809,3 +809,84 @@ export async function fetchSharedRankCacheBatch(
   }
 }
 
+// ============================================================================
+// 🏷️ [사용자 지적 - "그걸 어떻게 고치지"] watch_signal_state: VWAP/피봇 재돌파 감시가 하루 동안
+// 쌓는 "오늘 이 선을 한 번이라도 뚫은 적 있음"류 플래그(computeVwapWatchSignal의 hasBeenBelow/
+// crossCount, computePivotReclaimSignal의 r1/r2 hasBroken/hasBeenBelowAfterBreak)를 영구
+// 저장한다. globalThis(Node 프로세스 메모리)에만 있으면 로컬 dev 재시작은 물론, Vercel
+// 서버리스 인스턴스가 폴링 요청마다 다르게 뜰 수 있는 배포 환경에서 통째로 날아간다 -
+// shared_rank_cache와 동일한 이유(수칙 1-6)로 이중 저장한다.
+// 쓰기는 플래그가 "실제로 바뀐 순간"에만 fire-and-forget으로 호출한다(매 15초 폴링마다 쓰지
+// 않음 - 대부분의 폴링은 플래그가 안 바뀌므로 쓰기 비용이 거의 들지 않는다).
+// ============================================================================
+
+export interface WatchSignalStateRow {
+  vwapHasBeenBelow: boolean;
+  vwapCrossCount: number;
+  pivotR1HasBroken: boolean;
+  pivotR1HasBeenBelowAfterBreak: boolean;
+  pivotR2HasBroken: boolean;
+  pivotR2HasBeenBelowAfterBreak: boolean;
+}
+
+/**
+ * 프로세스가 새로 뜬 직후(재시작/콜드스타트) 이 심볼을 아직 한 번도 감시 안 한 시점에만 호출된다 -
+ * 심볼당 프로세스 수명 동안 한 번만 조회하면 되므로(그 뒤로는 인메모리 맵에 이미 있음) 매 폴링마다
+ * 발생하는 비용이 아니다.
+ */
+export async function fetchWatchSignalState(date: string, symbol: string): Promise<WatchSignalStateRow | null> {
+  const client = getSupabaseAdmin();
+  if (!client) return null;
+
+  try {
+    const { data, error } = await client
+      .from('watch_signal_state')
+      .select('vwap_has_been_below, vwap_cross_count, pivot_r1_has_broken, pivot_r1_has_been_below_after_break, pivot_r2_has_broken, pivot_r2_has_been_below_after_break')
+      .eq('date', date)
+      .eq('symbol', symbol)
+      .maybeSingle();
+
+    if (error || !data) return null;
+    return {
+      vwapHasBeenBelow: !!data.vwap_has_been_below,
+      vwapCrossCount: data.vwap_cross_count || 0,
+      pivotR1HasBroken: !!data.pivot_r1_has_broken,
+      pivotR1HasBeenBelowAfterBreak: !!data.pivot_r1_has_been_below_after_break,
+      pivotR2HasBroken: !!data.pivot_r2_has_broken,
+      pivotR2HasBeenBelowAfterBreak: !!data.pivot_r2_has_been_below_after_break,
+    };
+  } catch (e: any) {
+    console.warn('[Supabase watch_signal_state Read Exception]', e?.message || e);
+    return null;
+  }
+}
+
+/**
+ * partial에 담긴 필드만 upsert한다 - VWAP 쪽 함수와 피봇 쪽 함수가 서로 다른 시점에 독립적으로
+ * 호출해도(수칙 1-6, 두 기능이 한 테이블을 공유) onConflict로 병합되므로 상대방이 이미 저장해둔
+ * 플래그를 덮어써 지우지 않는다.
+ */
+export async function upsertWatchSignalState(date: string, symbol: string, partial: Partial<WatchSignalStateRow>): Promise<void> {
+  const client = getSupabaseAdmin();
+  if (!client) return;
+
+  try {
+    const row: Record<string, any> = { date, symbol, updated_at: new Date().toISOString() };
+    if (partial.vwapHasBeenBelow !== undefined) row.vwap_has_been_below = partial.vwapHasBeenBelow;
+    if (partial.vwapCrossCount !== undefined) row.vwap_cross_count = partial.vwapCrossCount;
+    if (partial.pivotR1HasBroken !== undefined) row.pivot_r1_has_broken = partial.pivotR1HasBroken;
+    if (partial.pivotR1HasBeenBelowAfterBreak !== undefined) row.pivot_r1_has_been_below_after_break = partial.pivotR1HasBeenBelowAfterBreak;
+    if (partial.pivotR2HasBroken !== undefined) row.pivot_r2_has_broken = partial.pivotR2HasBroken;
+    if (partial.pivotR2HasBeenBelowAfterBreak !== undefined) row.pivot_r2_has_been_below_after_break = partial.pivotR2HasBeenBelowAfterBreak;
+
+    const { error } = await client
+      .from('watch_signal_state')
+      .upsert(row, { onConflict: 'date,symbol' });
+    if (error) {
+      console.warn('[Supabase watch_signal_state Upsert Error]', error.message);
+    }
+  } catch (e: any) {
+    console.warn('[Supabase watch_signal_state Upsert Exception]', e?.message || e);
+  }
+}
+

@@ -618,6 +618,11 @@ export async function getBatchRankingDataAsync(
         list: sharedList,
         isMock: false,
         lastBatchTime: lastBatchTimeLabel,
+        // 🚨 [버그 수정 - 애프터마켓 진단 중 발견, kisApi.ts fetchKisForeignInstitutionRanking/
+        // fetchOverlapRankingData와 동일한 원인(수칙 1-6)] top-level asOfDateLabel을 안 채워서
+        // 이걸 참조하는 당일교집합(foreignRes.asOfDateLabel || getSettledAsOfDateLabel())이
+        // 항상 후자로 떨어졌었다.
+        asOfDateLabel: sharedList[0]?.asOfDateLabel,
         updatedAt: new Date(now).toISOString(),
         isPartial: false,
       };

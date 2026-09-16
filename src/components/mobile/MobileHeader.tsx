@@ -30,6 +30,11 @@ function getMarketStatus() {
   if (timeNum >= 900 && timeNum < 1530) {
     return { label: '장중 실시간', color: 'text-emerald-600 dark:text-emerald-400', dotColor: 'text-emerald-600 dark:text-emerald-400' };
   }
+  // 🚨 [버그 수정 - 애프터마켓 도입, Header.tsx와 동일 이유(수칙 1-6)] 실측: 19:33에도 "장마감"으로
+  // 잘못 표시됐다 - 애프터마켓(16:00~20:00) 시간대는 별도 라벨로 구분한다.
+  if (timeNum >= 1600 && timeNum < 2000) {
+    return { label: '애프터마켓', color: 'text-sky-600 dark:text-sky-400', dotColor: 'text-sky-600 dark:text-sky-400' };
+  }
   return { label: '장마감', color: 'text-indigo-600 dark:text-indigo-400', dotColor: 'text-indigo-600 dark:text-indigo-400' };
 }
 

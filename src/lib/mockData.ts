@@ -61,6 +61,12 @@ export function getKrxEstimateSlotInfo(customKstDate?: Date) {
   const dayOfWeek = kst.getDay();
   const timeStr = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
 
+  // 🚨 [애프터마켓 도입 후에도 15:30 그대로 유지] 이 함수는 kisApi.ts의 캐시 TTL 정책과는 무관하게,
+  // KRX가 실제로 "외국인/기관 추정 순매매 동향"을 발표하는 고정 스케줄(아래 krxSchedule: 09:30~14:30
+  // + 장마감 15:35)을 그대로 반영한다. 애프터마켓(16:00~20:00)용 추가 발표 슬롯이 생겼다는 근거를
+  // 찾지 못했으므로, 15:30 이후엔 "당일 최종잠정(14:30 기준)"이라는 정직한 라벨을 그대로 유지한다 -
+  // 여기를 20:00으로 늘리면 실제로 존재하지 않는 애프터마켓 슬롯이 있는 것처럼 보이게 되어 수칙 1-3
+  // 위반이 된다.
   const isMarketOpen = dayOfWeek >= 1 && dayOfWeek <= 5 && timeNum >= 900 && timeNum < 1530;
   const isWeekdayPostMarket = dayOfWeek >= 1 && dayOfWeek <= 5 && timeNum >= 1530;
 

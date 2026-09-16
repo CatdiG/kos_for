@@ -30,9 +30,11 @@ import {
   RankingType,
   SurgingMode,
 } from '@/lib/types';
-import { Rocket, Trophy, Globe2, Landmark, Cpu, Flame, ShieldCheck, ArrowUpDown, TrendingDown, RotateCcw, TrendingUp, Coins, Filter, ChevronDown, ChevronUp, Target } from 'lucide-react';
+import { Rocket, Trophy, Globe2, Landmark, Cpu, Flame, ShieldCheck, ArrowUpDown, TrendingDown, RotateCcw, TrendingUp, Coins, Filter, ChevronDown, ChevronUp, Target, Zap, RefreshCw } from 'lucide-react';
 import MobileStockDetailPanel from './MobileStockDetailPanel';
 import MobileLoadingSpinner from './MobileLoadingSpinner';
+import { fetchVwapWatchSignals, fetchPivotWatchSignals } from '@/lib/vwapReclaimClient';
+import { VwapReclaimSignal, PivotReclaimSignal } from '@/lib/types';
 
 // 🚨 [기능 추가 - 사용자 요청: "모바일에는 장마감 후보군 업데이트한거 안뜨던데"] 데스크톱 InvestorRankingTable.tsx
 // 595~604번 줄(postmarket 최상위 탭)과 동일한 값 그대로 이식(수칙 1-6, 새 타입/새 API 만들지 않음).
@@ -182,7 +184,7 @@ function buildOverlapSubLine(item: RankingItem, overlapMode: OverlapMode, quietA
   return parts.join(' · ') || item.investorBadge || '-';
 }
 
-function RankingCard({ item, activeTab, overlapMode, quietAccumFilter, isExpanded, onClick }: { item: RankingItem; activeTab: RankingType; overlapMode: OverlapMode; quietAccumFilter: boolean; isExpanded: boolean; onClick?: () => void }) {
+function RankingCard({ item, activeTab, overlapMode, quietAccumFilter, vwapApproaching, vwapHadPriorReclaim, vwapReclaimed, vwapSignal, pivotSignal, isExpanded, onClick }: { item: RankingItem; activeTab: RankingType; overlapMode: OverlapMode; quietAccumFilter: boolean; vwapApproaching?: boolean; vwapHadPriorReclaim?: boolean; vwapReclaimed?: boolean; vwapSignal?: boolean; pivotSignal?: PivotReclaimSignal; isExpanded: boolean; onClick?: () => void }) {
   const isUp = item.change >= 0;
   return (
     <div
@@ -204,6 +206,62 @@ function RankingCard({ item, activeTab, overlapMode, quietAccumFilter, isExpande
           <span className="text-sm font-bold text-slate-900 dark:text-white truncate">{item.name}</span>
           <span className="text-[10px] font-mono text-slate-400 shrink-0">{item.symbol}</span>
           {item.isCreditAvailable && <ShieldCheck className="w-3 h-3 text-emerald-500 shrink-0" />}
+          {/* 🚨 [기능 보강 - 사용자 지적: "이미 재돌파 하고나면 내가 또 못사잖아"] 임박(선행, 액션 가능)과
+              완료(후행, 참고용)를 색으로 구분 - 데스크톱과 동일(수칙 1-6). */}
+          {vwapApproaching && (
+            <span
+              className="text-[9px] px-1 py-0.2 rounded font-bold shrink-0 border bg-amber-50 dark:bg-amber-950/60 text-amber-600 dark:text-amber-400 border-amber-200 dark:border-amber-800/60 flex items-center gap-0.5 animate-pulse"
+              title={vwapHadPriorReclaim ? '오늘 이미 한 번 재돌파에 성공했다가 다시 눌린 뒤, 재차 근접 중입니다' : '아직 VWAP를 뚫진 않았지만 간격이 좁혀지고 거래량이 먼저 붙기 시작했습니다'}
+            >
+              <Zap className="w-2.5 h-2.5" />
+              임박{vwapHadPriorReclaim ? '(2차)' : ''}
+              {(item as any).vwapOriginalRank !== undefined && (
+                <span className="opacity-80">(원래 {(item as any).vwapOriginalRank}위)</span>
+              )}
+            </span>
+          )}
+          {!vwapApproaching && vwapReclaimed && (
+            <span
+              className="text-[9px] px-1 py-0.2 rounded font-bold shrink-0 border bg-sky-50 dark:bg-sky-950/60 text-sky-600 dark:text-sky-400 border-sky-200 dark:border-sky-800/60 flex items-center gap-0.5"
+              title={vwapSignal ? 'VWAP 재돌파 + 거래량 재증가가 이미 확인됐습니다(참고용)' : 'VWAP 재돌파는 확인됐지만 거래량 증가는 확인되지 않았습니다(참고용)'}
+            >
+              <Zap className="w-2.5 h-2.5" />
+              완료{vwapSignal ? '' : '·거래량 미확인'}
+              {(item as any).vwapOriginalRank !== undefined && (
+                <span className="opacity-80">(원래 {(item as any).vwapOriginalRank}위)</span>
+              )}
+            </span>
+          )}
+          {/* 🎯 [기능 추가 - 데스크톱과 동일] R2가 걸려있으면 R2를(더 강한 신호), 아니면 R1을 표시. */}
+          {pivotSignal && (() => {
+            const level: 'R2' | 'R1' | null =
+              pivotSignal.r2.approaching || pivotSignal.r2.reclaimed ? 'R2' : pivotSignal.r1.approaching || pivotSignal.r1.reclaimed ? 'R1' : null;
+            if (!level) return null;
+            const sig = level === 'R2' ? pivotSignal.r2 : pivotSignal.r1;
+            if (sig.approaching) {
+              return (
+                <span
+                  className="text-[9px] px-1 py-0.2 rounded font-bold shrink-0 border bg-violet-50 dark:bg-violet-950/60 text-violet-600 dark:text-violet-400 border-violet-200 dark:border-violet-800/60 flex items-center gap-0.5 animate-pulse"
+                  title={`${level}을(를) 뚫었다가 눌린 뒤 다시 ${level}로 접근 중, 거래량도 붙는 중`}
+                >
+                  <Target className="w-2.5 h-2.5" />
+                  {level} 임박
+                </span>
+              );
+            }
+            if (sig.reclaimed) {
+              return (
+                <span
+                  className="text-[9px] px-1 py-0.2 rounded font-bold shrink-0 border bg-purple-50 dark:bg-purple-950/60 text-purple-600 dark:text-purple-400 border-purple-200 dark:border-purple-800/60 flex items-center gap-0.5"
+                  title={`${level}을(를) 뚫었다가 눌린 뒤 다시 위로 올라왔습니다(참고용)${sig.volSurge ? '' : ' - 거래량 미확인'}`}
+                >
+                  <Target className="w-2.5 h-2.5" />
+                  {level}완료{sig.volSurge ? '' : '·거래량 미확인'}
+                </span>
+              );
+            }
+            return null;
+          })()}
         </div>
         <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate mt-0.5">
           {activeTab === 'overlap'
@@ -280,6 +338,11 @@ export default function MobileRankingList() {
   // 카드를 탭하면 그 카드 바로 아래에 상세를 펼친다(데스크톱 InvestorRankingTable.tsx의 expandedSymbols
   // 아코디언과 동일하게 한 번에 1개만 펼침).
   const [expandedSymbol, setExpandedSymbol] = useState<string>('');
+  // 🎯 [재설계 - 데스크톱과 동일, 수칙 1-6] 실시간 감시 토글 - 켜면 화면에 뜬 후보 전체를 15초 주기로
+  // 계속 갱신한다(종목당 1콜짜리 가벼운 방식).
+  const [vwapWatchEnabled, setVwapWatchEnabled] = useState(false);
+  // 🎯 [기능 추가 - 데스크톱과 동일] R1/R2 재돌파 감시 - VWAP와 별개 토글, 둘 다 켜면 같이 보임.
+  const [pivotWatchEnabled, setPivotWatchEnabled] = useState(false);
 
   // 🚨 [기능 추가 - "모바일에는 장마감 후보군 안뜨던데"] 데스크톱 InvestorRankingTable.tsx 84번 줄과 동일 -
   // postmarket도 surgingMode 서브탭과 무관하게 항상 고정된 모드(postmarket)로 fetchSurging을 재사용한다.
@@ -307,6 +370,25 @@ export default function MobileRankingList() {
       if (activeTab === 'program' && d?.stillWarming) return 50 * 1000;
       return false;
     },
+  });
+
+  // 🎯 [재설계 - 데스크톱과 동일] queryKey에 탭/서브모드/시장이 들어있어 탭이 바뀌면 감시 대상도 자동
+  // 전환된다(수동 리셋/토큰 관리 불필요).
+  const vwapWatchSymbols = (data?.list || []).map((item) => item.symbol).filter(Boolean);
+  const { data: vwapReclaimMap, isFetching: vwapWatchFetching } = useQuery<Map<string, VwapReclaimSignal>>({
+    queryKey: ['m-vwap-watch', activeTab, surgingMode, market, direction, period, overlapMode, quietAccumFilter, vwapWatchSymbols.join(',')],
+    queryFn: () => fetchVwapWatchSignals(vwapWatchSymbols),
+    enabled: vwapWatchEnabled && vwapWatchSymbols.length > 0,
+    refetchInterval: vwapWatchEnabled ? 15 * 1000 : false,
+    staleTime: 0,
+  });
+
+  const { data: pivotReclaimMap, isFetching: pivotWatchFetching } = useQuery<Map<string, PivotReclaimSignal>>({
+    queryKey: ['m-pivot-watch', activeTab, surgingMode, market, direction, period, overlapMode, quietAccumFilter, vwapWatchSymbols.join(',')],
+    queryFn: () => fetchPivotWatchSignals(vwapWatchSymbols),
+    enabled: pivotWatchEnabled && vwapWatchSymbols.length > 0,
+    refetchInterval: pivotWatchEnabled ? 15 * 1000 : false,
+    staleTime: 0,
   });
 
   const { data: dropoutData, isLoading: isDropoutLoading, isError: isDropoutError } = useQuery<{ list: DropoutItem[] }>({
@@ -341,6 +423,26 @@ export default function MobileRankingList() {
       .map((item, idx) => ({ ...item, rank: idx + 1 }));
   }
   if (isComprehensive) list = applyWeights(list, weights);
+  // 🎯 [기능 추가 - 사용자 요청: "원래 몇위였는지 보여줘"] 데스크톱과 동일 - 켜져 있으면 신호가 뜬
+  // 종목만 남기고, 필터링 전 순위를 vwapOriginalRank에 스냅샷으로 남긴 뒤 순위를 재정렬한다.
+  // 🚨 [버그 수정 - 실측: 성호전자가 reclaimed:true인데도 화면에서 사라짐] 데스크톱과 동일(수칙 1-6) -
+  // 노출 기준은 reclaimed 자체로 하고, volSurge는 배지 부가 정보로만 표시한다.
+  // 🚨 [버그 수정 - 데스크톱과 동일] react-query는 enabled가 false여도 마지막 데이터를 들고 있으므로,
+  // vwapWatchEnabled가 켜져 있을 때만 필터를 적용한다 - 안 그러면 꺼도 원래 목록으로 안 돌아온다.
+  // 🎯 [기능 추가 - 데스크톱과 동일] VWAP·피봇 감시를 둘 다 켜면 OR로 합쳐서 보여준다.
+  const vwapWatchActive = vwapWatchEnabled && !!vwapReclaimMap;
+  const pivotWatchActive = pivotWatchEnabled && !!pivotReclaimMap;
+  if (vwapWatchActive || pivotWatchActive) {
+    list = list
+      .filter((item) => {
+        const v = vwapWatchActive ? vwapReclaimMap!.get(item.symbol) : undefined;
+        const vMatch = v?.approaching === true || v?.reclaimed === true;
+        const p = pivotWatchActive ? pivotReclaimMap!.get(item.symbol) : undefined;
+        const pMatch = !!p && (p.r1.approaching || p.r1.reclaimed || p.r2.approaching || p.r2.reclaimed);
+        return vMatch || pMatch;
+      })
+      .map((item, idx) => ({ ...item, vwapOriginalRank: item.rank, rank: idx + 1 }));
+  }
 
   return (
     <div className="flex flex-col gap-2.5">
@@ -468,6 +570,37 @@ export default function MobileRankingList() {
           >
             <Target className="w-3 h-3" />
             장마감 후보만
+          </button>
+        )}
+        {/* 🎯 [재설계 - 데스크톱과 동일] 실시간 감시 토글 - 켜면 화면에 뜬 후보 전체를 15초 주기로 계속 갱신. */}
+        {(activeTab === 'surging' || activeTab === 'overlap') && !showDropouts && (
+          <button
+            onClick={() => setVwapWatchEnabled((v) => !v)}
+            title="켜면 지금 보이는 후보 전체를 15초 주기로 계속 갱신해서 재돌파 임박 또는 완료 종목을 실시간으로 표시합니다"
+            className={`flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-bold border transition ${
+              vwapWatchEnabled ? 'bg-gradient-to-r from-sky-600 to-cyan-600 text-white border-transparent' : 'bg-slate-50 dark:bg-[#131722] text-slate-400 border-slate-200 dark:border-[#2a2e39]'
+            }`}
+          >
+            <Zap className="w-3 h-3" />
+            {vwapWatchEnabled ? 'VWAP 감시 중' : 'VWAP 실시간 감시'}
+            {/* 🚨 [버그 수정 - 사용자 지적: "감시중인거 로딩중이면 로딩인거 알수있게 옆에 둔 도형이라도
+                활용해봐"] 데스크톱과 동일 - 아이콘 pulse만으론 15초 주기 재조회 순간이 잘 안 보여서,
+                isFetching일 때만 옆에 작은 회전 아이콘을 별도로 띄운다(수칙 1-6). */}
+            {vwapWatchEnabled && vwapWatchFetching && <RefreshCw className="w-3 h-3 animate-spin" />}
+          </button>
+        )}
+        {/* 🎯 [기능 추가 - 데스크톱과 동일] R1/R2 재돌파 감시 - VWAP와 별개 토글. */}
+        {(activeTab === 'surging' || activeTab === 'overlap') && !showDropouts && (
+          <button
+            onClick={() => setPivotWatchEnabled((v) => !v)}
+            title="켜면 전일 확정 피봇 저항선(R1·R2)을 뚫었다가 눌린 뒤 다시 그 선을 향해 올라오는 종목을 15초 주기로 계속 갱신해서 실시간으로 표시합니다"
+            className={`flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-bold border transition ${
+              pivotWatchEnabled ? 'bg-gradient-to-r from-violet-600 to-purple-600 text-white border-transparent' : 'bg-slate-50 dark:bg-[#131722] text-slate-400 border-slate-200 dark:border-[#2a2e39]'
+            }`}
+          >
+            <Target className="w-3 h-3" />
+            {pivotWatchEnabled ? '피봇 감시 중' : '피봇 재돌파 감시'}
+            {pivotWatchEnabled && pivotWatchFetching && <RefreshCw className="w-3 h-3 animate-spin" />}
           </button>
         )}
       </div>
@@ -619,6 +752,11 @@ export default function MobileRankingList() {
                   activeTab={activeTab}
                   overlapMode={overlapMode}
                   quietAccumFilter={quietAccumFilter}
+                  vwapApproaching={vwapWatchEnabled && vwapReclaimMap?.get(item.symbol)?.approaching}
+                  vwapHadPriorReclaim={vwapWatchEnabled && vwapReclaimMap?.get(item.symbol)?.hadPriorReclaim}
+                  vwapReclaimed={vwapWatchEnabled && vwapReclaimMap?.get(item.symbol)?.reclaimed}
+                  vwapSignal={vwapWatchEnabled && vwapReclaimMap?.get(item.symbol)?.signal}
+                  pivotSignal={pivotWatchEnabled ? pivotReclaimMap?.get(item.symbol) : undefined}
                   isExpanded={isExpanded}
                   onClick={() => setExpandedSymbol((prev) => (prev === item.symbol ? '' : item.symbol))}
                 />

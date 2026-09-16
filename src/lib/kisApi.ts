@@ -2,10 +2,10 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { InvestorTrendDay, InvestorTrendResponse, KisTokenResponse, ProgramTradeIntradayPoint, ProgramTradeSummary, SupplySummary, TrendPeriod, InvestorRankingResponse, RankingItem, RankingDirection, RankingPeriod, RankingType, OverlapInvestorRank, MarketType, SurgingRankItem, ScoreBreakdown, SurgingMode, isEtfOrEtn, IntradayCandlePoint, IntradayPivotFibonacciLevels, IntradayChartResponse, IndexTrendResponse, IndexTrendDay, StockBadgeItem, StockBadgeSummaryResponse } from './types';
+import { InvestorTrendDay, InvestorTrendResponse, KisTokenResponse, ProgramTradeIntradayPoint, ProgramTradeSummary, SupplySummary, TrendPeriod, InvestorRankingResponse, RankingItem, RankingDirection, RankingPeriod, RankingType, OverlapInvestorRank, MarketType, SurgingRankItem, ScoreBreakdown, SurgingMode, isEtfOrEtn, IntradayCandlePoint, IntradayPivotFibonacciLevels, IntradayChartResponse, IndexTrendResponse, IndexTrendDay, StockBadgeItem, StockBadgeSummaryResponse, VwapReclaimSignal, PivotReclaimSignal, PivotLevelSignal } from './types';
 import { getStockName, resolveStockPriceAndChange, updateRuntimeStockPrice, registerRuntimeStockName, resolveMarketType, computeUnifiedStatusBadge, getSettledAsOfDateLabel, getKrxEstimateSlotInfo, findSplitSafeStartIndex, roundToKrxTick, computeRecentVolumeRatio } from './mockData';
 import { TOP_300_STOCKS } from './stockUniverse300';
-import { fetchTokenFromSupabase, fetchCreditBatchFromSupabase, saveCreditBatchToSupabase, fetchIntraday3mCandlesFromSupabase, saveIntraday3mCandlesToSupabase, fetchConsecutiveOverlapWatch, upsertConsecutiveOverlapWatch, fetchDailyOverlapFirstSeen, insertDailyOverlapFirstSeenIfMissing, fetchLatestActiveBeforeDate, upsertSharedRankCache, fetchSharedRankCacheBatch } from './supabase';
+import { fetchTokenFromSupabase, fetchCreditBatchFromSupabase, saveCreditBatchToSupabase, fetchIntraday3mCandlesFromSupabase, saveIntraday3mCandlesToSupabase, fetchConsecutiveOverlapWatch, upsertConsecutiveOverlapWatch, fetchDailyOverlapFirstSeen, insertDailyOverlapFirstSeenIfMissing, fetchLatestActiveBeforeDate, upsertSharedRankCache, fetchSharedRankCacheBatch, fetchWatchSignalState, upsertWatchSignalState } from './supabase';
 export { resolveStockPriceAndChange, computeUnifiedStatusBadge };
 
 interface TokenCacheData {
@@ -418,9 +418,15 @@ export function getDynamicRankingTtl(): number {
   const minute = kstDate.getMinutes();
   const timeNum = hour * 100 + minute;
   const dayOfWeek = kstDate.getDay();
-  const isMarketOpen = dayOfWeek >= 1 && dayOfWeek <= 5 && timeNum >= 900 && timeNum < 1530;
+  // 🚨 [버그 수정 - 사용자 지적: "그 전에는 애프터마켓이 없었어서 다 15시30분에 멈춘걸거야. 애프터
+  // 마켓까지 살아있게 고치는게 맞지않을까?"] 2026-09-14 KRX 애프터마켓(16:00~20:00, 실시간 체결)
+  // 도입 전에는 15:30이 하루 거래의 진짜 끝이라 이 경계가 맞았다. 지금은 20:00까지 실거래가 계속되는데
+  // "장마감 후 익일 08:30까지 불변 캐시" 정책이 15:30부터 적용돼, 실측(급등주 탭)으로 확인한 것처럼
+  // 애프터마켓 4시간 내내 살아있는 시세를 이 앱만 15:30 시점에 얼려서 보여주고 있었다. 정규장+애프터
+  // 마켓을 하나의 "장중"으로 보고 경계를 20:00으로 옮긴다.
+  const isMarketOpen = dayOfWeek >= 1 && dayOfWeek <= 5 && timeNum >= 900 && timeNum < 2000;
 
-  // 1. 장중 (09:00 ~ 15:30): 짧은 캐시로 실시간 가집계 반영
+  // 1. 장중(정규장 09:00~15:30 + 애프터마켓 16:00~20:00): 짧은 캐시로 실시간 가집계 반영
   // 🚨 [사용자 요청 반영] 원래 30초였는데, 실측(같은 종목 반복 조회) 결과 30초가 지나면 "이미 눌러본
   // 종목"이어도 캐시가 만료돼 매번 1~1.5초씩 다시 걸려서(investor-trend, 3분봉 등) 반복 클릭 체감
   // 속도가 너무 느리다는 피드백을 받았다. 가격처럼 초단위로 급변하는 값이 아니라 수급(외국인/기관
@@ -430,16 +436,16 @@ export function getDynamicRankingTtl(): number {
     return 60 * 1000; // 60초
   }
 
-  // 2. 장마감 후 (평일 15:30 이후 또는 주말): 다음 영업일 08:30 개장 전까지 불변 캐시
+  // 2. 장마감 후 (평일 20:00 이후 또는 주말): 다음 영업일 08:30 개장 전까지 불변 캐시
   const nextOpenDate = new Date(kstDate);
-  if (dayOfWeek === 5 && timeNum >= 1530) {
-    nextOpenDate.setDate(kstDate.getDate() + 3); // 금요일 저녁 ➔ 월요일 08:30
+  if (dayOfWeek === 5 && timeNum >= 2000) {
+    nextOpenDate.setDate(kstDate.getDate() + 3); // 금요일 밤 ➔ 월요일 08:30
   } else if (dayOfWeek === 6) {
     nextOpenDate.setDate(kstDate.getDate() + 2); // 토요일 ➔ 월요일 08:30
   } else if (dayOfWeek === 0) {
     nextOpenDate.setDate(kstDate.getDate() + 1); // 일요일 ➔ 월요일 08:30
-  } else if (timeNum >= 1530) {
-    nextOpenDate.setDate(kstDate.getDate() + 1); // 평일(월~목) 저녁 ➔ 익일 08:30
+  } else if (timeNum >= 2000) {
+    nextOpenDate.setDate(kstDate.getDate() + 1); // 평일(월~목) 밤 ➔ 익일 08:30
   }
 
   nextOpenDate.setHours(8, 30, 0, 0);
@@ -457,11 +463,16 @@ export function getDynamicRankingTtl(): number {
  * (fetchConsecutiveNDaysOverlapRankingData)/지수 일봉(fetchKisIndexDailyTrend) 3곳 모두, 위
  * getDynamicRankingTtl()의 "다음 영업일 08:30까지" duration을 그대로 Supabase maxAge로 재사용하고
  * 있었다. 이건 "어제 캐시가 오늘로 넘어오는 것"은 막아도, "오늘 장중 특정 시점(예: 10:02)에 기록된
- * 캐시가 그날 장마감(15:30) 이후까지 그대로 최종값처럼 쓰이는 것"은 못 막는다 - duration은 "몇 시간
+ * 캐시가 그날 장마감 이후까지 그대로 최종값처럼 쓰이는 것"은 못 막는다 - duration은 "몇 시간
  * 안 지났나"만 볼 뿐 "장마감을 한 번이라도 거쳤는가"는 모르기 때문이다(실측: 삼성E&A 028050 - 3일연속
  * 탭이 오전 10:02 스냅샷 가격 49150원을 장마감 후 17시대까지 그대로 씀 - 실제로는 그 사이 5시간 반
- * 더 거래돼 종가 50800원까지 오름). 장마감 후엔 "가장 최근에 지난 15:30 마감 시각 이후에 기록됐는가"를
+ * 더 거래돼 종가 50800원까지 오름). 장마감 후엔 "가장 최근에 지난 마감 시각 이후에 기록됐는가"를
  * 봐야 정확하다 - 이 함수가 그 경계를 역산한다.
+ *
+ * 🚨 [버그 수정 - 사용자 지적: "애프터마켓까지 살아있게 고치는게 맞지않을까?"] 2026-09-14 애프터마켓
+ * 도입 전엔 15:30이 진짜 마감이라 경계가 맞았지만, 지금은 20:00까지 실거래가 이어진다.
+ * getDynamicRankingTtl()과 동일하게 마감 경계를 15:30 ➔ 20:00으로 옮긴다(수칙 1-6, 두 함수가 같은
+ * 경계를 공유해야 한다고 위 주석에 이미 명시돼 있었다).
  */
 export function getSharedCacheMaxAgeMs(): number {
   const now = new Date();
@@ -471,16 +482,16 @@ export function getSharedCacheMaxAgeMs(): number {
   const minute = kstDate.getMinutes();
   const timeNum = hour * 100 + minute;
   const dayOfWeek = kstDate.getDay();
-  const isMarketOpen = dayOfWeek >= 1 && dayOfWeek <= 5 && timeNum >= 900 && timeNum < 1530;
+  const isMarketOpen = dayOfWeek >= 1 && dayOfWeek <= 5 && timeNum >= 900 && timeNum < 2000;
 
-  // 1. 장중: 위 getDynamicRankingTtl()과 동일하게 60초 - 경계 계산이 필요 없다.
+  // 1. 장중(정규장+애프터마켓): 위 getDynamicRankingTtl()과 동일하게 60초 - 경계 계산이 필요 없다.
   if (isMarketOpen) {
     return 60 * 1000;
   }
 
-  // 2. 장마감 후(평일 저녁/주말/개장 전 새벽): 가장 최근에 지난 15:30 마감 시각을 역산한다.
+  // 2. 장마감 후(평일 저녁/주말/개장 전 새벽): 가장 최근에 지난 20:00(애프터마켓 마감) 시각을 역산한다.
   const lastCloseDate = new Date(kstDate);
-  lastCloseDate.setHours(15, 30, 0, 0);
+  lastCloseDate.setHours(20, 0, 0, 0);
   if (dayOfWeek === 0) {
     lastCloseDate.setDate(kstDate.getDate() - 2); // 일요일 ➔ 지난 금요일 마감
   } else if (dayOfWeek === 6) {
@@ -489,9 +500,34 @@ export function getSharedCacheMaxAgeMs(): number {
     // 평일 개장 전(00:00~08:59) - 가장 최근 마감은 전 영업일
     lastCloseDate.setDate(kstDate.getDate() - (dayOfWeek === 1 ? 3 : 1)); // 월요일 새벽 ➔ 지난 금요일, 그 외 ➔ 어제
   }
-  // else: 평일 15:30 이후 - 오늘 15:30 마감이 그대로 가장 최근 경계 (lastCloseDate 그대로 사용)
+  // else: 평일 20:00 이후 - 오늘 20:00 마감이 그대로 가장 최근 경계 (lastCloseDate 그대로 사용)
 
   return Math.max(60 * 1000, kstDate.getTime() - lastCloseDate.getTime());
+}
+
+/**
+ * 🚨 [버그 수정 - 사용자 지적: "그 전에는 애프터마켓이 없었어서 다 15시30분에 멈춘걸거야"로 시작된
+ * 조사 중 발견] 당일교집합(executeAsyncOverlapCalculation)과 2일/3일연속 교집합
+ * (finalizeConsecutiveOverlapResult)이 개별 종목의 최종 asOfDateLabel을 시각과 무관하게 무조건
+ * getSettledAsOfDateLabel()(정적 "(9/16 기준)" 형태)로 박아버리고 있었다 - 정작 그 안의
+ * ranksByType[].asOfDateLabel은 이미 애프터마켓까지 실시간으로 잘 나오는데(외국인/기관 랭킹 자체는
+ * 위 getDynamicRankingTtl() 수정으로 이미 살아있음), 이 최종 요약 라벨만 시간과 무관하게 항상
+ * "정산 완료"처럼 보여서 프론트(InvestorRankingTable.tsx)가 "전 주체 종가 정산 완료"로 오판하는
+ * 원인이 됐다. executeKisForeignInstitutionRankingFetch의 rankingAsOfDateLabel과 동일한 판정을
+ * 단일 함수로 뽑아 재사용한다(수칙 1-6 - 이 패턴이 이제 4곳에서 필요해져서 더 이상 각자 복사하지 않음).
+ */
+export function getLiveOrSettledAsOfLabel(): string {
+  const now = new Date();
+  const utc = now.getTime() + now.getTimezoneOffset() * 60000;
+  const kstDate = new Date(utc + 9 * 60 * 60000);
+  const hour = kstDate.getHours();
+  const minute = kstDate.getMinutes();
+  const timeNum = hour * 100 + minute;
+  const dayOfWeek = kstDate.getDay();
+  const isMarketOpen = dayOfWeek >= 1 && dayOfWeek <= 5 && timeNum >= 900 && timeNum < 2000;
+  if (!isMarketOpen) return getSettledAsOfDateLabel();
+  const timeStr = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+  return `당일 가집계 (${timeStr} 기준)`;
 }
 
 // ============================================================================
@@ -1190,7 +1226,10 @@ async function executeKisInvestorTrendFetch(
   const minute = kstDate.getMinutes();
   const timeNum = hour * 100 + minute;
   const dayOfWeek = kstDate.getDay();
-  const isMarketOpen = dayOfWeek >= 1 && dayOfWeek <= 5 && timeNum >= 900 && timeNum < 1530;
+  // 🚨 [버그 수정 - 애프터마켓 도입] getDynamicRankingTtl()과 동일한 이유로 15:30 ➔ 20:00 - 라벨을
+  // "당일 실시간"으로 보여줄지 결정하는 경계다. isWeekdayPostMarket(가집계 추정치 폴백 시도 여부)은
+  // 원래도 상한이 없어(>=1530) 애프터마켓 시간대를 이미 포함하고 있었으므로 그대로 둔다.
+  const isMarketOpen = dayOfWeek >= 1 && dayOfWeek <= 5 && timeNum >= 900 && timeNum < 2000;
   const isWeekdayPostMarket = dayOfWeek >= 1 && dayOfWeek <= 5 && timeNum >= 1530;
   const timeStr = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
 
@@ -1447,7 +1486,8 @@ export async function fetchKisProgramTrade(
         const minute = kstDate.getMinutes();
         const timeNum = hour * 100 + minute;
         const dayOfWeek = kstDate.getDay();
-        const isMarketOpen = dayOfWeek >= 1 && dayOfWeek <= 5 && timeNum >= 900 && timeNum < 1530;
+        // 🚨 [버그 수정 - 애프터마켓 도입] getDynamicRankingTtl()과 동일한 이유로 15:30 ➔ 20:00.
+        const isMarketOpen = dayOfWeek >= 1 && dayOfWeek <= 5 && timeNum >= 900 && timeNum < 2000;
 
         const latestTime = latest.bsop_hour && latest.bsop_hour.length >= 4
           ? `${latest.bsop_hour.slice(0, 2)}:${latest.bsop_hour.slice(2, 4)}`
@@ -2013,6 +2053,11 @@ export async function fetchKisForeignInstitutionRanking(
       period,
       list: sharedList,
       isMock: false,
+      // 🚨 [버그 수정 - 애프터마켓 진단 중 발견, fetchOverlapRankingData와 동일한 원인(수칙 1-6)]
+      // 이 콜드스타트 폴백 경로가 top-level asOfDateLabel을 안 채워서, 이 함수를 호출하는
+      // executeAsyncOverlapCalculation의 `foreignRes.asOfDateLabel || getSettledAsOfDateLabel()`이
+      // 항상 후자로 떨어져 당일교집합 최상위 라벨이 시간과 무관하게 "(9/16 기준)"으로 고정됐었다.
+      asOfDateLabel: sharedList[0]?.asOfDateLabel,
       updatedAt: new Date().toISOString(),
     };
     rankingCacheStore.set(cacheKey, sharedRes);
@@ -2292,7 +2337,10 @@ async function executeKisForeignInstitutionRankingFetch(
     const minute = kstDate.getMinutes();
     const timeNum = hour * 100 + minute;
     const dayOfWeek = kstDate.getDay();
-    const isMarketOpen = dayOfWeek >= 1 && dayOfWeek <= 5 && timeNum >= 900 && timeNum < 1530;
+    // 🚨 [버그 수정 - 사용자 지적: "애프터마켓까지 살아있게 고치는게 맞지않을까?"] 15:30 ➔ 20:00 -
+    // 이 경계가 false가 되는 순간 아래에서 전 종목을 마감 확정치로 굳혀버리는데(다음 영업일 08:30까지
+    // 다시 안 풂), 애프터마켓 도입 전엔 15:30이 진짜 마감이라 맞았지만 지금은 20:00까지 실거래가 있다.
+    const isMarketOpen = dayOfWeek >= 1 && dayOfWeek <= 5 && timeNum >= 900 && timeNum < 2000;
     const timeStr = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
 
     // 1주일(1w)/1개월(1m) 탭이거나 장마감 후(!isMarketOpen)에는 상단 카드와 100% 동일한 FHKST01010900 마감 확정치로 전수 보정 및 재정렬
@@ -2433,7 +2481,9 @@ async function enrichRankingWithRawInvestorData(
                 const mObj = kstObj.getMinutes();
                 const tNumObj = hObj * 100 + mObj;
                 const dWeekObj = kstObj.getDay();
-                const isMarketOpenNow = dWeekObj >= 1 && dWeekObj <= 5 && tNumObj >= 900 && tNumObj < 1530;
+                // 🚨 [버그 수정 - 애프터마켓 도입] 위 executeKisForeignInstitutionRankingFetch와 동일한
+                // 이유로 15:30 ➔ 20:00.
+                const isMarketOpenNow = dWeekObj >= 1 && dWeekObj <= 5 && tNumObj >= 900 && tNumObj < 2000;
 
                 if (!isMarketOpenNow || rawPbmn === 0) {
                   item.asOfDateLabel = getSettledAsOfDateLabel();
@@ -2668,6 +2718,10 @@ export async function fetchOverlapRankingData(
         period,
         list: sharedList,
         isMock: false,
+        // 🚨 [버그 수정 - 애프터마켓 진단 중 발견] 이 콜드스타트 폴백 경로는 최상위 asOfDateLabel을
+        // 아예 안 채우고 있었다(undefined) - 프론트가 data?.list?.[0]?.asOfDateLabel로 폴백해서
+        // 화면엔 문제가 없었지만, 이미 sharedList 각 항목에 정확한 라벨이 들어있으니 그대로 재사용한다.
+        asOfDateLabel: sharedList[0]?.asOfDateLabel,
         updatedAt: new Date().toISOString(),
       };
       overlapMemoryCache.set(masterCacheKey, { data: masterData, timestamp: Date.now() });
@@ -3087,7 +3141,11 @@ async function executeAsyncOverlapCalculation(
         foreignNetBuyAmt: ranksByType.find((r) => r.type === 'foreign')?.netBuyAmt,
         organNetBuyAmt: ranksByType.find((r) => r.type === 'organ')?.netBuyAmt,
         programNetBuyAmt: ranksByType.find((r) => r.type === 'program')?.netBuyAmt,
-        asOfDateLabel: getSettledAsOfDateLabel(),
+        // 🚨 [버그 수정 - 사용자 지적: "그 전에는 애프터마켓이 없었어서... 애프터마켓까지 살아있게
+        // 고치는게 맞지않을까?" 확인 도중 발견] 시간과 무관하게 항상 getSettledAsOfDateLabel()로
+        // 박아뒀던 게 원인 - 개별 ranksByType[].asOfDateLabel은 이미 애프터마켓까지 실시간인데, 이
+        // 요약 라벨만 항상 "정산 완료"처럼 보여서 프론트가 "전 주체 종가 정산 완료"로 오판했다.
+        asOfDateLabel: getLiveOrSettledAsOfLabel(),
         statusBadge: statusInfo.shortBadge,
         statusBadgeStyle: statusInfo.badgeStyle,
       };
@@ -3464,7 +3522,9 @@ async function finalizeConsecutiveOverlapResult(
         foreignNetBuyAmt: ranksByType.find((r) => r.type === 'foreign')?.netBuyAmt,
         organNetBuyAmt: ranksByType.find((r) => r.type === 'organ')?.netBuyAmt,
         programNetBuyAmt: ranksByType.find((r) => r.type === 'program')?.netBuyAmt,
-        asOfDateLabel: getSettledAsOfDateLabel(),
+        // 🚨 [버그 수정 - 애프터마켓 도입 후 발견] 위 executeAsyncOverlapCalculation과 동일한 이유(수칙
+        // 1-6, getLiveOrSettledAsOfLabel 공용 함수 재사용).
+        asOfDateLabel: getLiveOrSettledAsOfLabel(),
         overlapCount: consecutiveOverlapCount,
         investorBadge,
         statusBadge: statusInfo?.shortBadge,
@@ -4718,6 +4778,19 @@ export async function fetchKisPostMarketCandidates(market: MarketType = 'ALL'): 
 const QUIET_ACCUM_CACHE_TTL_MS = 5 * 60 * 1000; // 당일 캔들·거래량 기반 지표라 급등주(60초)만큼 자주 안 바뀜
 const quietAccumCacheStore = getGlobalMap<string, { data: InvestorRankingResponse; timestamp: number }>('quietAccumCacheStore');
 const recentDailyBarsCache = getGlobalMap<string, { data: Array<{ date: string; open: number; high: number; low: number; close: number; volume: number }>; timestamp: number }>('recentDailyBarsCache');
+// 🚨 [성능 수정 - 사용자 지적: "장마감 후보만은 왤케 로딩이 오래걸리는지"] 실측 46.5초 - 원인 두 가지를
+// fetchConsecutive3dOverlapRankingData(위 3772번 줄 PRIORITY_LIMIT 근방)가 이미 겪고 고쳐둔 것과
+// 동일한 패턴으로 해결한다:
+//   1. kisQueue는 완전 직렬(isProcessing 플래그 하나, 매 건 최소 200ms 간격) - 후보를 Promise.all로
+//      "동시에" 보내도 전부 같은 큐에서 한 줄로 서서 하나씩 처리된다. 후보 수만큼 그대로 시간이 늘어남.
+//   2. raw_daily_data(장마감 후 자동 수집되는 원본 아카이브)에 최근 5거래일치가 이미 다 있는데, 이걸
+//      안 쓰고 후보마다 KIS 라이브로 새로 조회했다 - fetchTrendPair(위 3807번 줄)가 이미 쓰는 "DB 우선,
+//      부족할 때만 라이브 폴백" 패턴을 그대로 재사용한다(수칙 1-6).
+// 해결: (a) 최근 5일치는 Supabase에서 한 번에 일괄 조회해 종목당 라이브 호출을 "오늘 하루치"(이미 있는
+// 경량 함수 fetchKisDailyPrice 재사용) 1건으로 줄이고, (b) 그마저도 PRIORITY_LIMIT=15개만 먼저 채워
+// 즉시 응답(isPartial:true)하고 나머지는 after()로 백그라운드에서 마저 채운다 - 프론트는 이미 isPartial
+// 이면 4초마다 자동 재조회하므로 수정 없이 그대로 체감 속도가 개선된다.
+const quietAccumBackgroundInFlight = getGlobalMap<string, boolean>('quietAccumBackgroundInFlight');
 
 /**
  * "장마감 후보만" 토글 전용 - 후보 종목의 최근 6거래일치(오늘 포함) 시가/고가/저가/종가/거래량만 가볍게
@@ -4808,50 +4881,92 @@ async function executeKisRecentDailyBarsFetch(
     .reverse(); // KIS는 최신순(내림차순)으로 내려주므로 오름차순으로 뒤집는다
 }
 
+// 종목 하나의 종가위치·거래량배율·5일누적수익률을 계산한다. raw_daily_data(Supabase, 장마감 후 자동
+// 수집)에 최근 5거래일치가 이미 다 있으면 "오늘 하루치"만 기존 경량 함수 fetchKisDailyPrice로 보완하고
+// (다른 postmarket 기능과 캐시를 공유하므로 중복 라이브 호출도 줄어든다), DB 이력이 부족한 종목(신규
+// 상장 등)만 기존 방식(전체 구간 라이브 조회, fetchKisRecentDailyBars)으로 안전하게 폴백한다(수칙 1-6 -
+// fetchTrendPair의 "DB 우선, 부족할 때만 라이브" 패턴 재사용).
+async function computeQuietAccumFactors<T extends RankingItem>(
+  item: T,
+  trailingDates: string[],
+  trailingBySymbol: Map<string, Map<string, any>>
+): Promise<(T & { volRatioPct: number; cum5dReturnPct: number }) | null> {
+  const symbolDates = trailingBySymbol.get(item.symbol);
+  const hasFullDbHistory = trailingDates.length >= 5 && !!symbolDates && trailingDates.every((d) => symbolDates.has(d));
+
+  if (hasFullDbHistory) {
+    try {
+      const price = await fetchKisDailyPrice(item.symbol);
+      const h = price?.high || item.currentPrice;
+      const l = price?.low || item.currentPrice;
+      const c = price?.close || item.currentPrice;
+      const range = h - l;
+      const closePositionPct = range > 0 ? Number((((c - l) / range) * 100).toFixed(0)) : 50;
+
+      const priorVols = trailingDates.map((d) => symbolDates!.get(d)!.volume || 0);
+      const avgVol5 = priorVols.reduce((sum, v) => sum + v, 0) / priorVols.length;
+      const volRatioPct = avgVol5 > 0 ? Number((((item.volume || 0) / avgVol5) * 100).toFixed(1)) : 100;
+
+      const fiveDaysAgoClose = symbolDates!.get(trailingDates[0])!.close_price || 0;
+      const cum5dReturnPct = fiveDaysAgoClose > 0 ? Number((((c - fiveDaysAgoClose) / fiveDaysAgoClose) * 100).toFixed(2)) : 0;
+
+      return { ...item, closePositionPct, volRatioPct, cum5dReturnPct };
+    } catch (e) {
+      console.warn(`[Quiet Accum DB-Path Enrich Skip] ${item.symbol}:`, (e as any)?.message || e);
+      return null;
+    }
+  }
+
+  // DB 이력 부족 - 폴백: 기존 방식대로 최근 6거래일치를 라이브로 통째 조회
+  try {
+    const bars = await fetchKisRecentDailyBars(item.symbol);
+    if (!bars || bars.length < 6) return null;
+    const todayBar = bars[bars.length - 1];
+    const prior5 = bars.slice(bars.length - 6, bars.length - 1);
+    const fiveDaysAgoBar = bars[bars.length - 6];
+
+    const range = todayBar.high - todayBar.low;
+    const closePositionPct = range > 0 ? Number((((todayBar.close - todayBar.low) / range) * 100).toFixed(0)) : 50;
+    const avgVol5 = prior5.reduce((sum, b) => sum + b.volume, 0) / prior5.length;
+    const volRatioPct = avgVol5 > 0 ? Number(((todayBar.volume / avgVol5) * 100).toFixed(1)) : 100;
+    const cum5dReturnPct = fiveDaysAgoBar.close > 0
+      ? Number((((todayBar.close - fiveDaysAgoBar.close) / fiveDaysAgoBar.close) * 100).toFixed(2))
+      : 0;
+
+    return { ...item, closePositionPct, volRatioPct, cum5dReturnPct };
+  } catch (e) {
+    console.warn(`[Quiet Accum Fallback Enrich Skip] ${item.symbol}:`, (e as any)?.message || e);
+    return null;
+  }
+}
+
+// 종목 배열을 청크 단위로 순회하며 위 계산을 돌린다 - kisQueue가 어차피 완전 직렬이라 청크 자체가
+// 속도를 내주진 않지만(수칙 1-1 실측 확인), 한 번에 너무 많은 Promise를 동시에 살려두지 않기 위해 유지한다.
+async function enrichQuietAccumBatch<T extends RankingItem>(
+  batch: T[],
+  trailingDates: string[],
+  trailingBySymbol: Map<string, Map<string, any>>
+): Promise<Array<T & { volRatioPct: number; cum5dReturnPct: number }>> {
+  const CHUNK_SIZE = 10;
+  const out: Array<T & { volRatioPct: number; cum5dReturnPct: number }> = [];
+  for (let i = 0; i < batch.length; i += CHUNK_SIZE) {
+    const chunk = batch.slice(i, i + CHUNK_SIZE);
+    const results = await Promise.all(chunk.map((item) => computeQuietAccumFactors(item, trailingDates, trailingBySymbol)));
+    results.forEach((r) => { if (r) out.push(r); });
+  }
+  return out;
+}
+
 /**
  * "장마감 후보만" 토글 - 위 주석에 정리한 백테스트 검증 공식 그대로: 종가위치·거래량배율·5일누적수익률을
  * 후보군 내 백분위로 환산해(셋 다 낮을수록 고득점) 30%씩, 주체수(2→0점/3→100점) 10%로 가중합한다.
  * 데이터를 못 가져온 종목은 percentile 계산을 왜곡하지 않도록 후보군 자체에서 제외한다(수칙 1-3 -
- * 실패를 가짜 중간값으로 채우지 않음).
+ * 실패를 가짜 중간값으로 채우지 않음). 순수 계산 함수 - I/O는 호출부에서 이미 끝낸 결과(enrichedRaw)만 받는다.
  */
-async function applyQuietAccumulationFilter<T extends RankingItem>(candidates: T[], topLimit: number): Promise<T[]> {
-  const CHUNK_SIZE = 10;
-  const enrichedRaw: Array<T & { volRatioPct: number; cum5dReturnPct: number }> = [];
-
-  for (let i = 0; i < candidates.length; i += CHUNK_SIZE) {
-    const chunk = candidates.slice(i, i + CHUNK_SIZE);
-    const results = await Promise.all(
-      chunk.map(async (item) => {
-        try {
-          const bars = await fetchKisRecentDailyBars(item.symbol);
-          if (!bars || bars.length < 6) return null; // 최근 5일 평균·5일전 종가 계산에 최소 6거래일 필요
-          const todayBar = bars[bars.length - 1];
-          const prior5 = bars.slice(bars.length - 6, bars.length - 1); // 오늘 제외 직전 5거래일
-          const fiveDaysAgoBar = bars[bars.length - 6];
-
-          const range = todayBar.high - todayBar.low;
-          const closePositionPct = range > 0 ? Number((((todayBar.close - todayBar.low) / range) * 100).toFixed(0)) : 50;
-
-          const avgVol5 = prior5.reduce((sum, b) => sum + b.volume, 0) / prior5.length;
-          const volRatioPct = avgVol5 > 0 ? Number(((todayBar.volume / avgVol5) * 100).toFixed(1)) : 100;
-
-          const cum5dReturnPct = fiveDaysAgoBar.close > 0
-            ? Number((((todayBar.close - fiveDaysAgoBar.close) / fiveDaysAgoBar.close) * 100).toFixed(2))
-            : 0;
-
-          return { ...item, closePositionPct, volRatioPct, cum5dReturnPct } as T & { volRatioPct: number; cum5dReturnPct: number };
-        } catch (e) {
-          console.warn(`[Quiet Accum Filter Enrich Skip] ${item.symbol}:`, (e as any)?.message || e);
-          return null;
-        }
-      })
-    );
-    results.forEach((r) => { if (r) enrichedRaw.push(r); });
-    if (i + CHUNK_SIZE < candidates.length) {
-      await new Promise((resolve) => setTimeout(resolve, 150));
-    }
-  }
-
+function scoreQuietAccumCandidates<T extends RankingItem>(
+  enrichedRaw: Array<T & { volRatioPct: number; cum5dReturnPct: number }>,
+  topLimit: number
+): T[] {
   if (enrichedRaw.length === 0) return [];
 
   // 백분위 환산(오름차순 정렬 후 순위/전체) - 셋 다 "낮을수록" 고득점이라 (100 - percentile)로 뒤집는다
@@ -4920,20 +5035,79 @@ export async function fetchKisQuietAccumulationCandidates(
     return emptyRes;
   }
 
-  // 🚨 [버그 방지] 콜드스타트 시 기준 목록이 상위 일부만 먼저 계산돼 isPartial:true로 오는 경우, 그
-  // 부분판을 캐시에 박제하지 않는다 - fetchKisSupplyPostMarketCandidates에서 이미 겪은 문제와 동일.
-  const enriched = await applyQuietAccumulationFilter(candidates, Math.min(20, topLimit));
+  // 2. 최근 5거래일치를 Supabase에서 후보군 전체에 대해 "한 번에" 일괄 조회한다(종목당 개별 조회 없음) -
+  // fetchTrendPair(위 3791번 줄)가 2일/3일연속 계산에서 이미 쓰는 것과 동일한 함수(수칙 1-6).
+  const todayStr = getKstTodayStr();
+  const { fetchRawDailyTrailingDays } = await import('./supabase');
+  const { dates: trailingDates, bySymbol: trailingBySymbol } = await fetchRawDailyTrailingDays(todayStr, 5).catch(
+    () => ({ dates: [] as string[], bySymbol: new Map<string, Map<string, any>>() })
+  );
 
-  const res: InvestorRankingResponse = {
-    type: 'overlap', direction, period: periodLabel, list: enriched, isPartial: overlapRes.isPartial, isMock: false, updatedAt: new Date().toISOString(),
+  // 3. PRIORITY_LIMIT개만 먼저 채워 즉시 응답(isPartial:true) - fetchConsecutive3dOverlapRankingData의
+  // 우선순위 패턴과 동일(위 3772번 줄). candidates는 이미 순매수금액 등 기준으로 정렬돼 있어 "가장 유력한
+  // 후보부터" 먼저 보여준다.
+  const PRIORITY_LIMIT = 15;
+  const priorityCandidates = candidates.slice(0, PRIORITY_LIMIT);
+  const restCandidates = candidates.slice(PRIORITY_LIMIT);
+
+  const priorityEnriched = await enrichQuietAccumBatch(priorityCandidates, trailingDates, trailingBySymbol);
+  const priorityRanked = scoreQuietAccumCandidates(priorityEnriched, Math.min(20, topLimit));
+
+  const basePartial = overlapRes.isPartial; // 기준 목록 자체가 이미 부분판이면 이번 응답도 당연히 부분판
+
+  if (restCandidates.length === 0 && !basePartial) {
+    // 후보가 PRIORITY_LIMIT 이하고 기준 목록도 완전판 - 한 번에 완전 계산 후 캐시
+    const res: InvestorRankingResponse = {
+      type: 'overlap', direction, period: periodLabel, list: priorityRanked, isPartial: false, isMock: false, updatedAt: new Date().toISOString(),
+    };
+    quietAccumCacheStore.set(cacheKey, { data: res, timestamp: Date.now() });
+    upsertSharedRankCache(`full:${cacheKey}`, priorityRanked).catch(() => {});
+    syncSharedRankCache(cacheKey, priorityRanked);
+    return res;
+  }
+
+  // 4. 우선순위분만으로 즉시 응답(부분판) - 캐시에 박제하지 않는다(프론트가 4초 간격으로 재조회해
+  // 완전판이 준비되는 대로 자동 반영한다).
+  const partialRes: InvestorRankingResponse = {
+    type: 'overlap', direction, period: periodLabel, list: priorityRanked, isPartial: true, isMock: false, updatedAt: new Date().toISOString(),
   };
 
-  if (!overlapRes.isPartial) {
-    quietAccumCacheStore.set(cacheKey, { data: res, timestamp: Date.now() });
-    upsertSharedRankCache(`full:${cacheKey}`, enriched).catch(() => {});
-    syncSharedRankCache(cacheKey, enriched);
+  // 5. 응답을 보낸 뒤(await 하지 않음) 나머지 후보를 이어서 채워 캐시를 완전판으로 갱신한다 - Vercel
+  // 서버리스에서도 끝까지 실행되도록 after()로 등록한다(위 3958번 줄 backgroundCompletion과 동일 이유).
+  const backgroundCompletion = async () => {
+    try {
+      const restEnriched = await enrichQuietAccumBatch(restCandidates, trailingDates, trailingBySymbol);
+      const fullRanked = scoreQuietAccumCandidates([...priorityEnriched, ...restEnriched], Math.min(20, topLimit));
+      if (fullRanked.length > 0) {
+        const fullRes: InvestorRankingResponse = {
+          type: 'overlap', direction, period: periodLabel, list: fullRanked, isPartial: false, isMock: false, updatedAt: new Date().toISOString(),
+        };
+        quietAccumCacheStore.set(cacheKey, { data: fullRes, timestamp: Date.now() });
+        upsertSharedRankCache(`full:${cacheKey}`, fullRanked).catch(() => {});
+        syncSharedRankCache(cacheKey, fullRanked);
+      }
+    } catch (e: any) {
+      console.warn('[Quiet Accum Background Completion Failed]', e?.message || e);
+    } finally {
+      quietAccumBackgroundInFlight.delete(cacheKey);
+    }
+  };
+
+  if (restCandidates.length > 0) {
+    if (quietAccumBackgroundInFlight.get(cacheKey)) {
+      console.log(`[Quiet Accum Background Skip] cacheKey=${cacheKey} - 이미 진행 중인 완전판 계산이 있어 중복 실행을 건너뜁니다.`);
+    } else {
+      quietAccumBackgroundInFlight.set(cacheKey, true);
+      try {
+        const { after } = await import('next/server');
+        after(backgroundCompletion);
+      } catch (_) {
+        backgroundCompletion();
+      }
+    }
   }
-  return res;
+
+  return partialRes;
 }
 
 const comprehensiveCacheStore = getGlobalMap<string, { data: InvestorRankingResponse; timestamp: number }>('comprehensiveCacheStore');
@@ -5228,6 +5402,11 @@ export async function fetchKis3mCandlesFullDay(
     const kstHour = kstDate.getHours();
     const kstMinute = kstDate.getMinutes();
     const kstTimeNum = kstHour * 100 + kstMinute;
+    // 🚨 [애프터마켓 도입 후에도 15:30 그대로 유지 - 실측 확인] 아래 allSlots가 09:00~15:30 정규장
+    // 30분 슬롯 14개로 고정돼 있는데, 이건 캐시 정책이 아니라 KIS 3분봉 TR(FHKST03010200) 자체의
+    // 한계다 - 실측(watch-debug로 raw 응답 직접 확인)해보니 애프터마켓 도입 후에도 이 TR은 16:00 이후
+    // 봉을 전혀 안 준다(마지막 봉이 항상 15:30). getDynamicRankingTtl() 등 다른 곳과 달리 여기는 20:00로
+    // 늘려봤자 KIS가 데이터를 안 주므로 그대로 둔다.
     const isTodayMarketOpen = kstDate.getDay() >= 1 && kstDate.getDay() <= 5 && kstTimeNum >= 900 && kstTimeNum < 1530;
 
     // 09:00 장시작 전일 데이터 및 09:00~15:30 시간대 슬롯 병렬 초고속 수집
@@ -5687,6 +5866,396 @@ export async function fetchKis3mCandlesFullDay(
     console.error(`[KIS Intraday 3m Candles Exception] ${symbol}:`, err);
     throw err;
   }
+}
+
+// ============================================================================
+// 🎯 [재설계 - 사용자 요청: "5개만 하면 볼 이유 없다", "더 빠르게 안돼?"] 원래 온디맨드 3분봉 재구성
+// (종목당 KIS 14콜) 방식은 누를 때마다 최대 76초까지 걸려서 "지금 당장 들어가야 하는" 실전 타이밍
+// 도구로는 근본적으로 안 맞았다. KIS 당일 현재가 조회(FHKST01010100) 1콜에 이미 누적거래량(acml_vol)·
+// 누적거래대금(acml_tr_pbmn)이 들어있고, VWAP는 정의상 "누적거래대금 ÷ 누적거래량"이므로 이 1콜만으로
+// 정확한 VWAP를 즉시 계산할 수 있다 - 3분봉을 다시 쌓을 필요가 없다. 종목당 비용이 14콜→1콜로 줄어서,
+// 5종목으로 좁힐 필요 없이 화면에 보이는 후보 전체(최대 60개)를 짧은 주기로 계속 감시할 수 있다.
+// 트레이드오프(사용자와 합의): 이 방식은 "감시가 시작된 시점부터의 흐름"만 서버 메모리에 쌓아서 판단한다
+// (오늘 아침에 있었던 재돌파 이력은 못 봄) - 지금 당장의 진입 타이밍이 목적이므로 오히려 더 맞는 방향.
+
+interface VwapWatchSample {
+  ts: number;
+  price: number;
+  cumVol: number;
+  vwap: number;
+}
+
+// 🚨 [버그 수정 - 사용자 지적: "떴다가 바로 사라진다"] "재돌파했었는지"(hasBeenBelow)와 "몇 번
+// 전환됐는지"(crossCount)는 표본 창 크기와 무관하게 감시가 시작된 이후 영구 보존한다 - 최근 표본 창
+// (samples)만 잘라내면서 그 증거까지 같이 유실됐던 게 "5분만 지나면 재돌파가 사라지는" 버그의 원인이었다.
+interface VwapWatchState {
+  samples: VwapWatchSample[]; // 최근 N개(추세/거래량 비교용) - approaching·volSurge 계산 전용
+  hasBeenBelow: boolean; // 감시 시작 후 한 번이라도 VWAP 아래였는지 - 영구 보존(창 밖으로 안 밀려남)
+  crossCount: number; // 감시 시작 후 below→above 전환 누적 횟수 - 영구 보존
+  wasAbove: boolean | null; // 직전 관측 상태(표본 창이 비워져도 전환 감지가 끊기지 않도록)
+}
+
+// 종목별 최근 표본 이력(감시가 시작된 시점부터 누적) - 프로세스 전역 공유(getGlobalMap, 수칙 1-6).
+const vwapWatchHistory = getGlobalMap<string, VwapWatchState>('vwapWatchHistory');
+const VWAP_WATCH_MAX_SAMPLES = 20; // 15초 주기 기준 대략 5분 치 이력
+
+// FHKST01010100(당일 현재가, executeKisDailyPriceFetch와 동일 TR) 1콜로 현재가+누적거래량+누적거래대금을
+// 받아온다. fetchKisDailyPrice의 60초 캐시를 그대로 쓰면 감시 주기(짧으면 10여 초)보다 캐시가 더 오래
+// 살아남아 매번 똑같은 값만 보게 되므로, 이 감시 전용 함수는 캐시를 거치지 않고 매번 직접 호출한다
+// (3분봉 함수와 동일하게 kisQueue도 거치지 않는다 - 콜당 비용이 가벼워 병렬 처리해도 안전함이 실측됨).
+async function fetchKisLiveVwapSample(symbol: string): Promise<{ price: number; cumVol: number; cumVal: number } | null> {
+  const appKey = process.env.KIS_APPKEY;
+  const appSecret = process.env.KIS_APPSECRET;
+  if (!appKey || !appSecret || appKey.trim() === '') return null;
+
+  const isVirtual = process.env.KIS_VIRTUAL === 'true';
+  const defaultBaseUrl = isVirtual
+    ? 'https://openapivts.koreainvestment.com:29443'
+    : 'https://openapi.koreainvestment.com:9443';
+  const baseUrl = process.env.KIS_BASE_URL || defaultBaseUrl;
+
+  try {
+    const token = await getKisAccessToken();
+    if (!token) return null;
+
+    return await fetchWithRetry(async () => {
+      const url = `${baseUrl}/uapi/domestic-stock/v1/quotations/inquire-price?FID_COND_MRKT_DIV_CODE=J&FID_INPUT_ISCD=${symbol}`;
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 8000);
+      try {
+        const res = await fetch(url, {
+          method: 'GET',
+          headers: {
+            'content-type': 'application/json; charset=utf-8',
+            authorization: `Bearer ${token}`,
+            appkey: appKey,
+            appsecret: appSecret,
+            tr_id: 'FHKST01010100',
+            custtype: 'P',
+          },
+          cache: 'no-store',
+          signal: controller.signal,
+        });
+        if (!res.ok) throw new Error(`당일 현재가 조회 HTTP ${res.status}`);
+        const json = await res.json();
+        if (json.rt_cd !== '0' || !json.output) return null;
+        const price = parseInt(json.output.stck_prpr || '0', 10);
+        const cumVol = parseInt(json.output.acml_vol || '0', 10);
+        const cumVal = parseInt(json.output.acml_tr_pbmn || '0', 10);
+        if (price <= 0 || cumVol <= 0 || cumVal <= 0) return null;
+        return { price, cumVol, cumVal };
+      } finally {
+        clearTimeout(timeoutId);
+      }
+    });
+  } catch (e: any) {
+    console.warn(`[VWAP 실시간 표본 조회 실패] ${symbol}: ${e?.message || e}`);
+    return null;
+  }
+}
+
+// 표본 하나를 새로 받아와 이력에 추가하고, 그 이력으로 재돌파/임박/2차시도를 판정한다. 3분봉 버전과
+// 판정 로직의 "의미"는 동일(간격 좁혀짐+0.5% 이내+거래량 선행 증가 → 임박, below→above 전환 후 유지 →
+// 재돌파)하지만, 매 표본이 그 시점의 완결된 실측값이라 "진행 중인 봉" 문제(KEC 깜빡임 버그) 자체가 없다.
+export async function computeVwapWatchSignal(symbol: string): Promise<VwapReclaimSignal> {
+  const fallback: VwapReclaimSignal = { symbol, signal: false, reclaimed: false, volSurge: false, approaching: false, hadPriorReclaim: false, insufficientData: true };
+  const live = await fetchKisLiveVwapSample(symbol);
+  if (!live) return fallback;
+
+  const vwap = live.cumVal / live.cumVol;
+  const todayStr = getKstTodayStr();
+  let state = vwapWatchHistory.get(symbol);
+  if (!state) {
+    // 🚨 [버그 수정 - 사용자 지적: "저걸 어떻게 고치지" (재시작/서버리스 콜드스타트에 플래그 유실)]
+    // 이 프로세스에서 이 심볼을 아직 한 번도 감시 안 한 시점(맵에 없음) - 오늘자로 이미 Supabase에
+    // 저장된 플래그가 있으면 그걸로 복구하고, 없으면(진짜 처음이거나 Supabase 미설정) 빈 상태로 시작.
+    const persisted = await fetchWatchSignalState(todayStr, symbol);
+    state = { samples: [], hasBeenBelow: persisted?.vwapHasBeenBelow ?? false, crossCount: persisted?.vwapCrossCount ?? 0, wasAbove: null };
+  }
+  const lastStoredSample = state.samples[state.samples.length - 1];
+  // 누적거래량이 실제로 늘어난 새 체결일 때만 표본으로 기록 - 체결 없이 호가만 바뀐 중복 조회 방지.
+  if (!lastStoredSample || live.cumVol > lastStoredSample.cumVol) {
+    const prevHasBeenBelow = state.hasBeenBelow;
+    const prevCrossCount = state.crossCount;
+    const isAboveNow = live.price > vwap;
+    if (state.wasAbove === false && isAboveNow) state.crossCount++;
+    if (!isAboveNow) state.hasBeenBelow = true;
+    state.wasAbove = isAboveNow;
+
+    state.samples.push({ ts: Date.now(), price: live.price, cumVol: live.cumVol, vwap });
+    if (state.samples.length > VWAP_WATCH_MAX_SAMPLES) state.samples.shift();
+    vwapWatchHistory.set(symbol, state);
+
+    // 플래그가 "실제로 바뀐" 순간에만 영구 저장한다 - 매 15초 폴링마다 쓰면 낭비이므로, 대부분의
+    // 폴링(값 변화 없음)에서는 Supabase에 아무것도 쓰지 않는다. fire-and-forget(응답 지연 없음).
+    if (state.hasBeenBelow !== prevHasBeenBelow || state.crossCount !== prevCrossCount) {
+      upsertWatchSignalState(todayStr, symbol, { vwapHasBeenBelow: state.hasBeenBelow, vwapCrossCount: state.crossCount }).catch(() => {});
+    }
+  }
+
+  if (state.samples.length < 2) return { ...fallback, insufficientData: true };
+
+  const isAbove = (s: VwapWatchSample) => s.price > s.vwap;
+  const latest = state.samples[state.samples.length - 1];
+  const reclaimed = isAbove(latest) && state.hasBeenBelow;
+  const hadPriorReclaim = state.crossCount >= 2;
+
+  // 거래량 검증은 "지금 보존 중인 최근 표본 창" 안에서 크로스 지점을 찾을 수 있을 때만 판정한다 - 그
+  // 크로스가 창 밖(오래전)이면 volSurge는 "확인 안 됨"(false)으로 두되, reclaimed는 위에서 이미 영구
+  // 보존 플래그로 따로 유지되므로 화면에서 사라지지 않고 "거래량 미확인"으로만 표시된다(기존 UX 재사용).
+  let crossIdxInWindow = -1;
+  for (let i = 1; i < state.samples.length; i++) {
+    if (isAbove(state.samples[i]) && !isAbove(state.samples[i - 1])) crossIdxInWindow = i;
+  }
+  let volSurge = false;
+  if (crossIdxInWindow !== -1) {
+    const preDeltas: number[] = [];
+    for (let i = Math.max(1, crossIdxInWindow - 4); i < crossIdxInWindow; i++) preDeltas.push(state.samples[i].cumVol - state.samples[i - 1].cumVol);
+    const postDeltas: number[] = [];
+    for (let i = crossIdxInWindow + 1; i < Math.min(state.samples.length, crossIdxInWindow + 4); i++) postDeltas.push(state.samples[i].cumVol - state.samples[i - 1].cumVol);
+    const preAvg = preDeltas.length > 0 ? preDeltas.reduce((a, b) => a + b, 0) / preDeltas.length : 0;
+    const postAvg = postDeltas.length > 0 ? postDeltas.reduce((a, b) => a + b, 0) / postDeltas.length : 0;
+    volSurge = preAvg > 0 && postAvg > preAvg;
+  }
+
+  let approaching = false;
+  if (state.samples.length >= 5) {
+    const first = state.samples[state.samples.length - 5];
+    const gapNow = latest.vwap - latest.price;
+    const gapFirst = first.vwap - first.price;
+    const stillBelow = gapNow > 0;
+    const narrowing = gapFirst > gapNow;
+    const gapPct = latest.vwap ? (gapNow / latest.vwap) * 100 : 100;
+    const isImminent = stillBelow && gapPct <= 0.5;
+
+    const deltas: number[] = [];
+    for (let i = 1; i < state.samples.length; i++) deltas.push(state.samples[i].cumVol - state.samples[i - 1].cumVol);
+    const recentAvg = deltas.slice(-2).reduce((a, b) => a + b, 0) / Math.min(2, deltas.length);
+    const priorDeltas = deltas.slice(0, Math.max(0, deltas.length - 2));
+    const priorAvg = priorDeltas.length > 0 ? priorDeltas.reduce((a, b) => a + b, 0) / priorDeltas.length : 0;
+    const volPickup = priorAvg > 0 && recentAvg > priorAvg;
+
+    approaching = stillBelow && narrowing && isImminent && volPickup;
+  }
+
+  return { symbol, signal: reclaimed && volSurge, reclaimed, volSurge, approaching, hadPriorReclaim, insufficientData: false };
+}
+
+// 화면에 보이는 후보 전부를 한 번에 갱신 - 콜당 비용이 가벼워졌으므로(14콜→1콜) 5개로 좁힐 필요 없이
+// 병렬로 한꺼번에 처리한다. 최대 60개(급등주 탭 기준 실제 표시 개수)로만 안전 상한을 둔다.
+// 🚨 [버그 수정 - 실측: 서버 재시작 직후 VWAP+피봇 두 감시를 동시에 켰더니 최대 120개 요청이 한꺼번에
+// 몰려서 일부가 "당일 현재가 조회 HTTP 500"으로 실패함] 종목당 비용이 14콜→1콜로 가벼워졌다고 해서
+// 청크 없이 전부 Promise.all 해도 되는 건 아니었다 - 두 감시를 동시에 켜는 실사용 시나리오에서 순간
+// 동시 요청 수가 검증된 범위(14~70개)를 넘어설 수 있다. 20개씩 묶어서 순차 처리한다(수칙 1-6, 공용
+// 헬퍼로 VWAP·피봇 둘 다 재사용).
+async function runInChunks<T, R>(items: T[], chunkSize: number, worker: (item: T) => Promise<R>): Promise<R[]> {
+  const results: R[] = [];
+  for (let i = 0; i < items.length; i += chunkSize) {
+    const chunk = items.slice(i, i + chunkSize);
+    const chunkResults = await Promise.all(chunk.map(worker));
+    results.push(...chunkResults);
+  }
+  return results;
+}
+
+export async function pollVwapWatchBatch(symbols: string[]): Promise<VwapReclaimSignal[]> {
+  const uniqueSymbols = Array.from(new Set(symbols)).slice(0, 60);
+  return runInChunks(uniqueSymbols, 20, (s) => computeVwapWatchSignal(s));
+}
+
+// ============================================================================
+// 🎯 [기능 추가 - 사용자 요청: "R2까지 안가고 R1까지 뚫었어도 괜찮아... 손절선에 가도 괜찮아... 다시
+// 올라올거 같은 반등"] 전일 확정 일봉 기준 고정 피봇 저항선(R1·R2)을 뚫었다가(깊이 상관없이) 다시 그
+// 선을 향해 올라오는 종목을 잡는다. VWAP과 판정 로직(뚫림→눌림→재도전, 간격 좁혀짐+거래량 선행)은
+// 동일하지만, R1/R2는 전일 일봉 기준으로 하루 종일 고정된 값이라 VWAP처럼 매 표본마다 다시 계산할
+// 필요가 없다 - 종목당 하루 1번만 계산해서 캐시해두고(fetchKisInvestorTrend 재사용, 새 KIS TR 없음,
+// 수칙 1-6), 이미 VWAP 감시 루프가 매번 받아오는 현재가(fetchKisLiveVwapSample)를 그대로 같이 써서
+// 추가 KIS 호출 없이 판정한다.
+
+interface PivotLevels {
+  r1: number;
+  r2: number;
+}
+
+interface PivotSample {
+  ts: number;
+  price: number;
+  cumVol: number;
+}
+
+// 종목별 R1/R2 값 - 전일 일봉이 바뀌지 않는 한(즉 오늘 하루 종일) 그대로 재사용(프로세스 전역, 수칙 1-6).
+const pivotLevelsCache = getGlobalMap<string, { dateStr: string; levels: PivotLevels }>('pivotLevelsCache');
+
+async function getPivotLevelsForSymbol(symbol: string): Promise<PivotLevels | null> {
+  const todayStr = getKstTodayStr();
+  const cached = pivotLevelsCache.get(symbol);
+  if (cached && cached.dateStr === todayStr) return cached.levels;
+
+  try {
+    // 🚨 [성능 개선 - 사용자 지적: "피봇 재돌파 감시 되게 오래걸리는데? 금방 뜨는것들도 있지만 오래
+    // 걸리는 애들도 있어"] 원래는 fetchKis3mCandlesFullDay의 피봇 계산 블록과 맞춰 fetchKisInvestorTrend
+    // (365일치+수급+프로그램매매까지 최대 5회 순차 KIS 호출, 위 1730번째 줄 주석에 콜드 상태 실측
+    // 15~40초라고 이미 적혀있음)를 재사용했었다 - 그래서 그날 처음 조회하는(캐시 미스) 종목만 15~40초씩
+    // 걸리고 이미 캐시된 종목은 빨리 뜨는 게 "일부는 금방, 일부는 오래" 증상의 실제 원인이었다.
+    // R1/R2 계산에 필요한 건 "직전 확정 거래일의 고가/저가/종가" 3개 숫자뿐이라, 바로 위 "장마감 후보만"
+    // 기능이 동일한 문제를 이미 fetchKisRecentDailyBars(inquire-daily-itemchartprice 단 1회 호출)로
+    // 풀어뒀던 것을 그대로 재사용한다(수칙 1-6 - 새 KIS 호출/새 TR 추가 없음).
+    const bars = await fetchKisRecentDailyBars(symbol);
+    if (!bars || bars.length === 0) return null;
+
+    const pastDailies = bars.filter((b) => b.date !== todayStr && b.high > 0 && b.low > 0 && b.close > 0);
+    if (pastDailies.length === 0) return null;
+    // fetchKisRecentDailyBars는 이미 오름차순(과거→최근)으로 정렬해서 반환하므로 마지막 원소가 직전
+    // 확정 거래일이다.
+    const targetDaily = pastDailies[pastDailies.length - 1];
+    const refHigh = targetDaily.high;
+    const refLow = targetDaily.low;
+    const refClose = targetDaily.close;
+
+    const P = roundToKrxTick((refHigh + refLow + refClose) / 3);
+    const R1 = roundToKrxTick(2 * P - refLow);
+    const R2 = roundToKrxTick(P + (refHigh - refLow));
+
+    const levels: PivotLevels = { r1: R1, r2: R2 };
+    pivotLevelsCache.set(symbol, { dateStr: todayStr, levels });
+    return levels;
+  } catch (e: any) {
+    console.warn(`[피봇 레벨 조회 실패] ${symbol}: ${e?.message || e}`);
+    return null;
+  }
+}
+
+interface PivotLevelState {
+  hasBroken: boolean; // 오늘 이 선을 한 번이라도 뚫은 적 있음(영구 보존)
+  hasBeenBelowAfterBreak: boolean; // 뚫은 "이후에" 다시 이 선 아래로 내려간 적 있음(영구 보존, 깊이 무관)
+  wasAbove: boolean | null;
+}
+
+interface PivotWatchState {
+  samples: PivotSample[];
+  r1: PivotLevelState;
+  r2: PivotLevelState;
+}
+
+const pivotWatchHistory = getGlobalMap<string, PivotWatchState>('pivotWatchHistory');
+
+// R1/R2 공통 판정 로직 - 중복 방지를 위해 기준선(target) 하나를 매개변수로 받는 함수로 분리(수칙 1-6).
+function computePivotLevelSignal(samples: PivotSample[], levelState: PivotLevelState, target: number): PivotLevelSignal {
+  if (samples.length < 2 || !levelState.hasBroken || !levelState.hasBeenBelowAfterBreak) {
+    return { reclaimed: false, approaching: false, volSurge: false };
+  }
+
+  const isAbove = (s: PivotSample) => s.price > target;
+  const latest = samples[samples.length - 1];
+  const reclaimed = isAbove(latest);
+
+  // 거래량 검증 - 최근 표본 창 안에서 크로스 지점을 찾을 수 있을 때만 판정(VWAP 버전과 동일한 이유로
+  // 창 밖의 오래된 크로스는 "미확인"으로 둔다 - 성호전자 사례에서 이미 검증된 패턴).
+  let crossIdx = -1;
+  for (let i = 1; i < samples.length; i++) {
+    if (isAbove(samples[i]) && !isAbove(samples[i - 1])) crossIdx = i;
+  }
+  let volSurge = false;
+  if (crossIdx !== -1) {
+    const preDeltas: number[] = [];
+    for (let i = Math.max(1, crossIdx - 4); i < crossIdx; i++) preDeltas.push(samples[i].cumVol - samples[i - 1].cumVol);
+    const postDeltas: number[] = [];
+    for (let i = crossIdx + 1; i < Math.min(samples.length, crossIdx + 4); i++) postDeltas.push(samples[i].cumVol - samples[i - 1].cumVol);
+    const preAvg = preDeltas.length > 0 ? preDeltas.reduce((a, b) => a + b, 0) / preDeltas.length : 0;
+    const postAvg = postDeltas.length > 0 ? postDeltas.reduce((a, b) => a + b, 0) / postDeltas.length : 0;
+    volSurge = preAvg > 0 && postAvg > preAvg;
+  }
+
+  let approaching = false;
+  if (samples.length >= 5) {
+    const first = samples[samples.length - 5];
+    const gapNow = target - latest.price;
+    const gapFirst = target - first.price;
+    const stillBelow = gapNow > 0;
+    const narrowing = gapFirst > gapNow;
+    const gapPct = target ? (gapNow / target) * 100 : 100;
+    const isImminent = stillBelow && gapPct <= 0.5;
+
+    const deltas: number[] = [];
+    for (let i = 1; i < samples.length; i++) deltas.push(samples[i].cumVol - samples[i - 1].cumVol);
+    const recentAvg = deltas.slice(-2).reduce((a, b) => a + b, 0) / Math.min(2, deltas.length);
+    const priorDeltas = deltas.slice(0, Math.max(0, deltas.length - 2));
+    const priorAvg = priorDeltas.length > 0 ? priorDeltas.reduce((a, b) => a + b, 0) / priorDeltas.length : 0;
+    const volPickup = priorAvg > 0 && recentAvg > priorAvg;
+
+    approaching = stillBelow && narrowing && isImminent && volPickup;
+  }
+
+  return { reclaimed, approaching, volSurge };
+}
+
+export async function computePivotReclaimSignal(symbol: string): Promise<PivotReclaimSignal> {
+  const emptyLevel: PivotLevelSignal = { reclaimed: false, approaching: false, volSurge: false };
+  const fallback: PivotReclaimSignal = { symbol, r1: emptyLevel, r2: emptyLevel, insufficientData: true };
+
+  const [live, levels] = await Promise.all([fetchKisLiveVwapSample(symbol), getPivotLevelsForSymbol(symbol)]);
+  if (!live || !levels) return fallback;
+
+  const todayStr = getKstTodayStr();
+  let state = pivotWatchHistory.get(symbol);
+  if (!state) {
+    // 🚨 [버그 수정 - 사용자 지적: "저걸 어떻게 고치지" (재시작/서버리스 콜드스타트에 플래그 유실)]
+    // VWAP 감시와 동일한 이유(수칙 1-6) - 이 프로세스에서 이 심볼을 처음 감시하는 시점이면 오늘자로
+    // 이미 Supabase에 저장된 R1/R2 돌파 플래그가 있는지 먼저 확인해서 복구한다.
+    const persisted = await fetchWatchSignalState(todayStr, symbol);
+    state = {
+      samples: [],
+      r1: { hasBroken: persisted?.pivotR1HasBroken ?? false, hasBeenBelowAfterBreak: persisted?.pivotR1HasBeenBelowAfterBreak ?? false, wasAbove: null },
+      r2: { hasBroken: persisted?.pivotR2HasBroken ?? false, hasBeenBelowAfterBreak: persisted?.pivotR2HasBeenBelowAfterBreak ?? false, wasAbove: null },
+    };
+  }
+
+  const lastStoredSample = state.samples[state.samples.length - 1];
+  if (!lastStoredSample || live.cumVol > lastStoredSample.cumVol) {
+    const prevR1Broken = state.r1.hasBroken;
+    const prevR1Below = state.r1.hasBeenBelowAfterBreak;
+    const prevR2Broken = state.r2.hasBroken;
+    const prevR2Below = state.r2.hasBeenBelowAfterBreak;
+    const updateLevelState = (levelState: PivotLevelState, target: number) => {
+      const isAboveNow = live.price > target;
+      if (isAboveNow) levelState.hasBroken = true;
+      if (levelState.hasBroken && !isAboveNow) levelState.hasBeenBelowAfterBreak = true;
+      levelState.wasAbove = isAboveNow;
+    };
+    updateLevelState(state.r1, levels.r1);
+    updateLevelState(state.r2, levels.r2);
+
+    state.samples.push({ ts: Date.now(), price: live.price, cumVol: live.cumVol });
+    if (state.samples.length > VWAP_WATCH_MAX_SAMPLES) state.samples.shift();
+    pivotWatchHistory.set(symbol, state);
+
+    // VWAP 감시와 동일하게, 플래그가 실제로 바뀐 순간에만 영구 저장(fire-and-forget).
+    if (
+      state.r1.hasBroken !== prevR1Broken || state.r1.hasBeenBelowAfterBreak !== prevR1Below ||
+      state.r2.hasBroken !== prevR2Broken || state.r2.hasBeenBelowAfterBreak !== prevR2Below
+    ) {
+      upsertWatchSignalState(todayStr, symbol, {
+        pivotR1HasBroken: state.r1.hasBroken,
+        pivotR1HasBeenBelowAfterBreak: state.r1.hasBeenBelowAfterBreak,
+        pivotR2HasBroken: state.r2.hasBroken,
+        pivotR2HasBeenBelowAfterBreak: state.r2.hasBeenBelowAfterBreak,
+      }).catch(() => {});
+    }
+  }
+
+  if (state.samples.length < 2) return { ...fallback, insufficientData: true };
+
+  return {
+    symbol,
+    r1: computePivotLevelSignal(state.samples, state.r1, levels.r1),
+    r2: computePivotLevelSignal(state.samples, state.r2, levels.r2),
+    insufficientData: false,
+  };
+}
+
+export async function pollPivotWatchBatch(symbols: string[]): Promise<PivotReclaimSignal[]> {
+  const uniqueSymbols = Array.from(new Set(symbols)).slice(0, 60);
+  return runInChunks(uniqueSymbols, 20, (s) => computePivotReclaimSignal(s));
 }
 
 // ============================================================================

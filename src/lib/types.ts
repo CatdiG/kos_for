@@ -135,6 +135,38 @@ export interface IntradayChartResponse {
   updatedAt: string;
 }
 
+// 당일 3분봉(VWAP 필드 포함, IntradayCandlePoint 재사용)에서 "직전 VWAP 이탈 → 재돌파 + 거래량 재증가"
+// 조합을 온디맨드로 판정한 결과 - 급등주/수급교집합 후보 목록에서 "지금 재상승 시도가 신뢰할 만한가"를
+// 사용자가 버튼으로 눌러서 확인할 때 쓴다(사용자 요청: "거래량이랑 VWAP 재돌파, 코드로 자동 체크").
+// 🚨 [기능 보강 - 사용자 지적: "이미 재돌파 하고나면 내가 또 못사잖아"] signal(reclaimed+volSurge)만
+// 있으면 이미 다 오른 뒤에야 뜨는 후행 지표라 매수 타이밍을 놓친다. approaching을 추가해 "아직 안
+// 뚫었지만 간격이 좁혀지고 거래량이 먼저 붙기 시작한" 선행 상태를 별도로 구분한다.
+export interface VwapReclaimSignal {
+  symbol: string;
+  signal: boolean; // 확정(후행): reclaimed && volSurge - 이미 돌파가 끝난 뒤라 참고용
+  reclaimed: boolean; // 직전 봉 VWAP 아래 → 돌파 봉 VWAP 위 → 최신 봉까지 유지
+  volSurge: boolean; // 돌파 봉 거래량이 돌파 직전 4개 봉 평균 거래량보다 높음
+  approaching: boolean; // 선행(액션 가능): 아직 미돌파 + 간격이 좁혀짐 + 임박(0.5% 이내) + 거래량 선행 증가(완결봉 기준)
+  hadPriorReclaim: boolean; // 오늘 이미 2번 이상 below→above 전환이 있었음 - "한 번 뚫었다가 다시 뚫으려는 재시도"
+  insufficientData: boolean; // 오늘 3분봉이 8개 미만이라 판정 불가(장 시작 직후 등)
+}
+
+// 🎯 [기능 추가 - 사용자 요청: "R2까지 안가고 R1까지 뚫었어도 괜찮아... 손절선에 가도 괜찮아... 다시
+// 올라올거 같은 반등"] 전일 확정 일봉 기준 고정 피봇 저항선(R1·R2)을 뚫었다가(깊이 상관없이) 다시 그
+// 선을 향해 올라오는 종목을 잡는다 - VWAP 재돌파와 판정 로직은 동일(간격 좁혀짐+거래량 선행)하지만
+// 기준선이 계속 움직이는 VWAP 대신 하루 종일 고정인 R1/R2라는 점이 다르다.
+export interface PivotLevelSignal {
+  reclaimed: boolean; // 뚫은 적 있고(hasBroken) + 그 뒤 한 번이라도 밑으로 갔었고(hasBeenBelowAfterBreak) + 지금 다시 위
+  approaching: boolean; // 위 조건 + 지금은 밑인데 간격 좁혀짐 + 0.5% 이내 임박 + 거래량 선행 증가
+  volSurge: boolean; // 최근 표본 창 안에서 재돌파 시점의 거래량 증가가 확인됐는지(창 밖이면 미확인)
+}
+export interface PivotReclaimSignal {
+  symbol: string;
+  r1: PivotLevelSignal;
+  r2: PivotLevelSignal; // r2가 걸려있으면 r1은 이미 걸려있는 게 자연스러움(R2가 R1보다 위)
+  insufficientData: boolean;
+}
+
 // ============================================================================
 // KOSPI/KOSDAQ 지수 일봉 차트 전용 타입
 // - 지수는 개별 종목과 달리 "외국인/기관/프로그램 순매수" 개념이 KIS API에 존재하지 않아
