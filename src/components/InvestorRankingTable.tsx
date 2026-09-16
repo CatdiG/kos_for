@@ -12,7 +12,7 @@ import {
   SurgingMode,
 } from '@/lib/types';
 import { getStockName, registerRuntimeStockName, resolveStockPriceAndChange, updateRuntimeStockPrice, resolveMarketType, getSettledAsOfDateLabel, getKrxEstimateSlotInfo } from '@/lib/mockData';
-import { fetchVwapWatchSignals, fetchPivotWatchSignals } from '@/lib/vwapReclaimClient';
+import { fetchReclaimWatchSignals, ReclaimWatchSignal } from '@/lib/vwapReclaimClient';
 import { VwapReclaimSignal, PivotReclaimSignal } from '@/lib/types';
 import RankingStockDetailChart from './RankingStockDetailChart';
 import {
@@ -164,24 +164,33 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
   // "이 종목들의 집합"이지 "이 순서"가 아니므로, 정렬해서 순서 변화만으로는 키가 안 바뀌게 한다.
   const vwapWatchSymbols = (data?.list || []).map((item) => item.symbol).filter(Boolean);
   const vwapWatchSymbolsKey = [...vwapWatchSymbols].sort().join(',');
-  const { data: vwapReclaimMap, isFetching: vwapWatchFetching } = useQuery<Map<string, VwapReclaimSignal>>({
-    queryKey: ['vwap-watch', activeTab, surgingMode, market, direction, period, overlapMode, overlapLimit, quietAccumFilter, vwapWatchSymbolsKey],
-    queryFn: () => fetchVwapWatchSignals(vwapWatchSymbols),
-    enabled: vwapWatchEnabled && vwapWatchSymbols.length > 0,
-    refetchInterval: vwapWatchEnabled ? 15 * 1000 : false,
+  // 🎯 [기능 추가] R1/R2 재돌파 감시. VWAP과 독립적으로 켜고 끌 수 있고, 둘 다 켜도 같이 볼 수 있다
+  // (사용자 확인: "각각해도 다 같이 볼수있는거지?").
+  // 🎯 [아키텍처 개선 - 사용자 질문: "다른 방법은 없어?"] VWAP watch와 Pivot watch는 항상 같은 종목
+  // 리스트·같은 15초 주기로 함께 쓰이는데, 예전엔 쿼리 2개가 서로 다른 API 라우트(별도 서버리스 함수)를
+  // 때려서 같은 종목 현재가를 KIS에 중복으로 물어봤다 - 하나의 쿼리로 합쳐서 근본 해결한다(수칙 1-6).
+  const reclaimWatchEnabled = vwapWatchEnabled || pivotWatchEnabled;
+  const { data: reclaimWatchMap, isFetching: reclaimWatchFetching } = useQuery<Map<string, ReclaimWatchSignal>>({
+    queryKey: ['reclaim-watch', activeTab, surgingMode, market, direction, period, overlapMode, overlapLimit, quietAccumFilter, vwapWatchSymbolsKey],
+    queryFn: () => fetchReclaimWatchSignals(vwapWatchSymbols),
+    enabled: reclaimWatchEnabled && vwapWatchSymbols.length > 0,
+    refetchInterval: reclaimWatchEnabled ? 15 * 1000 : false,
     staleTime: 0,
   });
-
-  // 🎯 [기능 추가] VWAP 감시와 동일한 방식 - R1/R2 재돌파 감시. 별개 토글(pivotWatchEnabled)이라
-  // VWAP과 독립적으로 켜고 끌 수 있고, 둘 다 켜도 같이 볼 수 있다(사용자 확인: "각각해도 다 같이
-  // 볼수있는거지?").
-  const { data: pivotReclaimMap, isFetching: pivotWatchFetching } = useQuery<Map<string, PivotReclaimSignal>>({
-    queryKey: ['pivot-watch', activeTab, surgingMode, market, direction, period, overlapMode, overlapLimit, quietAccumFilter, vwapWatchSymbolsKey],
-    queryFn: () => fetchPivotWatchSignals(vwapWatchSymbols),
-    enabled: pivotWatchEnabled && vwapWatchSymbols.length > 0,
-    refetchInterval: pivotWatchEnabled ? 15 * 1000 : false,
-    staleTime: 0,
-  });
+  const vwapReclaimMap = useMemo(() => {
+    if (!reclaimWatchMap) return undefined;
+    const m = new Map<string, VwapReclaimSignal>();
+    reclaimWatchMap.forEach((v, k) => m.set(k, v.vwap));
+    return m;
+  }, [reclaimWatchMap]);
+  const pivotReclaimMap = useMemo(() => {
+    if (!reclaimWatchMap) return undefined;
+    const m = new Map<string, PivotReclaimSignal>();
+    reclaimWatchMap.forEach((v, k) => m.set(k, v.pivot));
+    return m;
+  }, [reclaimWatchMap]);
+  const vwapWatchFetching = reclaimWatchFetching;
+  const pivotWatchFetching = reclaimWatchFetching;
 
   // 2일연속/3일연속 교집합에서 밀려난 "이탈 종목" 조회 - 두 등급을 합쳐서 종목마다 어느 쪽에서 밀려났는지 표시
   type DropoutItem = {

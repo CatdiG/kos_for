@@ -19,7 +19,7 @@
 //   5. 수급교집합 카드의 AI Pick 별 마크(aiPickRank, 데스크톱 1597번 줄) - 신규 추가(모바일 카드 폭에
 //      맞춰 이모지로 단순화).
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
   InvestorRankingResponse,
@@ -33,7 +33,7 @@ import {
 import { Rocket, Trophy, Globe2, Landmark, Cpu, Flame, ShieldCheck, ArrowUpDown, TrendingDown, RotateCcw, TrendingUp, Coins, Filter, ChevronDown, ChevronUp, Target, Zap, RefreshCw } from 'lucide-react';
 import MobileStockDetailPanel from './MobileStockDetailPanel';
 import MobileLoadingSpinner from './MobileLoadingSpinner';
-import { fetchVwapWatchSignals, fetchPivotWatchSignals } from '@/lib/vwapReclaimClient';
+import { fetchReclaimWatchSignals, ReclaimWatchSignal } from '@/lib/vwapReclaimClient';
 import { VwapReclaimSignal, PivotReclaimSignal } from '@/lib/types';
 
 // 🚨 [기능 추가 - 사용자 요청: "모바일에는 장마감 후보군 업데이트한거 안뜨던데"] 데스크톱 InvestorRankingTable.tsx
@@ -379,21 +379,31 @@ export default function MobileRankingList() {
   // 정렬 안 된 join(',')을 그대로 queryKey에 쓰면 순서만 바뀌어도 새 쿼리로 오인해 무한 재요청된다.
   const vwapWatchSymbols = (data?.list || []).map((item) => item.symbol).filter(Boolean);
   const vwapWatchSymbolsKey = [...vwapWatchSymbols].sort().join(',');
-  const { data: vwapReclaimMap, isFetching: vwapWatchFetching } = useQuery<Map<string, VwapReclaimSignal>>({
-    queryKey: ['m-vwap-watch', activeTab, surgingMode, market, direction, period, overlapMode, quietAccumFilter, vwapWatchSymbolsKey],
-    queryFn: () => fetchVwapWatchSignals(vwapWatchSymbols),
-    enabled: vwapWatchEnabled && vwapWatchSymbols.length > 0,
-    refetchInterval: vwapWatchEnabled ? 15 * 1000 : false,
+  // 🎯 [아키텍처 개선 - 사용자 질문: "다른 방법은 없어?"] 데스크톱과 동일 - VWAP watch와 Pivot watch를
+  // 하나의 쿼리로 합쳤다. 예전엔 서로 다른 API 라우트(별도 서버리스 함수)를 때려서 같은 종목 현재가를
+  // KIS에 중복으로 물어봤는데, 하나로 합치면 그 중복이 구조적으로 사라진다(수칙 1-6).
+  const reclaimWatchEnabled = vwapWatchEnabled || pivotWatchEnabled;
+  const { data: reclaimWatchMap, isFetching: reclaimWatchFetching } = useQuery<Map<string, ReclaimWatchSignal>>({
+    queryKey: ['m-reclaim-watch', activeTab, surgingMode, market, direction, period, overlapMode, quietAccumFilter, vwapWatchSymbolsKey],
+    queryFn: () => fetchReclaimWatchSignals(vwapWatchSymbols),
+    enabled: reclaimWatchEnabled && vwapWatchSymbols.length > 0,
+    refetchInterval: reclaimWatchEnabled ? 15 * 1000 : false,
     staleTime: 0,
   });
-
-  const { data: pivotReclaimMap, isFetching: pivotWatchFetching } = useQuery<Map<string, PivotReclaimSignal>>({
-    queryKey: ['m-pivot-watch', activeTab, surgingMode, market, direction, period, overlapMode, quietAccumFilter, vwapWatchSymbolsKey],
-    queryFn: () => fetchPivotWatchSignals(vwapWatchSymbols),
-    enabled: pivotWatchEnabled && vwapWatchSymbols.length > 0,
-    refetchInterval: pivotWatchEnabled ? 15 * 1000 : false,
-    staleTime: 0,
-  });
+  const vwapReclaimMap = useMemo(() => {
+    if (!reclaimWatchMap) return undefined;
+    const m = new Map<string, VwapReclaimSignal>();
+    reclaimWatchMap.forEach((v, k) => m.set(k, v.vwap));
+    return m;
+  }, [reclaimWatchMap]);
+  const pivotReclaimMap = useMemo(() => {
+    if (!reclaimWatchMap) return undefined;
+    const m = new Map<string, PivotReclaimSignal>();
+    reclaimWatchMap.forEach((v, k) => m.set(k, v.pivot));
+    return m;
+  }, [reclaimWatchMap]);
+  const vwapWatchFetching = reclaimWatchFetching;
+  const pivotWatchFetching = reclaimWatchFetching;
 
   const { data: dropoutData, isLoading: isDropoutLoading, isError: isDropoutError } = useQuery<{ list: DropoutItem[] }>({
     queryKey: ['m-dropouts', direction, market, dropoutScope],

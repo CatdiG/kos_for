@@ -5907,44 +5907,19 @@ interface VwapWatchState {
 const vwapWatchHistory = getGlobalMap<string, VwapWatchState>('vwapWatchHistory');
 const VWAP_WATCH_MAX_SAMPLES = 20; // 15초 주기 기준 대략 5분 치 이력
 
-// 🚨 [성능 개선 - 사용자 요청: "VWAP·피봇 60종목 조회 자체 속도 더 줄일 수 있나"] VWAP 감시와 피봇
-// 감시를 동시에 켜면, 프론트가 같은 15초 tick에 두 라우트(/api/stock/vwap-watch, /api/stock/pivot-watch)를
-// 거의 동시에 호출하고, 둘 다 같은 종목 리스트에 대해 이 함수를 "각자" 호출한다 - 즉 같은 종목의 같은
-// 순간 현재가를 KIS에 두 번 물어보는 중복 호출이 항상 발생하고 있었다. 감시 주기(15초)보다 훨씬 짧은
-// 5초 캐시 + in-flight 공유(investorTrendInFlightMap과 동일 패턴, 수칙 1-6)로 dedupe하면, 두 감시를
-// 동시에 켰을 때 실제 KIS 호출량이 절반으로 줄어든다 - "실시간성이 훼손된다"는 우려는 5초가 15초 폴링
-// 주기보다 훨씬 짧아 사실상 무의미하다(수칙 1-3 - 값을 조작하는 게 아니라 같은 순간의 동일한 실측값을
-// 재사용하는 것뿐).
-const liveVwapSampleCache = getGlobalMap<string, { data: { price: number; cumVol: number; cumVal: number } | null; timestamp: number }>('liveVwapSampleCache');
-const liveVwapSampleInFlight = new Map<string, Promise<{ price: number; cumVol: number; cumVal: number } | null>>();
-const LIVE_VWAP_SAMPLE_CACHE_TTL_MS = 5000;
-
+// 🚨 [아키텍처 개선 - 사용자 질문: "다른 방법은 없어?"] VWAP 감시와 피봇 감시가 각자 이 함수를
+// 독립적으로 호출해서, 두 감시를 동시에 켜면 같은 종목의 같은 순간 현재가를 KIS에 두 번 물어보는
+// 중복이 있었다. 처음엔 5초 dedupe 캐시로 완화를 시도했으나, VWAP watch와 Pivot watch가 서로 다른
+// 서버리스 함수(완전히 분리된 메모리)로 배포되는 프로덕션 환경에서는 캐시가 전혀 공유되지 않아 실측상
+// 효과가 없었다(로컬 단일 프로세스에서만 통했음). 그래서 이 dedupe 레이어는 제거하고, 대신
+// computeReclaimWatchSignal(아래)이 이 함수를 "한 번만" 호출해서 VWAP·피봇 계산에 함께 넘기는
+// 구조로 근본 해결했다 - 같은 함수 실행 안에서 값을 공유하므로 서버리스 인스턴스 경계 문제 자체가
+// 없다. FHKST01010100(당일 현재가, executeKisDailyPriceFetch와 동일 TR) 1콜로 현재가+누적거래량+
+// 누적거래대금을 받아온다. fetchKisDailyPrice의 60초 캐시를 그대로 쓰면 감시 주기(짧으면 10여 초)보다
+// 캐시가 더 오래 살아남아 매번 똑같은 값만 보게 되므로, 이 감시 전용 함수는 캐시를 거치지 않고 매번
+// 직접 호출한다(3분봉 함수와 동일하게 kisQueue도 거치지 않는다 - 콜당 비용이 가벼워 병렬 처리해도
+// 안전함이 실측됨).
 async function fetchKisLiveVwapSample(symbol: string): Promise<{ price: number; cumVol: number; cumVal: number } | null> {
-  const cached = liveVwapSampleCache.get(symbol);
-  if (cached && Date.now() - cached.timestamp < LIVE_VWAP_SAMPLE_CACHE_TTL_MS) {
-    return cached.data;
-  }
-  const inFlight = liveVwapSampleInFlight.get(symbol);
-  if (inFlight) return inFlight;
-
-  const promise = executeKisLiveVwapSampleFetch(symbol)
-    .then((result) => {
-      liveVwapSampleCache.set(symbol, { data: result, timestamp: Date.now() });
-      return result;
-    })
-    .finally(() => {
-      liveVwapSampleInFlight.delete(symbol);
-    });
-  liveVwapSampleInFlight.set(symbol, promise);
-  return promise;
-}
-
-// FHKST01010100(당일 현재가, executeKisDailyPriceFetch와 동일 TR) 1콜로 현재가+누적거래량+누적거래대금을
-// 받아온다. fetchKisDailyPrice의 60초 캐시를 그대로 쓰면 감시 주기(짧으면 10여 초)보다 캐시가 더 오래
-// 살아남아 매번 똑같은 값만 보게 되므로, 이 감시 전용 함수는 (위 5초 dedupe 캐시 외에는) 캐시를 거치지
-// 않고 매번 직접 호출한다(3분봉 함수와 동일하게 kisQueue도 거치지 않는다 - 콜당 비용이 가벼워 병렬
-// 처리해도 안전함이 실측됨).
-async function executeKisLiveVwapSampleFetch(symbol: string): Promise<{ price: number; cumVol: number; cumVal: number } | null> {
   const appKey = process.env.KIS_APPKEY;
   const appSecret = process.env.KIS_APPSECRET;
   if (!appKey || !appSecret || appKey.trim() === '') return null;
@@ -5998,9 +5973,16 @@ async function executeKisLiveVwapSampleFetch(symbol: string): Promise<{ price: n
 // 표본 하나를 새로 받아와 이력에 추가하고, 그 이력으로 재돌파/임박/2차시도를 판정한다. 3분봉 버전과
 // 판정 로직의 "의미"는 동일(간격 좁혀짐+0.5% 이내+거래량 선행 증가 → 임박, below→above 전환 후 유지 →
 // 재돌파)하지만, 매 표본이 그 시점의 완결된 실측값이라 "진행 중인 봉" 문제(KEC 깜빡임 버그) 자체가 없다.
-export async function computeVwapWatchSignal(symbol: string): Promise<VwapReclaimSignal> {
+//
+// 🚨 [아키텍처 개선 - 사용자 질문: "다른 방법은 없어?"에 대한 답] live 샘플을 파라미터로 받는 내부
+// 함수로 분리했다 - VWAP 감시와 피봇 감시가 원래 각자 fetchKisLiveVwapSample을 "따로" 호출해서, 두
+// 감시를 동시에 켜면 같은 종목의 같은 순간 현재가를 KIS에 두 번 물어보는 근본적 중복이 있었다. 5초
+// dedupe 캐시로 완화를 시도했지만, 실측(프로덕션) 결과 두 감시가 서로 다른 서버리스 함수(완전히 분리된
+// 메모리)라 캐시가 전혀 공유되지 않아 효과가 없었다 - 로컬(단일 프로세스)에서만 통했던 셈이다. 진짜
+// 해법은 "같은 함수 안에서 한 번만 조회해서 같이 쓰는 것" - 아래 computeReclaimWatchSignal이 live를
+// 한 번만 fetch해서 이 함수와 computePivotSignalFromLive에 함께 넘긴다.
+async function computeVwapSignalFromLive(symbol: string, live: { price: number; cumVol: number; cumVal: number } | null): Promise<VwapReclaimSignal> {
   const fallback: VwapReclaimSignal = { symbol, signal: false, reclaimed: false, volSurge: false, approaching: false, hadPriorReclaim: false, insufficientData: true };
-  const live = await fetchKisLiveVwapSample(symbol);
   if (!live) return fallback;
 
   const vwap = live.cumVal / live.cumVol;
@@ -6086,16 +6068,13 @@ export async function computeVwapWatchSignal(symbol: string): Promise<VwapReclai
 // 병렬로 한꺼번에 처리한다. 최대 60개(급등주 탭 기준 실제 표시 개수)로만 안전 상한을 둔다.
 // 🚨 [버그 수정 - 실측: 서버 재시작 직후 VWAP+피봇 두 감시를 동시에 켰더니 최대 120개 요청이 한꺼번에
 // 몰려서 일부가 "당일 현재가 조회 HTTP 500"으로 실패함] 종목당 비용이 14콜→1콜로 가벼워졌다고 해서
-// 청크 없이 전부 Promise.all 해도 되는 건 아니었다 - 두 감시를 동시에 켜는 실사용 시나리오에서 순간
-// 동시 요청 수가 검증된 범위(14~70개)를 넘어설 수 있다. 20개씩 묶어서 순차 처리한다(수칙 1-6, 공용
-// 헬퍼로 VWAP·피봇 둘 다 재사용).
-// 🚨 [성능 개선 - 사용자 요청: "VWAP·피봇 조회 자체 속도 더 줄일 수 있나"] fetchKisLiveVwapSample에
-// 5초 dedupe 캐시를 추가해(위 참고) VWAP+피봇 동시 실행 시 "현재가" 중복 호출을 없앴다 - 실측(60종목,
-// 완전 콜드): dedupe 전엔 120콜이었을 게 정확히 60콜로 확인됨. 그만큼 순간 동시 요청 여유가 생겨서
-// 청크 크기를 20→30으로 올린다(60/20=3라운드 → 60/30=2라운드, 순차 대기 시간 최대 33% 감소). 30으로
-// 늘려도 최악의 경우(VWAP 현재가 30 + 피봇 일봉 캐시미스 30, 현재가는 dedupe로 중복 없음)는 여전히
-// 검증된 안전 범위(14~70개) 안이다 - 실제로 서버 재시작 직후 VWAP+피봇 동시 실행으로 재현 테스트해
-// 500 에러 없음을 확인했다(수칙 2-8).
+// 청크 없이 전부 Promise.all 해도 되는 건 아니었다 - 검증된 안전 범위(14~70개)를 넘어설 수 있다.
+// 🚨 [아키텍처 개선 - 사용자 질문: "다른 방법은 없어?"] VWAP 감시와 피봇 감시를 아예 하나의 API
+// (computeReclaimWatchSignal)로 합쳐서, "두 감시를 동시에 켜면 서로 다른 함수가 동시에 KIS를
+// 두들겨서 120개가 몰린다"는 시나리오 자체가 구조적으로 사라졌다 - 이제 요청은 항상 하나뿐이고, 종목당
+// 최대 2콜(현재가+피봇 일봉 캐시미스시)이 30개씩 청크 처리되므로 한 라운드 최대 동시 요청은 60개로,
+// 검증된 안전 범위 안이다(실측: 서버 재시작 직후 재현 테스트로 500 에러 없음 확인, 수칙 2-8). 30개씩
+// 묶어서 순차 처리한다.
 async function runInChunks<T, R>(items: T[], chunkSize: number, worker: (item: T) => Promise<R>): Promise<R[]> {
   const results: R[] = [];
   for (let i = 0; i < items.length; i += chunkSize) {
@@ -6104,11 +6083,6 @@ async function runInChunks<T, R>(items: T[], chunkSize: number, worker: (item: T
     results.push(...chunkResults);
   }
   return results;
-}
-
-export async function pollVwapWatchBatch(symbols: string[]): Promise<VwapReclaimSignal[]> {
-  const uniqueSymbols = Array.from(new Set(symbols)).slice(0, 60);
-  return runInChunks(uniqueSymbols, 30, (s) => computeVwapWatchSignal(s));
 }
 
 // ============================================================================
@@ -6256,11 +6230,16 @@ function computePivotLevelSignal(samples: PivotSample[], levelState: PivotLevelS
   return { reclaimed, approaching, volSurge };
 }
 
-export async function computePivotReclaimSignal(symbol: string): Promise<PivotReclaimSignal> {
+// 🚨 [아키텍처 개선 - 사용자 질문: "다른 방법은 없어?"] live/levels를 파라미터로 받는 내부 함수로
+// 분리했다 - computeVwapSignalFromLive와 동일한 이유(위 5906번 줄 주석 참고). 이제 live는
+// computeReclaimWatchSignal(아래)이 한 번만 조회해서 VWAP·피봇 양쪽에 함께 넘긴다.
+async function computePivotSignalFromLive(
+  symbol: string,
+  live: { price: number; cumVol: number; cumVal: number } | null,
+  levels: PivotLevels | null
+): Promise<PivotReclaimSignal> {
   const emptyLevel: PivotLevelSignal = { reclaimed: false, approaching: false, volSurge: false };
   const fallback: PivotReclaimSignal = { symbol, r1: emptyLevel, r2: emptyLevel, insufficientData: true };
-
-  const [live, levels] = await Promise.all([fetchKisLiveVwapSample(symbol), getPivotLevelsForSymbol(symbol)]);
   if (!live || !levels) return fallback;
 
   const todayStr = getKstTodayStr();
@@ -6320,9 +6299,30 @@ export async function computePivotReclaimSignal(symbol: string): Promise<PivotRe
   };
 }
 
-export async function pollPivotWatchBatch(symbols: string[]): Promise<PivotReclaimSignal[]> {
+export interface ReclaimWatchSignal {
+  symbol: string;
+  vwap: VwapReclaimSignal;
+  pivot: PivotReclaimSignal;
+}
+
+// 🎯 [아키텍처 개선 - 사용자 질문: "다른 방법은 없어?"] VWAP 감시와 피봇 감시를 하나의 조회로 합친다 -
+// 두 기능은 어차피 항상 같은 종목 리스트·같은 15초 주기로 함께 쓰이는데, 지금까지는 서로 다른 API
+// 라우트(별개 서버리스 함수)가 각자 fetchKisLiveVwapSample을 호출해 같은 종목의 현재가를 중복으로
+// 물어보고 있었다. 5초 dedupe 캐시로 고쳐보려 했지만 프로덕션에서는 두 함수가 메모리를 공유하지 않아
+// 무용지물이었다(위 5906번 줄 주석) - 근본 해결은 "애초에 하나의 함수 실행 안에서 한 번만 조회해서
+// 같이 쓰는 것"이다. live/levels 조회를 한 번만 하고 VWAP·피봇 계산 둘 다에 넘긴다.
+export async function computeReclaimWatchSignal(symbol: string): Promise<ReclaimWatchSignal> {
+  const [live, levels] = await Promise.all([fetchKisLiveVwapSample(symbol), getPivotLevelsForSymbol(symbol)]);
+  const [vwap, pivot] = await Promise.all([
+    computeVwapSignalFromLive(symbol, live),
+    computePivotSignalFromLive(symbol, live, levels),
+  ]);
+  return { symbol, vwap, pivot };
+}
+
+export async function pollReclaimWatchBatch(symbols: string[]): Promise<ReclaimWatchSignal[]> {
   const uniqueSymbols = Array.from(new Set(symbols)).slice(0, 60);
-  return runInChunks(uniqueSymbols, 30, (s) => computePivotReclaimSignal(s));
+  return runInChunks(uniqueSymbols, 30, (s) => computeReclaimWatchSignal(s));
 }
 
 // ============================================================================
