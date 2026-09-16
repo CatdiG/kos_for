@@ -2039,11 +2039,16 @@ export async function fetchKisForeignInstitutionRanking(
   // 개 떠서 서로 자주 갱신해주는 프로덕션 고트래픽 환경에서나 겨우 맞아떨어지고, 사용자 로컬 개발 서버처럼
   // 트래픽이 뜸한 환경에서는 "누군가 60초 이내에 이미 계산해뒀을" 확률이 거의 0이라 매번 라이브 재계산을
   // 그대로 겪는다(실측: 사용자 로컬에서 foreign 25.8초, organ 24.9초, 이를 내부적으로 또 호출하는 급등주
-  // 교집합(overlap)은 106초). 외국인/기관 누적 순매수는 몇 분 단위로는 급변하지 않는 지표라, 이미 이
-  // 파일에 존재하는 동일 취지의 선례(OVERLAP_CACHE_TTL_MS=5분, 위 2419번 줄)를 그대로 재사용해
-  // 5분으로 맞춘다 - 24시간(하루 종일 고정 위험)과 60초(사실상 무의미) 사이, 실사용 트래픽 패턴에서도
-  // 실제로 콜드스타트 가속 효과를 내면서 데이터가 눈에 띄게 낡지는 않는 균형점이다.
-  const sharedMap = await fetchSharedRankCacheBatch([`full:${cacheKey}`], 5 * 60 * 1000).catch(() => new Map<string, any[]>());
+  // 교집합(overlap)은 106초). 그래서 한때 5분 고정값으로 절충했었다.
+  // 🚨 [3차 재발 - 버그 수정 - 사용자 지적: "모바일 급등주 교집합 왜 또 로딩 긴데. 지금은 장도 다
+  // 끝낫구만"] 실측(프로덕션, 장마감 후 21시): "기관" 탭이 16~20초 걸림 - 5분 고정값은 "장중 트래픽이
+  // 뜸한 로컬 개발"만 감안했지, "장마감 후 트래픽 자체가 뜸해지는 시간대"는 감안 못 했다. 장마감 후엔
+  // 데이터가 어차피 안 바뀌므로 5분이 아니라 훨씬 길게 캐시해도 무방한데, 5분마다 콜드스타트를 반복
+  // 겪은 것. fetchOverlapRankingData/fetchConsecutiveNDaysOverlapRankingData가 이미 쓰고 있는
+  // getSharedCacheMaxAgeMs()(장중 60초 / 장마감 후 다음 마감 경계까지)로 통일한다(수칙 1-6) - 이
+  // 함수가 나오기 전에 5분으로 절충했던 임시방편을 이제 제거한다. 장중엔 60초로 더 신선해지고, 장마감
+  // 후엔 콜드스타트가 사라진다.
+  const sharedMap = await fetchSharedRankCacheBatch([`full:${cacheKey}`], getSharedCacheMaxAgeMs()).catch(() => new Map<string, any[]>());
   const sharedList = sharedMap.get(`full:${cacheKey}`);
   if (sharedList && sharedList.length > 0) {
     console.log(`[Shared Rank Cache Hit] full:${cacheKey} - 다른 인스턴스가 이미 계산해둔 ${type} 랭킹을 Supabase에서 재사용`);
@@ -4213,10 +4218,13 @@ export async function fetchKisSurgingStocks(
   // "다른 인스턴스/환경의 공유 캐시를 얼마나 오래 믿을지"(Supabase 폴백 유효기간)는 다른 질문인데 같은
   // 값으로 묶었다. 60초는 트래픽이 뜸한 환경(사용자 로컬 개발 서버 등)에서는 "누군가 60초 이내에 이미
   // 계산해뒀을" 확률이 거의 0이라 매번 라이브 재계산을 그대로 겪는다(실측: 급등주 교집합(overlap, 내부적
-  // 으로 이 함수를 3번 호출)이 사용자 로컬에서 106초). 등락률/거래량/거래대금 상위는 몇 분 단위로는 크게
-  // 안 바뀌는 지표라, 이미 이 파일에 있는 동일 취지의 선례(OVERLAP_CACHE_TTL_MS=5분, 위 2419번 줄)를
-  // 그대로 재사용해 5분으로 맞춘다.
-  const sharedMap = await fetchSharedRankCacheBatch([`full:${cacheKey}`], 5 * 60 * 1000).catch(() => new Map<string, any[]>());
+  // 으로 이 함수를 3번 호출)이 사용자 로컬에서 106초). 그래서 한때 5분 고정값으로 절충했었다.
+  // 🚨 [3차 재발 - 버그 수정 - 사용자 지적: "모바일 급등주 교집합 왜 또 로딩 긴데. 지금은 장도 다
+  // 끝낫구만"] 5분 고정값은 장중 트래픽 희소 환경만 감안했지, 장마감 후(트래픽 자체가 뜸해짐) 5분마다
+  // 콜드스타트가 반복되는 건 못 막았다. 장마감 후엔 등락률/거래량/거래대금 자체가 더 이상 안 바뀌니
+  // 5분보다 훨씬 길게 캐시해도 무방하다 - fetchKisForeignInstitutionRanking과 동일하게
+  // getSharedCacheMaxAgeMs()(장중 60초/장마감 후 다음 마감 경계까지)로 통일한다(수칙 1-6).
+  const sharedMap = await fetchSharedRankCacheBatch([`full:${cacheKey}`], getSharedCacheMaxAgeMs()).catch(() => new Map<string, any[]>());
   const sharedList = sharedMap.get(`full:${cacheKey}`);
   if (sharedList && sharedList.length > 0) {
     console.log(`[Shared Rank Cache Hit] full:${cacheKey} - 다른 인스턴스가 이미 계산해둔 급등주(${mode}) 랭킹을 Supabase에서 재사용`);
