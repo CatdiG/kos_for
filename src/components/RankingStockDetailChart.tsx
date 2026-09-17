@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   ResponsiveContainer,
   ComposedChart,
@@ -15,8 +15,8 @@ import {
   ReferenceLine,
 } from 'recharts';
 import { InvestorTrendResponse, TrendPeriod } from '@/lib/types';
-import { findSplitSafeStartIndex, roundToKrxTick, computeRecentVolumeRatio } from '@/lib/mockData';
-import { Calendar, Activity, RefreshCw, AlertCircle, X } from 'lucide-react';
+import { findSplitSafeStartIndex, roundToKrxTick, computeRecentVolumeRatio, getStockName } from '@/lib/mockData';
+import { Calendar, Activity, RefreshCw, AlertCircle, X, Radio } from 'lucide-react';
 import { useTheme } from '@/providers/ThemeProvider';
 import { PRICE_CHART_CONFIG, CandlestickBar, CustomCandleTooltip, CustomSupplyTooltip, CustomDailyVolumeTooltip, getTrendBadgeInfo } from '@/components/chart/CandlestickPrimitives';
 
@@ -37,6 +37,16 @@ async function fetchTrend(symbol: string, period: TrendPeriod): Promise<Investor
   return res.json();
 }
 
+// 한국 거래소 장중 여부 판별 (평일 09:00 ~ 15:30)
+function computeIsMarketOpen(): boolean {
+  const now = new Date();
+  const utc = now.getTime() + now.getTimezoneOffset() * 60000;
+  const kst = new Date(utc + 9 * 60 * 60000);
+  const day = kst.getDay();
+  const timeNum = kst.getHours() * 100 + kst.getMinutes();
+  return day >= 1 && day <= 5 && timeNum >= 900 && timeNum < 1530;
+}
+
 // 일별 거래량 서브플롯 전용 커스텀 툴팁 - 기존 기본 Recharts Tooltip(formatter만 지정)이 스타일 없는
 // 밋밋한 흰 박스로 나오던 걸, 위 CustomSupplyTooltip과 동일한 카드 스타일(둥근 모서리/블러/그림자)로 맞췄다.
 export default function RankingStockDetailChart({
@@ -51,6 +61,56 @@ export default function RankingStockDetailChart({
 
   // Protect against undefined symbol state transitions
   const safeSymbol = symbol || '005930';
+
+  // 🎯 [관심종목이 자주 바뀌는 문제 해결] 오라클 웹소켓 브릿지가 구독할 종목을 Supabase(ws_watchlist)로
+  // 관리 - 여기서 켜고 끄면 브릿지가 30초마다 폴링해서 자동 반영한다(SSH로 서버 파일 직접 수정 불필요).
+  const queryClient = useQueryClient();
+  const { data: wsWatchlistData } = useQuery<{ symbols: Array<{ symbol: string }> }>({
+    queryKey: ['ws-watchlist'],
+    queryFn: async () => {
+      const res = await fetch('/api/ws-watchlist');
+      if (!res.ok) throw new Error('관심종목 목록 조회 실패');
+      return res.json();
+    },
+    staleTime: 30 * 1000,
+    refetchInterval: 30 * 1000,
+  });
+  const isInWsWatchlist = (wsWatchlistData?.symbols || []).some((s) => s.symbol === safeSymbol);
+  const [wsWatchlistToggling, setWsWatchlistToggling] = useState(false);
+  // 🚨 [버그 수정 - 사용자 지적: "눌렀는데 아무 반응이 없다"] 이전엔 fetch 응답 상태를 확인 안 하고
+  // 무조건 성공한 것처럼 처리해서, 서버가 500을 반환해도(테이블 미생성 등) 버튼이 조용히 원상태로
+  // 돌아가 "깜빡하고 끝"으로 보였다. 실패 사유를 화면에 명시적으로 띄운다.
+  const [wsWatchlistError, setWsWatchlistError] = useState<string | null>(null);
+
+  const toggleWsWatchlist = async () => {
+    setWsWatchlistToggling(true);
+    setWsWatchlistError(null);
+    try {
+      const res = isInWsWatchlist
+        ? await fetch(`/api/ws-watchlist?symbol=${safeSymbol}`, { method: 'DELETE' })
+        : await fetch('/api/ws-watchlist', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ symbol: safeSymbol, name: getStockName(safeSymbol) }),
+          });
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        setWsWatchlistError(body?.error || `요청 실패 (HTTP ${res.status})`);
+        return;
+      }
+      await queryClient.invalidateQueries({ queryKey: ['ws-watchlist'] });
+      // 🚨 [버그 수정 - 사용자 지적: "관심종목에 바로 생기고 없어지고 할수없냐"] 위 invalidate는 별/토글
+      // 버튼 자체의 상태(ws-watchlist)만 갱신했지, "관심종목" 탭이 실제로 보여주는 종목 리스트 쿼리
+      // (['surging','watchlist',market,null])는 그대로 30초 자동갱신을 기다려야 했다. queryKey 배열을
+      // 짧게 주면 react-query가 그 뒤에 market 등이 뭐가 오든 다 매칭(prefix match)하므로 market 필터
+      // 값을 몰라도 이 한 줄로 관심종목 탭 데이터까지 즉시 갱신된다.
+      await queryClient.invalidateQueries({ queryKey: ['surging', 'watchlist'] });
+    } catch (e: any) {
+      setWsWatchlistError(e?.message || '네트워크 오류');
+    } finally {
+      setWsWatchlistToggling(false);
+    }
+  };
 
   // Core Active Tab State: 'daily' (일간 누적 수급) | '3m' (3분봉)
   const [activeTab, setActiveTab] = useState<'daily' | '3m'>('daily');
@@ -119,14 +179,15 @@ export default function RankingStockDetailChart({
     refetchOnMount: false,
   });
 
-  // 한국 거래소 장중 여부 판별 (평일 09:00 ~ 15:30)
-  const isMarketOpen = React.useMemo(() => {
-    const now = new Date();
-    const utc = now.getTime() + now.getTimezoneOffset() * 60000;
-    const kst = new Date(utc + 9 * 60 * 60000);
-    const day = kst.getDay();
-    const timeNum = kst.getHours() * 100 + kst.getMinutes();
-    return day >= 1 && day <= 5 && timeNum >= 900 && timeNum < 1530;
+  // 🚨 [버그 수정 - 코드 리뷰 발견] useMemo(...,[])는 컴포넌트가 마운트되는 순간의 시각으로 딱 한 번만
+  // 계산되고 이후 다시는 재평가되지 않는다 - 이 값이 바로 아래 3분봉 refetchInterval을 결정하므로,
+  // 장 시작 전(예: 08:55)에 패널을 열어두고 09:00을 넘기면 실제로 장이 열려도 자동갱신이 시작되지
+  // 않았다(패널을 닫았다 다시 열어야만 갱신 시작). Header.tsx와 동일하게 setInterval로 주기 재평가한다.
+  const [isMarketOpen, setIsMarketOpen] = React.useState(false);
+  React.useEffect(() => {
+    setIsMarketOpen(computeIsMarketOpen());
+    const interval = setInterval(() => setIsMarketOpen(computeIsMarketOpen()), 30 * 1000);
+    return () => clearInterval(interval);
   }, []);
 
   // 🚨 [재도입] 한 번 prefetch를 추가했다가, fetchKis3mCandlesFullDay가 14개 슬롯을 kisQueue 없이
@@ -226,11 +287,12 @@ export default function RankingStockDetailChart({
       const closePrice = item.closePrice || 0;
       const changeRateVal = item.changeRate || 0;
 
-      let openPrice = (item.openPrice && item.openPrice > 0) ? item.openPrice : closePrice;
-      if ((openPrice === closePrice || !item.openPrice) && changeRateVal !== 0 && closePrice > 0) {
-        const prevPrice = Math.round(closePrice / (1 + changeRateVal / 100));
-        openPrice = prevPrice;
-      }
+      // 🚨 [버그 수정 - 코드 리뷰 발견, 수칙 1-3] 시가(openPrice)가 없을 때 `closePrice / (1 +
+      // changeRate/100)`로 되돌린 값을 openPrice에 대입하고 있었다 - changeRate는 "전일 종가 대비"
+      // 등락률이라 이 역산 공식은 수학적으로 정확히 "전일 종가"를 복원할 뿐, 당일 시가와는 무관하다.
+      // 갭업/갭다운으로 시작한 날일수록 이 대체값이 실제 시가와 가장 크게 어긋나(정확히 그 갭만큼)
+      // 캔들을 왜곡시켰다. 실제 시가 데이터가 없으면 지어낸 값 대신 정직하게 종가를 그대로 쓴다.
+      const openPrice = (item.openPrice && item.openPrice > 0) ? item.openPrice : closePrice;
 
       let highPrice = (item.highPrice && item.highPrice > 0)
         ? item.highPrice
@@ -653,6 +715,29 @@ function findActiveSwingLow(candles: any[]): SwingLowPoint | null {
     return findActiveSwingLow(candles3m);
   }, [candles3m]);
 
+  // 3. VWAP 및 ±1·2σ 밴드의 현재(최신 3분봉 기준) 가격 - 범례에 실시간 값 표시용
+  // 🚨 [사용자 지적: "종목마다 원 단위 있잖아"] VWAP·표준편차는 여러 체결가를 평균낸 이론값이라
+  // 계산 결과가 10,701원처럼 그 종목의 실제 호가단위(이 가격대는 10,000~20,000원 구간 10원 단위)와
+  // 안 맞는 임의의 숫자로 나온다 - 실제로 거래 가능한 가격이 아니므로, KRX 호가단위(getKrxTickSize)
+  // 배수로 반올림해서 화면에 보여준다(차트에 그리는 선 자체의 좌표는 정밀도 유지를 위해 원값 그대로 둠).
+  const latestVwapValues = React.useMemo(() => {
+    if (!candles3m || candles3m.length === 0) return null;
+    const last = candles3m[candles3m.length - 1] as any;
+    if (!last || !last.vwap) return null;
+    const roundToTick = (price: number): number => {
+      if (!price || price <= 0) return price;
+      const tick = getKrxTickSize(price);
+      return Math.round(price / tick) * tick;
+    };
+    return {
+      vwap: roundToTick(last.vwap as number),
+      upper1: roundToTick(last.vwapUpper1 as number),
+      lower1: roundToTick(last.vwapLower1 as number),
+      upper2: roundToTick(last.vwapUpper2 as number),
+      lower2: roundToTick(last.vwapLower2 as number),
+    };
+  }, [candles3m]);
+
   const intraday3mPriceAxis = React.useMemo(() => {
     if (!candles3m || candles3m.length === 0) {
       return { minPrice: 0, maxPrice: 100, priceDomain: ['auto', 'auto'] as any, priceTicks: undefined };
@@ -1034,6 +1119,31 @@ function findActiveSwingLow(candles: any[]): SwingLowPoint | null {
             >
               <span>3분</span>
             </button>
+          </div>
+
+          {/* 2-1. 실시간 웹소켓 관심종목 토글 - 켜면 오라클 브릿지가 이 종목의 통합체결가를 상시 구독해서
+              REST(KRX전용, 애프터마켓 미지원)보다 정확한 3분봉을 Supabase로 공급한다. */}
+          <div className="relative">
+            <button
+              type="button"
+              onClick={toggleWsWatchlist}
+              disabled={wsWatchlistToggling}
+              aria-pressed={isInWsWatchlist}
+              title={isInWsWatchlist ? '실시간 웹소켓 감시 중 - 클릭하면 해제' : '실시간 웹소켓 감시 켜기 (통합체결가, 애프터마켓 포함)'}
+              className={`flex items-center gap-1 px-2 py-1 rounded-lg border text-[11px] font-bold transition cursor-pointer disabled:opacity-50 ${
+                isInWsWatchlist
+                  ? 'bg-emerald-500 text-white border-emerald-600 shadow-sm'
+                  : 'bg-slate-50 text-slate-400 border-slate-200 dark:bg-[#1e222d] dark:border-[#2a2e39]'
+              }`}
+            >
+              <Radio className={`w-3 h-3 shrink-0 ${wsWatchlistToggling ? 'animate-pulse' : ''}`} />
+              <span>{isInWsWatchlist ? '실시간 ON' : '실시간'}</span>
+            </button>
+            {wsWatchlistError && (
+              <div className="absolute top-full left-0 mt-1 z-20 whitespace-nowrap bg-red-500 text-white text-[10px] font-bold px-2 py-1 rounded shadow-lg">
+                ⚠️ {wsWatchlistError}
+              </div>
+            )}
           </div>
 
           {/* 3. 새로고침 버튼 (3분봉 우측 옆으로 배치) */}
@@ -1838,7 +1948,7 @@ function findActiveSwingLow(candles: any[]): SwingLowPoint | null {
                       <line x1="0" y1="3" x2="18" y2="3" stroke="#06b6d4" strokeWidth="1.5" strokeDasharray="4 2" />
                     </svg>
                     <span className="text-cyan-600 dark:text-cyan-400 font-bold">
-                      단기 지지선 ({activeSwingLow.price.toLocaleString()}원)
+                      단기 지지선
                     </span>
                   </div>
                 )}
@@ -1863,13 +1973,19 @@ function findActiveSwingLow(candles: any[]): SwingLowPoint | null {
                 {show3mVWAP && (
                   <div className="flex items-center gap-1">
                     <svg width="18" height="6" className="inline-block shrink-0"><line x1="0" y1="3" x2="18" y2="3" stroke="#6366f1" strokeWidth="1.5" /></svg>
-                    <span className="font-bold text-indigo-600 dark:text-indigo-400">VWAP</span>
+                    <span className="font-bold text-indigo-600 dark:text-indigo-400">
+                      VWAP{latestVwapValues ? ` (${latestVwapValues.vwap.toLocaleString()}원)` : ''}
+                    </span>
                   </div>
                 )}
                 {show3mVWAP && (
                   <div className="flex items-center gap-1">
                     <svg width="18" height="6" className="inline-block shrink-0"><line x1="0" y1="3" x2="18" y2="3" stroke="#2F9D27" strokeWidth="2" strokeDasharray="6 3" /></svg>
-                    <span className="font-bold" style={{ color: '#2F9D27' }}>±1·2σ</span>
+                    <span className="font-bold" style={{ color: '#2F9D27' }}>
+                      {latestVwapValues
+                        ? `±1σ ${latestVwapValues.lower1.toLocaleString()}~${latestVwapValues.upper1.toLocaleString()} · ±2σ ${latestVwapValues.lower2.toLocaleString()}~${latestVwapValues.upper2.toLocaleString()}`
+                        : '±1·2σ'}
+                    </span>
                   </div>
                 )}
               </div>

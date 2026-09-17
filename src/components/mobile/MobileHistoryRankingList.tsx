@@ -17,6 +17,7 @@ interface MobileHistoryRankingListProps {
   selectedDate: string;
   overlapMode?: 'daily' | 'consecutive2d' | 'consecutive3d';
   surgingMode?: 'fluctuation' | 'volume' | 'amount' | 'overlap';
+  quietFilter?: boolean;
 }
 
 function formatEok(v: number | undefined) {
@@ -25,7 +26,7 @@ function formatEok(v: number | undefined) {
   return `${sign}${v.toLocaleString()}억`;
 }
 
-function HistoryCard({ item, type, isConsecutive, isSurgingOverlap }: { item: RankingItem; type: RankingType; isConsecutive: boolean; isSurgingOverlap: boolean }) {
+function HistoryCard({ item, type, isConsecutive, isSurgingOverlap, quietFilter }: { item: RankingItem; type: RankingType; isConsecutive: boolean; isSurgingOverlap: boolean; quietFilter?: boolean }) {
   const changeRate = item.changeRate || 0;
   const isUp = changeRate > 0;
   const isDown = changeRate < 0;
@@ -34,15 +35,23 @@ function HistoryCard({ item, type, isConsecutive, isSurgingOverlap }: { item: Ra
   // HistoryRankingTable.tsx(155~159번 줄)과 동일하게 거래대금(amountEok)을 보여줘야 한다 - 급등주
   // 항목은 순매수(netBuyAmtEok)가 항상 0으로 채워지므로 이전 코드처럼 무조건 surgingRanks를 찾다 못
   // 찾으면 "순매수 0억"으로 떨어지는 건 실제 버그였다(교집합 서브모드일 때만 surgingRanks가 존재).
+  // 🎯 [기능 추가 - 사용자 요청: "히스토리에는 관심종목, 장마감후보군등 업데이트해야지"] postmarket은
+  // 급등 상세 뱃지(surgingBadge)를, watchlist는 거래대금을 보여준다(둘 다 순매수 개념이 없음).
   const subLine = type === 'overlap'
     ? (item.ranksByType || []).map((r) => `${r.label} ${isConsecutive ? (r.consecutiveText || '당일') : `${r.netBuyAmtEok > 0 ? '+' : ''}${r.netBuyAmtEok}억`}`).join(' · ') || '-'
     : type === 'surging' && isSurgingOverlap
     ? (item.surgingRanks || []).map((r) => `${r.label} ${r.rank}위`).join(' · ') || '-'
-    : type === 'surging'
+    : type === 'postmarket'
+    ? (item.surgingBadge || '-')
+    : type === 'surging' || type === 'watchlist'
     ? `거래대금 ${item.amountEok ? `${item.amountEok}억` : '-'}`
     : type === 'comprehensive'
     ? `종합점수 ${item.scoreBreakdown?.totalScore ?? '-'}점`
     : `순매수 ${formatEok(item.netBuyAmtEok)}`;
+
+  // 🎯 [기능 추가 - 사용자 요청: "장마감 후보군들이 다음날 실제로 상승했는지 보고싶어" /
+  // "수급교집합 장마감 후보만도... 얼마나 올랐는지 두개 보여주고"]
+  const showNextDay = type === 'postmarket' || type === 'watchlist' || (type === 'overlap' && Boolean(quietFilter));
 
   return (
     <div className="flex items-center gap-2.5 px-3 py-2.5 bg-white dark:bg-[#131722] border border-slate-200 dark:border-[#2a2e39] rounded-xl">
@@ -59,12 +68,33 @@ function HistoryCard({ item, type, isConsecutive, isSurgingOverlap }: { item: Ra
         <div className={`text-[11px] font-mono font-semibold ${isUp ? 'text-red-600 dark:text-red-500' : isDown ? 'text-blue-600 dark:text-blue-500' : 'text-slate-500'}`}>
           {isUp ? '+' : ''}{changeRate.toFixed(2)}%
         </div>
+        {showNextDay && (
+          item.nextDayChangeRate === undefined ? (
+            <div className="text-[9px] text-slate-400 dark:text-slate-500 mt-0.5">다음날 미수집</div>
+          ) : (
+            <>
+              <div
+                className={`text-[9px] font-semibold mt-0.5 ${
+                  item.nextDayChangeRate > 0 ? 'text-red-500 dark:text-red-400' : item.nextDayChangeRate < 0 ? 'text-blue-500 dark:text-blue-400' : 'text-slate-400'
+                }`}
+              >
+                다음날 {item.nextDayChangeRate > 0 ? '+' : ''}{item.nextDayChangeRate.toFixed(2)}%
+              </div>
+              {/* 🎯 [기능 추가 - 사용자 지적: "장마감되고나면 이미 뛰었다가 내려왔을수도 있는거잖아?"] */}
+              {item.nextDayHighChangeRate !== undefined && (
+                <div className="text-[9px] text-amber-600 dark:text-amber-400 font-medium">
+                  최고 {item.nextDayHighChangeRate > 0 ? '+' : ''}{item.nextDayHighChangeRate.toFixed(2)}%
+                </div>
+              )}
+            </>
+          )
+        )}
       </div>
     </div>
   );
 }
 
-export default function MobileHistoryRankingList({ items, type, isLoading, selectedDate, overlapMode, surgingMode }: MobileHistoryRankingListProps) {
+export default function MobileHistoryRankingList({ items, type, isLoading, selectedDate, overlapMode, surgingMode, quietFilter }: MobileHistoryRankingListProps) {
   const [searchTerm, setSearchTerm] = useState('');
   const isConsecutive = overlapMode === 'consecutive2d' || overlapMode === 'consecutive3d';
   const isSurgingOverlap = type === 'surging' && surgingMode === 'overlap';
@@ -98,7 +128,7 @@ export default function MobileHistoryRankingList({ items, type, isLoading, selec
       ) : (
         <div className="flex flex-col gap-2">
           {filtered.map((item) => (
-            <HistoryCard key={item.symbol} item={item} type={type} isConsecutive={isConsecutive} isSurgingOverlap={isSurgingOverlap} />
+            <HistoryCard key={item.symbol} item={item} type={type} isConsecutive={isConsecutive} isSurgingOverlap={isSurgingOverlap} quietFilter={quietFilter} />
           ))}
         </div>
       )}

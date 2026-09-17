@@ -21,7 +21,10 @@ function getMarketStatus() {
     return {
       label: '주말 휴장',
       color: 'text-slate-600 dark:text-gray-400',
-      dotColor: 'bg-slate-400 dark:bg-gray-500',
+      // 🚨 [버그 수정 - 코드 리뷰 발견] dotColor는 lucide Activity 아이콘(stroke=currentColor)의 색을
+      // text-* 클래스로 입혀야 하는데, 주말 상태만 실수로 bg-*(배경색)를 넣어놔서 이 아이콘에 전혀
+      // 반영되지 않았다 - 아래 다른 3개 상태(장중/애프터마켓/장마감)는 전부 text-*를 쓴다.
+      dotColor: 'text-slate-400 dark:text-gray-500',
     };
   }
 

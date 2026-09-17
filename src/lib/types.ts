@@ -63,18 +63,18 @@ export type TrendPeriod = '5d' | '20d' | '60d';
 export interface ProgramTradeIntradayPoint {
   time: string;               // 시간 (HH:MM)
   price: number;              // 현재가
-  arbitrageAmt: number;       // 차익 순매수 금액 (백만원)
-  nonArbitrageAmt: number;    // 비차익 순매수 금액 (백만원)
   totalNetBuyAmt: number;     // 전체 프로그램 순매수 금액 (백만원)
   totalNetBuyQty: number;     // 전체 프로그램 순매수 수량 (주)
 }
 
+// 🚨 [버그 수정 - 수칙 1-3: 가상 비율 금지] 종목별 프로그램매매 TR(FHPPG04650101/0200)은 전체 합산
+// (whol_smtn_ntby_*)만 제공하고 차익/비차익 구분 필드를 주지 않는다. 예전엔 arbitrageAmt/
+// nonArbitrageAmt를 항상 15:85(또는 UI 폴백은 10:90)로 임의 분할해서 보여줬는데, 이는 실제 KIS
+// 데이터가 아니라 완전히 지어낸 숫자였다 - 필드 자체를 제거해 더 이상 가짜 분할값을 만들지 않는다.
 export interface ProgramTradeSummary {
-  arbitrageAmt: number;       // 당일 차익 순매수 금액 (백만원)
-  nonArbitrageAmt: number;    // 당일 비차익 순매수 금액 (백만원)
   totalNetBuyAmt: number;     // 당일 전체 프로그램 순매수 금액 (백만원)
   totalNetBuyQty: number;     // 당일 전체 프로그램 순매수 수량 (주)
-  ratioVsVolume: number;      // 거래량 대비 프로그램 매매 비중 (%)
+  ratioVsVolume: number;      // 거래량 대비 프로그램 매매 비중 (%) - 실시간 TR에 거래량 필드가 없어 산출 불가 시 0
   status: 'STRONG_BUY' | 'BUY' | 'NEUTRAL' | 'SELL' | 'STRONG_SELL';
   intradayTrend: ProgramTradeIntradayPoint[]; // 장중 시간대별 수급 추이
   isFallback?: boolean;
@@ -148,6 +148,8 @@ export interface VwapReclaimSignal {
   volSurge: boolean; // 돌파 봉 거래량이 돌파 직전 4개 봉 평균 거래량보다 높음
   approaching: boolean; // 선행(액션 가능): 아직 미돌파 + 간격이 좁혀짐 + 임박(0.5% 이내) + 거래량 선행 증가(완결봉 기준)
   hadPriorReclaim: boolean; // 오늘 이미 2번 이상 below→above 전환이 있었음 - "한 번 뚫었다가 다시 뚫으려는 재시도"
+  crossCount: number; // 오늘 below→above 전환 누적 횟수(원본 숫자) - 4회 이상이면 "잦은 등락"(VWAP
+  // 근처 노이즈성 등락)으로 분류해 신뢰도 낮은 신호로 별도 표시한다(사용자 확인: 실측 90 백분위수=4)
   insufficientData: boolean; // 오늘 3분봉이 8개 미만이라 판정 불가(장 시작 직후 등)
 }
 
@@ -157,8 +159,10 @@ export interface VwapReclaimSignal {
 // 기준선이 계속 움직이는 VWAP 대신 하루 종일 고정인 R1/R2라는 점이 다르다.
 export interface PivotLevelSignal {
   reclaimed: boolean; // 뚫은 적 있고(hasBroken) + 그 뒤 한 번이라도 밑으로 갔었고(hasBeenBelowAfterBreak) + 지금 다시 위
-  approaching: boolean; // 위 조건 + 지금은 밑인데 간격 좁혀짐 + 0.5% 이내 임박 + 거래량 선행 증가
+  approaching: boolean; // 위 조건 + 지금은 밑인데 간격 좁혀짐 + 1.5% 이내 임박 + 거래량 선행 증가
   volSurge: boolean; // 최근 표본 창 안에서 재돌파 시점의 거래량 증가가 확인됐는지(창 밖이면 미확인)
+  hadPriorBreak: boolean; // 오늘 이 선을 뚫었다가 다시 밑으로 내려간 적 있음 - reclaimed/approaching이 둘 다
+  // false여도 이 값이 true면 "이전 이력만 있음"(대기 중, VWAP의 hadPriorReclaim과 동일한 목적)
 }
 export interface PivotReclaimSignal {
   symbol: string;
@@ -224,7 +228,7 @@ export interface InvestorTrendResponse {
 }
 
 export type MarketType = 'ALL' | 'KOSPI' | 'KOSDAQ';
-export type RankingType = 'foreign' | 'organ' | 'program' | 'overlap' | 'surging' | 'comprehensive' | 'postmarket';
+export type RankingType = 'foreign' | 'organ' | 'program' | 'overlap' | 'surging' | 'comprehensive' | 'postmarket' | 'watchlist';
 export type RankingDirection = 'buy' | 'sell';
 export type RankingPeriod = '1d' | '1w' | '1m' | 'consecutive2d' | 'consecutive3d';
 export type SurgingMode = 'fluctuation' | 'volume' | 'amount' | 'overlap' | 'comprehensive' | 'postmarket';
@@ -302,6 +306,16 @@ export interface RankingItem {
   // 마감·변동폭 좁음이 좋다"는 가정과 정반대 결과라 별도 필드로 분리했다(수칙 1-3 - 검증 안 된 가정 재사용 금지).
   volRatioPct?: number;       // 당일 거래량 / 최근 5거래일 평균거래량 * 100 (%) - 낮을수록(조용할수록) 유리
   cum5dReturnPct?: number;    // 최근 5거래일 누적수익률(오늘 포함, %) - 낮을수록(최근 눌려있을수록) 유리
+  // 🎯 [기능 추가 - 사용자 요청: "장마감 후보군들이 다음날 실제로 상승했는지 보고싶어"] 히스토리 탭
+  // 전용 - raw_daily_data에 실제로 수집된 "다음 영업일" 종가와 비교한 실측 결과. 아직 다음날 데이터가
+  // 수집 안 됐으면(가장 최근 거래일 등) undefined로 남는다(가짜 0%로 채우지 않음 - 수칙 1-3).
+  nextDayChangeRate?: number; // 다음 영업일 종가 기준 등락률 (%) - (다음날 종가-당일 종가)/당일 종가*100
+  nextDayDateLabel?: string;  // 그 다음 영업일 날짜 표시용 (예: "9/18")
+  // 🎯 [기능 추가 - 사용자 지적: "장마감되고나면 이미 뛰었다가 내려왔을수도 있는거잖아?"] 다음날 종가만
+  // 보면 장중 한때 크게 뛰었다가 밀려서 종가는 밋밋해진 경우를 놓친다 - 다음 영업일 "고가" 기준 등락률도
+  // 함께 보여줘 "장중 최대로 얼마나 갔었는지"를 알 수 있게 한다(nextDayChangeRate와 동일한 raw_daily_data
+  // 소스, high_price 컬럼만 다르게 사용 - 수칙 1-6).
+  nextDayHighChangeRate?: number; // 다음 영업일 고가 기준 등락률 (%) - (다음날 고가-당일 종가)/당일 종가*100
 }
 
 export interface SurgingRankItem {

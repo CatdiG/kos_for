@@ -102,11 +102,6 @@ export default function SupplySummaryCards({
   const programDirectionInfo = getSupplyDirection(programAmt);
   const ProgramIcon = programDirectionInfo.Icon;
 
-  const nonArbAmt = programTrade?.nonArbitrageAmt ?? Math.round(programAmt * 0.9);
-  const arbAmt = programTrade?.arbitrageAmt ?? Math.round(programAmt * 0.1);
-  const nonArbDir = getSupplyDirection(nonArbAmt);
-  const arbDir = getSupplyDirection(arbAmt);
-
   return (
     <div className="w-full space-y-2">
       {/* Target Stock Label Header */}
@@ -344,23 +339,6 @@ export default function SupplySummaryCards({
                   {programQty >= 0 ? '+' : ''}
                   {programQty.toLocaleString()}주
                 </span>
-              </div>
-            </div>
-          </div>
-
-          {/* Breakdown Grid (Non-Arbitrage vs Arbitrage) */}
-          <div className="grid grid-cols-2 gap-2 text-center pt-1">
-            <div className="bg-slate-50 dark:bg-[#1e222d] p-1.5 sm:p-2 rounded-lg border border-slate-200/80 dark:border-[#2a2e39]/50 min-w-0 overflow-hidden">
-              <div className="text-[9px] sm:text-[10px] text-slate-500 dark:text-[#787b86] mb-0.5 whitespace-nowrap truncate">비차익 순매수</div>
-              <div className={`text-[10px] sm:text-[11px] font-bold font-mono whitespace-nowrap truncate ${nonArbDir.colorClass}`}>
-                {formatAmount(nonArbAmt)}
-              </div>
-            </div>
-
-            <div className="bg-slate-50 dark:bg-[#1e222d] p-1.5 sm:p-2 rounded-lg border border-slate-200/80 dark:border-[#2a2e39]/50 min-w-0 overflow-hidden">
-              <div className="text-[9px] sm:text-[10px] text-slate-500 dark:text-[#787b86] mb-0.5 whitespace-nowrap truncate">차익 순매수</div>
-              <div className={`text-[10px] sm:text-[11px] font-bold font-mono whitespace-nowrap truncate ${arbDir.colorClass}`}>
-                {formatAmount(arbAmt)}
               </div>
             </div>
           </div>

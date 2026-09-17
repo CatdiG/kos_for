@@ -10,12 +10,16 @@ export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
   const modeParam = (searchParams.get('mode') || 'fluctuation') as SurgingMode;
   const market = (searchParams.get('market') as MarketType) || 'ALL';
+  // 🎯 [기능 추가 - 사용자 요청: "셀렉터까지 원해"] 급등주 교집합에서 몇 개 지표(등락률·거래량·거래대금)
+  // 이상 겹쳐야 노출할지 - 값이 없거나 1~3 범위 밖이면 기존 동작(2)으로 안전하게 되돌린다.
+  const minOverlapParam = parseInt(searchParams.get('minOverlap') || '2', 10);
+  const minOverlap = [1, 2, 3].includes(minOverlapParam) ? minOverlapParam : 2;
 
   const validModes: SurgingMode[] = ['fluctuation', 'volume', 'amount', 'overlap', 'comprehensive', 'postmarket'];
   const mode: SurgingMode = validModes.includes(modeParam) ? modeParam : 'fluctuation';
 
   try {
-    const data = await fetchKisSurgingStocks(mode, market);
+    const data = await fetchKisSurgingStocks(mode, market, minOverlap);
     if (data && Array.isArray(data.list)) {
       data.list = await mergeCreditStatusToRanking(data.list);
     }

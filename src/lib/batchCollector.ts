@@ -6,12 +6,12 @@ import { fetchKisInvestorTrend, fetchKisProgramTrade, fetchKisProgramTradeDaily,
 import { InvestorRankingResponse, RankingItem, RankingType, RankingDirection, RankingPeriod, MarketType } from './types';
 import { saveRawDailyDataToSupabase, RawDailyInvestorRecord, upsertSharedRankCache, fetchSharedRankCacheBatch } from './supabase';
 
-// Configurable Batch Parameters
+// 🚨 [버그 수정 - 수칙 1-3/1-6] DELAY_MS/CHUNK_SIZE/MAX_RETRIES/RETRY_DELAY_MS는 선언만 되고 실제
+// 로직에서 단 한 곳도 참조되지 않는 죽은 설정값이었다(실사용 청크 크기는 759번 줄의 별도 로컬
+// `CHUNK_SIZE = 5`이며, 재시도 로직 자체가 파일 전체에 존재하지 않는다) - 값을 바꿔도 아무 동작도
+// 변하지 않으면서 "25개씩 병렬 수집, 실패 시 2회 재시도"처럼 실재하지 않는 동작을 문서화하고 있어
+// 오해를 유발했다. 실제로 쓰이는 MIN_INTERVAL_MS만 남긴다.
 export const BATCH_CONFIG = {
-  DELAY_MS: 50,         // 청크 간 딜레이 시간 (50ms)
-  CHUNK_SIZE: 25,       // 25개 종목 병렬 청크 수집 (3초 내 완료)
-  MAX_RETRIES: 2,       // 실패 시 최대 2회 재시도
-  RETRY_DELAY_MS: 200,  // 재시도 대기 시간 (200ms)
   MIN_INTERVAL_MS: 5 * 60 * 1000, // 최소 실행 간격 (5분)
 };
 
@@ -231,8 +231,11 @@ export async function runTop50BatchCollector(
               netBuyAmt: programAmt,
               netBuyQty: programQty,
               netBuyAmtEok: Number((programAmt / 100).toFixed(1)),
-              volume: latest?.volume || 1000000,
-              ratioVsVolume: pt.ratioVsVolume || 10,
+              // 🚨 [버그 수정 - 수칙 1-3] volume은 `|| 1000000`, ratioVsVolume은 `|| 10`으로 실거래량/
+              // 실비중이 0(또는 latest 자체가 없음)일 때도 지어낸 값으로 덮어쓰고 있었다. `||`는 정직한
+              // 0도 falsy로 취급해 없애버리므로 `??`(nullish)로 바꿔 실제 0은 0 그대로 남긴다.
+              volume: latest?.volume ?? 0,
+              ratioVsVolume: pt.ratioVsVolume ?? 0,
               asOfDateLabel: pt.asOfDateLabel || getSettledAsOfDateLabel(),
             });
           }

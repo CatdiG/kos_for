@@ -153,7 +153,15 @@ export default function MobileIntraday3mChart({ symbol }: MobileIntraday3mChartP
     return () => document.removeEventListener('click', handleOutsideTap);
   }, []);
 
-  const isMarketOpen = React.useMemo(() => isMarketOpenNowKst(), []);
+  // 🚨 [버그 수정 - 코드 리뷰 발견] useMemo(...,[])는 마운트 시점 시각으로 딱 한 번만 계산되고 다시
+  // 재평가되지 않는다 - 장 시작/마감 경계를 넘겨도 이 화면을 계속 켜두면 refetchInterval 여부가
+  // 안 바뀐다(데스크톱 RankingStockDetailChart.tsx와 동일한 결함). setInterval로 주기 재평가한다.
+  const [isMarketOpen, setIsMarketOpen] = React.useState(false);
+  React.useEffect(() => {
+    setIsMarketOpen(isMarketOpenNowKst());
+    const interval = setInterval(() => setIsMarketOpen(isMarketOpenNowKst()), 30 * 1000);
+    return () => clearInterval(interval);
+  }, []);
 
   const { data, isLoading } = useQuery<IntradayChartResponse>({
     queryKey: ['m-intraday3m', symbol],

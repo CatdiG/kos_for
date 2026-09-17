@@ -16,6 +16,7 @@ export async function GET(request: NextRequest) {
   const limit = parseInt(searchParams.get('limit') || '50', 10);
   const mode = searchParams.get('mode') as any;
   const surgingMode = searchParams.get('surgingMode') as any;
+  const quietFilter = searchParams.get('quietFilter') === '1';
 
   try {
     const params: HistoryQueryParams = {
@@ -27,6 +28,7 @@ export async function GET(request: NextRequest) {
       limit,
       mode,
       surgingMode,
+      quietFilter,
     };
 
     const data = await getHistoryRankingData(params);

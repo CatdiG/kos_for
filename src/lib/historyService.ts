@@ -9,10 +9,11 @@ import {
   MarketType,
   ScoreBreakdown,
   OverlapInvestorRank,
+  SurgingRankItem,
   isEtfOrEtn,
 } from './types';
 import { TOP_300_STOCKS } from './stockUniverse300';
-import { getSupabaseAdmin, getSupabasePublic, RawDailyInvestorRecord } from './supabase';
+import { getSupabaseAdmin, getSupabasePublic, RawDailyInvestorRecord, fetchWsWatchlist } from './supabase';
 import { resolveMarketType, resolveStockPriceAndChange } from './mockData';
 
 // ============================================================================
@@ -38,6 +39,10 @@ export interface HistoryQueryParams {
   mode?: 'daily' | 'consecutive2d' | 'consecutive3d';
   surgingMode?: 'fluctuation' | 'volume' | 'amount' | 'comprehensive' | 'overlap';
   forceRecalculate?: boolean; // 버전 변경 또는 강제 재계산 플래그
+  // 🎯 [기능 추가 - 사용자 요청: "수급교집합 장마감 후보만도 히스토리에 남겨"] 라이브 탭
+  // (InvestorRankingTable.tsx "장마감 후보만" 토글, kisApi.ts fetchKisQuietAccumulationCandidates)과
+  // 동일한 역발상 필터를 히스토리 당일/2일연속/3일연속 교집합 위에도 얹을 수 있게 하는 플래그.
+  quietFilter?: boolean;
 }
 
 /**
@@ -53,10 +58,14 @@ export interface CalculatedHistoryCache {
   data: InvestorRankingResponse;
 }
 
+// 🚨 [버그 수정 - 수칙 1-3/1-5] 날짜 파라미터가 8자리로 정리되지 않으면 에러 없이 '20260828'
+// (특정 과거 날짜)로 조용히 대체하고 있었다 - 화면엔 오늘 날짜를 요청했다고 표시되는데 실제로는 항상
+// 그 하드코딩된 날짜의 데이터를 보여주는 셈이었다. 호출부(API 라우트)가 이미 try/catch로 에러를
+// 500 응답으로 변환하므로, 여기서는 잘못된 입력을 조용히 삼키지 말고 명시적으로 실패시킨다.
 export function normalizeDate(rawDate: string): string {
   const cleaned = rawDate.replace(/[^0-9]/g, '');
   if (cleaned.length === 8) return cleaned;
-  return '20260828'; // 기본 fallback 날짜
+  throw new Error(`잘못된 날짜 형식입니다: "${rawDate}" (YYYYMMDD 8자리 숫자여야 합니다)`);
 }
 
 function formatDateLabel(dateStr: string): string {
@@ -840,10 +849,335 @@ export async function calculateComprehensiveFromHistory(
 }
 
 /**
+ * 🎯 [기능 추가 - 사용자 요청: "장마감 후보군들이 다음날 실제로 상승했는지 보고싶어"] 특정 날짜(normalizedDate)
+ * 기준 "다음 영업일"(raw_daily_data에 실제로 수집된 다음 날짜)의 원본을 찾아 반환한다. 아직 다음날이
+ * 수집 안 됐으면(가장 최근 거래일 등) null - 가짜 0%로 채우지 않는다(수칙 1-3).
+ */
+async function loadNextTradingDayRecords(normalizedDate: string): Promise<{ date: string; records: RawDailyInvestorRecord[] } | null> {
+  const availableDates = await listAvailableRawDates();
+  const nextDate = availableDates.find((d) => d > normalizedDate);
+  if (!nextDate) return null;
+  const records = await loadRawDailyRecordsForDate(nextDate);
+  if (records.length === 0) return null;
+  return { date: nextDate, records };
+}
+
+function formatShortDateLabel(dateStr: string): string {
+  if (dateStr.length !== 8) return dateStr;
+  return `${parseInt(dateStr.slice(4, 6), 10)}/${parseInt(dateStr.slice(6, 8), 10)}`;
+}
+
+/** 종목별 다음 영업일 종가와 비교해 nextDayChangeRate/nextDayDateLabel을 덧붙인다(순수 함수, 부수효과 없음). */
+function attachNextDayResults(list: RankingItem[], nextDay: { date: string; records: RawDailyInvestorRecord[] } | null): RankingItem[] {
+  if (!nextDay) return list;
+  const nextMap = new Map(nextDay.records.map((r) => [r.symbol, r]));
+  const label = formatShortDateLabel(nextDay.date);
+  return list.map((item) => {
+    const nextRecord = nextMap.get(item.symbol);
+    if (!nextRecord || !nextRecord.close_price || !item.currentPrice) return item;
+    const nextDayChangeRate = Number((((nextRecord.close_price - item.currentPrice) / item.currentPrice) * 100).toFixed(2));
+    // 다음날 고가가 없는 레코드(구버전 수집분)는 종가로 대체하지 않고 그냥 undefined로 남긴다 -
+    // 가짜로 종가=고가라고 표시하면 "장중에도 안 뛰었다"는 잘못된 신호를 준다(수칙 1-3).
+    const nextDayHighChangeRate = nextRecord.high_price
+      ? Number((((nextRecord.high_price - item.currentPrice) / item.currentPrice) * 100).toFixed(2))
+      : undefined;
+    return { ...item, nextDayChangeRate, nextDayDateLabel: label, nextDayHighChangeRate };
+  });
+}
+
+/**
+ * 🎯 [기능 추가 - 사용자 요청: "히스토리에 장마감후보군도 업데이트해야지" + "다음날 실제로 상승했는지
+ * 보고싶어"] 라이브 fetchKisPostMarketCandidates(kisApi.ts)와 동일한 후보 선정 기준(급등주 교집합
+ * 2개 이상 + 고가마감·변동폭·기관매수우위 점수)을 raw_daily_data 원본만으로 재구성한다 - 이 지표들이
+ * 전부 이미 그 날의 원본(open/high/low/close/organ_net_buy_amt)에 있어서 KIS 재호출 없이 계산 가능하다
+ * (수칙 1-6). 여기에 다음 영업일 실제 종가까지 붙여 "이 후보군이 진짜 다음날 올랐는지"를 보여준다.
+ */
+export async function calculatePostMarketFromHistory(
+  normalizedDate: string,
+  params: HistoryQueryParams
+): Promise<InvestorRankingResponse> {
+  const market = params.market || 'ALL';
+  const limit = params.limit || 50;
+  const dateLabel = formatDateLabel(normalizedDate);
+
+  const rawRecords = await loadRawDailyRecordsForDate(normalizedDate);
+  const filtered = rawRecords
+    .filter((r) => market === 'ALL' || resolveMarketType(r.symbol) === market)
+    .filter((r) => !isEtfOrEtn(r.name));
+
+  if (filtered.length === 0) {
+    return {
+      type: 'postmarket', direction: 'buy', period: params.period || '1d', list: [],
+      isMock: false, updatedAt: new Date().toISOString(), lastBatchTime: dateLabel,
+    };
+  }
+
+  // 라이브 fetchKisSurgingOverlap과 동일한 후보군 구성 (SURGE_TOP_N=60, 등락률 3%+ 게이트, 2개 이상 겹침)
+  const SURGE_TOP_N = 60;
+  const byFluc = [...filtered].filter((r) => (r.change_rate || 0) >= 3.0).sort((a, b) => (b.change_rate || 0) - (a.change_rate || 0)).slice(0, SURGE_TOP_N);
+  const byVol = [...filtered].sort((a, b) => b.volume - a.volume).slice(0, SURGE_TOP_N);
+  const byAmt = [...filtered].sort((a, b) => (b.close_price * b.volume) - (a.close_price * a.volume)).slice(0, SURGE_TOP_N);
+
+  const flucRankMap = new Map(byFluc.map((r, idx) => [r.symbol, idx + 1]));
+  const volRankMap = new Map(byVol.map((r, idx) => [r.symbol, idx + 1]));
+  const amtRankMap = new Map(byAmt.map((r, idx) => [r.symbol, idx + 1]));
+
+  const withModes = byFluc
+    .map((r) => {
+      const surgingRanks: SurgingRankItem[] = [{ type: 'fluctuation', label: '등락률', rank: flucRankMap.get(r.symbol)! }];
+      if (volRankMap.has(r.symbol)) surgingRanks.push({ type: 'volume', label: '거래량', rank: volRankMap.get(r.symbol)! });
+      if (amtRankMap.has(r.symbol)) surgingRanks.push({ type: 'amount', label: '거래대금', rank: amtRankMap.get(r.symbol)! });
+      return { r, surgingRanks };
+    })
+    .filter((x) => x.surgingRanks.length >= 2);
+
+  // 🚨 [실측 기반 - kisApi.ts enrichCandidatesWithNarrowRangeScore와 동일 공식 재사용] KIS 재호출 없이
+  // 그 날 원본(open/high/low/close/organ_net_buy_amt)만으로 그대로 재구성한다.
+  const scored: RankingItem[] = withModes.map(({ r, surgingRanks }) => {
+    const high = r.high_price || Math.max(r.close_price, r.open_price || r.close_price);
+    const low = r.low_price || Math.min(r.close_price, r.open_price || r.close_price);
+    const close = r.close_price;
+    const range = high - low;
+    const todayRangePct = close > 0 ? Number(((range / close) * 100).toFixed(1)) : 0;
+    const closePositionPct = range > 0 ? Number((((close - low) / range) * 100).toFixed(0)) : 50;
+    const organStrong = (r.organ_net_buy_amt || 0) > 0;
+    const overlapCount = surgingRanks.length;
+    const postMarketScore = Number((overlapCount * 20 + closePositionPct * 0.3 + Math.max(0, 30 - todayRangePct) + (organStrong ? 15 : 0)).toFixed(1));
+    const surgingBadge = `${surgingRanks.map((s) => `${s.label} ${s.rank}위`).join(' · ')} · 고가마감 ${closePositionPct}% · 변동폭 ${todayRangePct}%${organStrong ? ' · 기관매수우위' : ''}`;
+
+    return {
+      rank: 0,
+      symbol: r.symbol,
+      name: r.name,
+      market: resolveMarketType(r.symbol),
+      currentPrice: r.close_price,
+      change: 0,
+      changeRate: r.change_rate || 0,
+      volume: r.volume,
+      ratioVsVolume: 0,
+      netBuyQty: 0,
+      netBuyAmt: 0,
+      netBuyAmtEok: 0,
+      amountEok: Number(((r.close_price * r.volume) / 100000000).toFixed(1)),
+      overlapCount,
+      surgingModes: surgingRanks.map((s) => s.type),
+      surgingRanks,
+      surgingBadge,
+      todayRangePct,
+      closePositionPct,
+      postMarketScore,
+      asOfDateLabel: dateLabel,
+    };
+  });
+
+  scored.sort((a, b) => (b.postMarketScore || 0) - (a.postMarketScore || 0));
+  const list = scored.slice(0, limit).map((item, idx) => ({ ...item, rank: idx + 1 }));
+
+  const nextDay = await loadNextTradingDayRecords(normalizedDate);
+  const withNextDay = attachNextDayResults(list, nextDay);
+
+  return {
+    type: 'postmarket',
+    direction: 'buy',
+    period: params.period || '1d',
+    list: withNextDay,
+    isMock: false,
+    updatedAt: new Date().toISOString(),
+    lastBatchTime: dateLabel,
+  };
+}
+
+/**
+ * 🎯 [기능 추가 - 사용자 요청: "수급교집합 장마감 후보만도 히스토리에 남겨. 그것도 장마감 후보처럼
+ * 얼마나 올랐는지 두개 보여주고"] 라이브 "장마감 후보만" 토글(kisApi.ts scoreQuietAccumCandidates)과
+ * 동일한 역발상 점수(종가위치·거래량배율·5일누적수익률 - 셋 다 낮을수록 고득점)를 기준 수급교집합
+ * (당일/2일연속/3일연속) 후보군 위에 그대로 얹어 재구성한다(수칙 1-6 - 새 공식 만들지 않고 그대로 재현).
+ * 기준 후보군 자체는 이미 검증된 calculateRankingsFromRawRecords/calculateConsecutiveOverlapFromHistory를
+ * 재사용하고, 여기선 거래량배율·5일누적수익률 계산에 필요한 최근 5거래일 lookback만 추가로 붙인다.
+ */
+export async function calculateQuietAccumFromHistory(
+  normalizedDate: string,
+  params: HistoryQueryParams,
+  baseMode: 'daily' | 'consecutive2d' | 'consecutive3d'
+): Promise<InvestorRankingResponse> {
+  const direction = params.direction || 'buy';
+  const limit = params.limit || 50;
+  const dateLabel = formatDateLabel(normalizedDate);
+  const periodLabel = (baseMode === 'consecutive2d' ? 'consecutive2d' : baseMode === 'consecutive3d' ? 'consecutive3d' : params.period || '1d') as RankingPeriod;
+
+  const emptyResponse = (error?: string): InvestorRankingResponse => ({
+    type: 'overlap', direction, period: periodLabel, list: [],
+    isMock: false, updatedAt: new Date().toISOString(), lastBatchTime: dateLabel, error,
+  });
+
+  // 1. 기준 교집합 후보군 재사용 - 이미 검증된 로직 그대로, "장마감 후보만"이 아닌 상태와 동일한 후보군을 씀
+  let baseCandidates: RankingItem[];
+  if (baseMode === 'daily') {
+    const rawRecords = await loadRawDailyRecordsForDate(normalizedDate);
+    baseCandidates = calculateRankingsFromRawRecords(rawRecords, { ...params, type: 'overlap' }, normalizedDate).list;
+  } else {
+    baseCandidates = (await calculateConsecutiveOverlapFromHistory(normalizedDate, params, baseMode === 'consecutive3d' ? 3 : 2)).list;
+  }
+  if (baseCandidates.length === 0) return emptyResponse();
+
+  // 2. 종가위치/거래량배율/5일누적수익률 계산용 최근 6영업일(오늘 포함) lookback - 부족하면 가짜로
+  // 채우지 않고 이유를 명시한 빈 결과를 반환한다(수칙 1-3).
+  const dateGroups = await loadRawRecordsForDateRange(normalizedDate, 6);
+  if (dateGroups.length < 6 || dateGroups[dateGroups.length - 1]?.date !== normalizedDate) {
+    return emptyResponse(`${normalizedDate} 기준 5거래일치 lookback 원본이 부족해 장마감 후보만 점수를 계산할 수 없습니다.`);
+  }
+  const orderedDates = dateGroups.map((g) => g.date);
+  const trailingDates = orderedDates.slice(0, -1); // 오늘을 제외한 최근 5거래일
+  const bySymbol = new Map<string, Map<string, RawDailyInvestorRecord>>();
+  dateGroups.forEach(({ date, records }) => {
+    records.forEach((r) => {
+      if (!bySymbol.has(r.symbol)) bySymbol.set(r.symbol, new Map());
+      bySymbol.get(r.symbol)!.set(date, r);
+    });
+  });
+
+  type Enriched = RankingItem & { closePositionPct: number; volRatioPct: number; cum5dReturnPct: number };
+  const enriched: Enriched[] = [];
+  baseCandidates.forEach((item) => {
+    const symbolDates = bySymbol.get(item.symbol);
+    // 5거래일 이력이 전부 없는 종목(신규상장 등)은 percentile 계산을 왜곡하지 않도록 후보군에서 제외
+    if (!symbolDates || !trailingDates.every((d) => symbolDates.has(d)) || !symbolDates.has(normalizedDate)) return;
+    const today = symbolDates.get(normalizedDate)!;
+    const high = today.high_price || today.close_price;
+    const low = today.low_price || today.close_price;
+    const range = high - low;
+    const closePositionPct = range > 0 ? Number((((today.close_price - low) / range) * 100).toFixed(0)) : 50;
+    const priorVols = trailingDates.map((d) => symbolDates.get(d)!.volume || 0);
+    const avgVol5 = priorVols.reduce((sum, v) => sum + v, 0) / priorVols.length;
+    const volRatioPct = avgVol5 > 0 ? Number((((today.volume || 0) / avgVol5) * 100).toFixed(1)) : 100;
+    const fiveDaysAgoClose = symbolDates.get(trailingDates[0])!.close_price || 0;
+    const cum5dReturnPct = fiveDaysAgoClose > 0 ? Number((((today.close_price - fiveDaysAgoClose) / fiveDaysAgoClose) * 100).toFixed(2)) : 0;
+    enriched.push({ ...item, closePositionPct, volRatioPct, cum5dReturnPct });
+  });
+  if (enriched.length === 0) {
+    return emptyResponse('5거래일 이력이 온전한 종목이 없어 장마감 후보만 점수를 계산할 수 없습니다.');
+  }
+
+  // 3. 라이브(kisApi.ts scoreQuietAccumCandidates)와 동일한 역발상 percentile 스코어링 - 셋 다
+  // "낮을수록" 고득점이라 (100 - percentile)로 뒤집는다.
+  const percentileOf = (values: number[], target: number): number => {
+    const sorted = [...values].sort((a, b) => a - b);
+    let idx = sorted.findIndex((v) => v >= target);
+    if (idx === -1) idx = sorted.length - 1;
+    return (idx / sorted.length) * 100;
+  };
+  const closeVals = enriched.map((r) => r.closePositionPct);
+  const volVals = enriched.map((r) => r.volRatioPct);
+  const momVals = enriched.map((r) => r.cum5dReturnPct);
+  const maxOverlap = Math.max(...enriched.map((r) => r.overlapCount || 2), 3);
+
+  enriched.forEach((item) => {
+    const closeScore = 100 - percentileOf(closeVals, item.closePositionPct);
+    const volScore = 100 - percentileOf(volVals, item.volRatioPct);
+    const momScore = 100 - percentileOf(momVals, item.cum5dReturnPct);
+    const overlapScore = maxOverlap > 2 ? (((item.overlapCount || 2) - 2) / (maxOverlap - 2)) * 100 : 0;
+    item.postMarketScore = Number((closeScore * 0.3 + volScore * 0.3 + momScore * 0.3 + overlapScore * 0.1).toFixed(1));
+  });
+
+  enriched.sort((a, b) => (b.postMarketScore || 0) - (a.postMarketScore || 0));
+  const list = enriched.slice(0, limit).map((item, idx) => ({ ...item, rank: idx + 1 }));
+
+  const nextDay = await loadNextTradingDayRecords(normalizedDate);
+  const withNextDay = attachNextDayResults(list, nextDay);
+
+  return {
+    type: 'overlap',
+    direction,
+    period: periodLabel,
+    list: withNextDay,
+    isMock: false,
+    updatedAt: new Date().toISOString(),
+    lastBatchTime: dateLabel,
+  };
+}
+
+/**
+ * 🎯 [기능 추가 - 사용자 요청: "히스토리에 관심종목도 업데이트해야지"] 관심종목(ws_watchlist)은 "시장 전체
+ * 랭킹"이 아니라 사용자가 고른 개별 종목 목록이라, 다른 탭처럼 그 날짜의 원본에서 순위를 새로 매기는 게
+ * 아니라 "지금 등록된 관심종목들이 그 날짜에 각각 어땠는지" 조회로 구성한다. 다음날 결과도 함께 붙인다.
+ */
+export async function calculateWatchlistFromHistory(
+  normalizedDate: string,
+  params: HistoryQueryParams
+): Promise<InvestorRankingResponse> {
+  const dateLabel = formatDateLabel(normalizedDate);
+  const watchlist = await fetchWsWatchlist();
+
+  if (watchlist.length === 0) {
+    return {
+      type: 'watchlist', direction: 'buy', period: params.period || '1d', list: [],
+      isMock: false, updatedAt: new Date().toISOString(), lastBatchTime: dateLabel,
+      error: '등록된 관심종목이 없습니다. 실시간 탭에서 먼저 관심종목을 추가해주세요.',
+    };
+  }
+
+  const rawRecords = await loadRawDailyRecordsForDate(normalizedDate);
+  const recordMap = new Map(rawRecords.map((r) => [r.symbol, r]));
+
+  const found = watchlist
+    .map((w) => recordMap.get(w.symbol))
+    .filter((r): r is RawDailyInvestorRecord => !!r);
+
+  const list: RankingItem[] = found
+    .map((r) => ({
+      rank: 0,
+      symbol: r.symbol,
+      name: r.name,
+      market: resolveMarketType(r.symbol),
+      currentPrice: r.close_price,
+      change: 0,
+      changeRate: r.change_rate || 0,
+      volume: r.volume,
+      ratioVsVolume: 0,
+      netBuyQty: 0,
+      netBuyAmt: 0,
+      netBuyAmtEok: 0,
+      amountEok: Number(((r.close_price * r.volume) / 100000000).toFixed(1)),
+      openPrice: r.open_price,
+      highPrice: r.high_price,
+      lowPrice: r.low_price,
+      asOfDateLabel: dateLabel,
+    }))
+    .sort((a, b) => b.changeRate - a.changeRate)
+    .map((item, idx) => ({ ...item, rank: idx + 1 }));
+
+  const nextDay = await loadNextTradingDayRecords(normalizedDate);
+  const withNextDay = attachNextDayResults(list, nextDay);
+
+  const missingSymbols = watchlist.filter((w) => !recordMap.has(w.symbol));
+
+  return {
+    type: 'watchlist',
+    direction: 'buy',
+    period: params.period || '1d',
+    list: withNextDay,
+    isMock: false,
+    updatedAt: new Date().toISOString(),
+    lastBatchTime: dateLabel,
+    error: missingSymbols.length > 0
+      ? `${missingSymbols.map((s) => s.name || s.symbol).join(', ')}은(는) 이 날짜 원본 데이터가 없어 제외됐습니다.`
+      : undefined,
+  };
+}
+
+/**
  * 3. 랭킹 조회 및 버전 무효화 / 원본 재계산 관리 함수
  */
 export async function getHistoryRankingData(params: HistoryQueryParams): Promise<InvestorRankingResponse> {
   const normalizedDate = normalizeDate(params.date);
+
+  // 🎯 [기능 추가 - "수급교집합 장마감 후보만도 히스토리에 남겨"] 기준 탭(당일/2일연속/3일연속)이 뭐든
+  // quietFilter가 켜져 있으면 이 전용 경로로 분기 - 익일 실제 결과까지 붙여서 반환한다.
+  if (params.type === 'overlap' && params.quietFilter) {
+    const baseMode: 'daily' | 'consecutive2d' | 'consecutive3d' =
+      params.mode === 'consecutive2d' ? 'consecutive2d' : params.mode === 'consecutive3d' ? 'consecutive3d' : 'daily';
+    return calculateQuietAccumFromHistory(normalizedDate, params, baseMode);
+  }
 
   // 수급교집합 2일/3일연속은 단일 날짜 원본이 아니라 여러 영업일을 이어서 봐야 하므로 별도 경로로 분기
   if (params.type === 'overlap' && (params.mode === 'consecutive2d' || params.mode === 'consecutive3d')) {
@@ -853,6 +1187,17 @@ export async function getHistoryRankingData(params: HistoryQueryParams): Promise
   // 단타 종합랭킹도 거래량증가율 계산을 위해 전일 원본이 추가로 필요해 별도 경로로 분기
   if (params.type === 'comprehensive') {
     return calculateComprehensiveFromHistory(normalizedDate, params);
+  }
+
+  // 🎯 [기능 추가] 장마감 후보군 - 다음날 실제 결과를 붙이는 별도 경로 (comprehensive와 동일 패턴)
+  if (params.type === 'postmarket') {
+    return calculatePostMarketFromHistory(normalizedDate, params);
+  }
+
+  // 🎯 [기능 추가] 관심종목 - "그 날짜의 전체 랭킹"이 아니라 "지금 내 관심종목들의 그 날짜 실적 조회"라
+  // 완전히 다른 경로(raw_daily_data 재계산이 아니라 심볼 목록 기준 조회)
+  if (params.type === 'watchlist') {
+    return calculateWatchlistFromHistory(normalizedDate, params);
   }
 
   const cacheKey = `${normalizedDate}_${params.type}_${params.direction || 'buy'}_${params.period || '1d'}_${params.market || 'ALL'}_${params.mode || 'daily'}_${params.surgingMode || 'fluctuation'}_${params.limit || 50}`;

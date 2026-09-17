@@ -54,12 +54,16 @@ function getKstTodayDateStr(): string {
   return `${y}-${m}-${d}`;
 }
 
+// 🎯 [기능 추가 - 사용자 요청: "히스토리에는 관심종목, 장마감후보군등 새로 만들어진게 없던데 그거
+// 업데이트해야지"] PC 버전(history/page.tsx)과 동일하게 추가한다.
 const TABS: { id: RankingType; label: string }[] = [
   { id: 'foreign', label: '외국인' },
   { id: 'organ', label: '기관' },
   { id: 'program', label: '프로그램' },
   { id: 'surging', label: '급등주' },
   { id: 'comprehensive', label: '단타종합' },
+  { id: 'watchlist', label: '관심종목' },
+  { id: 'postmarket', label: '장마감후보' },
   { id: 'overlap', label: '수급교집합' },
 ];
 
@@ -94,6 +98,9 @@ export default function MobileHistoryPage() {
   const [period] = useState<RankingPeriod>('1d');
   const [overlapMode, setOverlapMode] = useState<OverlapMode>('daily');
   const [surgingMode, setSurgingMode] = useState<SurgingSubMode>('fluctuation');
+  // 🎯 [기능 추가 - 사용자 요청: "수급교집합 장마감 후보만도 히스토리에 남겨"] history/page.tsx와 동일한
+  // "장마감 후보만" 토글.
+  const [quietFilter, setQuietFilter] = useState(false);
   const [items, setItems] = useState<RankingItem[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [lastBatchTime, setLastBatchTime] = useState('');
@@ -105,7 +112,7 @@ export default function MobileHistoryPage() {
   const [dropoutNote, setDropoutNote] = useState('');
   const [isDropoutLoading, setIsDropoutLoading] = useState(false);
 
-  const showDirectionToggle = activeTab !== 'surging' && activeTab !== 'comprehensive';
+  const showDirectionToggle = activeTab !== 'surging' && activeTab !== 'comprehensive' && activeTab !== 'postmarket' && activeTab !== 'watchlist';
   const isComprehensive = activeTab === 'comprehensive';
 
   // 가중치 재계산 - history/page.tsx 67~98번 줄과 100% 동일한 하이브리드 RMS 공식.
@@ -141,6 +148,7 @@ export default function MobileHistoryPage() {
         });
         if (activeTab === 'overlap') params.set('mode', overlapMode);
         if (activeTab === 'surging') params.set('surgingMode', surgingMode);
+        if (activeTab === 'overlap' && quietFilter) params.set('quietFilter', '1');
         const res = await fetch(`/api/history/ranking?${params.toString()}`);
         if (res.ok) {
           const json = await res.json();
@@ -158,7 +166,7 @@ export default function MobileHistoryPage() {
     }
     fetchHistoryData();
     return () => { isCancelled = true; };
-  }, [selectedDate, activeTab, market, period, direction, overlapMode, surgingMode]);
+  }, [selectedDate, activeTab, market, period, direction, overlapMode, surgingMode, quietFilter]);
 
   useEffect(() => {
     if (activeTab !== 'overlap' || !showDropouts) return;
@@ -289,6 +297,15 @@ export default function MobileHistoryPage() {
               <TrendingDown className="w-3 h-3" />
               이탈 종목
             </button>
+            {/* 🎯 [기능 추가 - 사용자 요청: "수급교집합 장마감 후보만도 히스토리에 남겨"] */}
+            {!showDropouts && (
+              <button
+                onClick={() => setQuietFilter((v) => !v)}
+                className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-bold border transition ${quietFilter ? 'bg-amber-500 text-white border-transparent' : 'bg-slate-50 dark:bg-[#131722] text-amber-700 dark:text-amber-400 border-slate-200 dark:border-[#2a2e39]'}`}
+              >
+                🌙 장마감 후보만
+              </button>
+            )}
           </div>
         )}
 
@@ -364,6 +381,7 @@ export default function MobileHistoryPage() {
             selectedDate={selectedDate}
             overlapMode={activeTab === 'overlap' ? overlapMode : undefined}
             surgingMode={activeTab === 'surging' ? surgingMode : undefined}
+            quietFilter={activeTab === 'overlap' ? quietFilter : undefined}
           />
         )}
       </main>

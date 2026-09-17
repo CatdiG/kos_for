@@ -6,6 +6,7 @@
 import { MarketType } from './types';
 import { TOP_300_STOCKS } from './stockUniverse300';
 import { getMasterStockList } from './stockDictionary';
+import { getGlobalMap } from './globalCache';
 
 export function getSettledAsOfDateLabel(lastTradeDate?: string): string {
   if (lastTradeDate && lastTradeDate.length === 8) {
@@ -282,10 +283,17 @@ export function resolveMarketType(
   return 'KOSPI';
 }
 
-const runtimePriceCache = new Map<
+// 🚨 [버그 수정 - 사용자 지적: "속도 문제면 서울 리전 이전으로 해결된 거 아니냐"로 시작된 조사 중 발견]
+// 이 Map이 평범한 모듈 스코프 `new Map()`이라, kisApi.ts 44번째 줄(getGlobalMap)의 주석에 이미 문서화된
+// 것과 완전히 동일한 문제를 겪고 있었다 - resolveStockPriceAndChange/updateRuntimeStockPrice를 쓰는
+// 라우트가 6곳(ranking/surging/quotes 등)인데, Vercel에서 각 route.ts가 별도 서버리스 함수로 뜨면 이
+// Map도 라우트마다 따로 생겨서, A 라우트가 방금 받아온 실시간가를 B 라우트는 전혀 못 보고 매번
+// "미확보"로 오판해 basePrice 더미값 폴백을 탄다 - KIS 응답 속도(리전)와는 무관한, 캐시 격리 문제다.
+// getGlobalMap()으로 바꿔 batchCacheStore 등과 동일하게 globalThis 기반 진짜 프로세스 전역 공유로 만든다.
+const runtimePriceCache = getGlobalMap<
   string,
   { price: number; change: number; changeRate: number; timestamp: number }
->();
+>('runtimePriceCache');
 
 export function updateRuntimeStockPrice(
   symbol: string,

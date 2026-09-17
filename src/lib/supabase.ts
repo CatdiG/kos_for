@@ -243,6 +243,102 @@ export async function fetchIntraday3mCandlesFromSupabase(date: string, symbol: s
 }
 
 /**
+ * 🎯 [KIS 실시간 웹소켓 브릿지 연동용] intraday_3m_candles에서 "최근 maxAgeMs 안에 갱신된" 데이터만
+ * 반환한다. ws-bridge(오라클 서버, H0UNCNT0 통합체결가 상시 구독)가 15초 주기로 이 테이블에 쓰고
+ * 있으므로, updated_at이 최근이면 REST(KRX전용 J, 애프터마켓 데이터 없음)보다 더 정확하고 더 넓은
+ * 시간대(통합가·애프터마켓 포함)를 커버하는 데이터라는 뜻이다 - oldEnough하면(브릿지가 그 종목을
+ * 감시 안 하거나 서버가 죽어있음) null을 반환해서 기존 REST 폴백 경로로 그대로 넘어가게 한다.
+ */
+export async function fetchFreshIntraday3mCandlesFromSupabase(
+  date: string,
+  symbol: string,
+  maxAgeMs: number
+): Promise<any[] | null> {
+  if (!date || !symbol) return null;
+  const client = getSupabaseAdmin() || getSupabasePublic();
+  if (!client) return null;
+
+  try {
+    const { data, error } = await client
+      .from('intraday_3m_candles')
+      .select('candles, updated_at')
+      .eq('date', date)
+      .eq('symbol', symbol)
+      .maybeSingle();
+
+    if (error) {
+      console.warn('[Supabase intraday_3m_candles Freshness Read Error]', error.message);
+      return null;
+    }
+    if (!data || !Array.isArray(data.candles) || data.candles.length === 0) return null;
+
+    const updatedAtMs = new Date(data.updated_at).getTime();
+    if (!Number.isFinite(updatedAtMs) || Date.now() - updatedAtMs > maxAgeMs) return null;
+
+    return data.candles;
+  } catch (e: any) {
+    console.warn('[Supabase intraday_3m_candles Freshness Read Exception]', e?.message || e);
+    return null;
+  }
+}
+
+/**
+ * 🎯 [KIS 실시간 웹소켓 브릿지 관심종목 관리] "관심종목이 맨날 바뀌는데 어떻게 관리하냐"는 문제 해결용.
+ * 오라클 서버를 SSH로 매번 고치는 대신, 이 테이블에 추가/삭제하면 ws-bridge가 30초마다 폴링해서
+ * 자동으로 KIS 웹소켓 구독을 갱신한다(서버 재시작 불필요).
+ */
+export async function fetchWsWatchlist(): Promise<Array<{ symbol: string; name: string | null; added_at: string }>> {
+  const client = getSupabaseAdmin() || getSupabasePublic();
+  if (!client) return [];
+  try {
+    const { data, error } = await client
+      .from('ws_watchlist')
+      .select('symbol, name, added_at')
+      .order('added_at', { ascending: true });
+    if (error) {
+      console.warn('[Supabase ws_watchlist List Error]', error.message);
+      return [];
+    }
+    return data || [];
+  } catch (e: any) {
+    console.warn('[Supabase ws_watchlist List Exception]', e?.message || e);
+    return [];
+  }
+}
+
+export async function addToWsWatchlist(symbol: string, name?: string): Promise<boolean> {
+  const client = getSupabaseAdmin();
+  if (!client || !symbol) return false;
+  try {
+    const { error } = await client.from('ws_watchlist').upsert({ symbol, name: name || null }, { onConflict: 'symbol' });
+    if (error) {
+      console.warn('[Supabase ws_watchlist Add Error]', error.message);
+      return false;
+    }
+    return true;
+  } catch (e: any) {
+    console.warn('[Supabase ws_watchlist Add Exception]', e?.message || e);
+    return false;
+  }
+}
+
+export async function removeFromWsWatchlist(symbol: string): Promise<boolean> {
+  const client = getSupabaseAdmin();
+  if (!client || !symbol) return false;
+  try {
+    const { error } = await client.from('ws_watchlist').delete().eq('symbol', symbol);
+    if (error) {
+      console.warn('[Supabase ws_watchlist Remove Error]', error.message);
+      return false;
+    }
+    return true;
+  } catch (e: any) {
+    console.warn('[Supabase ws_watchlist Remove Exception]', e?.message || e);
+    return false;
+  }
+}
+
+/**
  * Supabase DB intraday_3m_candles 테이블에서 특정 날짜에 "실제로 조회되어 저장된 적 있는" 심볼과
  * 그 시점의 봉 개수 목록을 반환한다. 큐레이션된 TOP_300_STOCKS 밖의 종목(검색으로 연 임의 종목 등)도
  * 그날 한 번이라도 조회됐으면 이 목록에 잡혀서, EOD 아카이빙 크론이 "완전체(130개)로 다시 채워야 할

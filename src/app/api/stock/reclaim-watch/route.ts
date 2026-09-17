@@ -1,5 +1,5 @@
-import { NextRequest, NextResponse } from 'next/server';
-import { pollReclaimWatchBatch } from '@/lib/kisApi';
+import { NextRequest, NextResponse, after } from 'next/server';
+import { pollReclaimWatchBatch, prewarmCandleCacheForSymbols } from '@/lib/kisApi';
 
 // 🎯 [아키텍처 개선 - 사용자 질문: "다른 방법은 없어?"] VWAP 재돌파 감시 + 피봇(R1/R2) 재돌파 감시를
 // 하나의 라우트로 합쳤다 - 예전엔 /api/stock/vwap-watch, /api/stock/pivot-watch가 따로 있어서 두
@@ -23,6 +23,10 @@ export async function GET(request: NextRequest) {
 
   try {
     const results = await pollReclaimWatchBatch(symbols);
+    // 🎯 [기능 추가 - 사용자 지적: "나 혼자만 쓰는데 방법 없나"] 응답은 그대로 즉시 반환하고, 3분봉
+    // 배경 예열(volSurge "거래량 미확인" 줄이기)은 after()로 응답 이후에 처리한다 - 폴링 응답 속도에
+    // 영향 없음, 청크 5개씩 순차 처리라 KIS 500 폭주 없음(수칙 2-8, 실측 검증됨).
+    after(() => prewarmCandleCacheForSymbols(symbols).catch(() => {}));
     return NextResponse.json(
       { results },
       { headers: { 'Cache-Control': 'no-store, max-age=0, must-revalidate' } }

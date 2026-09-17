@@ -121,9 +121,6 @@ export default function StockBadgeStrip({ symbol }: StockBadgeStripProps) {
             </span>
           )}
 
-          {/* 급등주 교집합 전용 문구 */}
-          {b.surgingBadge && <span className="opacity-80">{b.surgingBadge}</span>}
-
           {/* 단타 종합랭킹 점수 */}
           {typeof b.scoreTotal === 'number' && <span className="opacity-80">{b.scoreTotal}점</span>}
         </span>

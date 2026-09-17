@@ -41,6 +41,9 @@ export default function HistoryPage() {
   const [direction, setDirection] = useState<RankingDirection>('buy');
   const [period] = useState<RankingPeriod>('1d');
   const [overlapMode, setOverlapMode] = useState<OverlapMode>('daily');
+  // 🎯 [기능 추가 - 사용자 요청: "수급교집합 장마감 후보만도 히스토리에 남겨"] 라이브 탭과 동일한
+  // "장마감 후보만" 토글 - 당일/2일연속/3일연속 어느 기준 탭이든 위에 얹을 수 있다.
+  const [quietFilter, setQuietFilter] = useState(false);
   const [surgingMode, setSurgingMode] = useState<SurgingSubMode>('fluctuation');
   const [items, setItems] = useState<RankingItem[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -52,16 +55,20 @@ export default function HistoryPage() {
   const [dropoutNote, setDropoutNote] = useState<string>('');
   const [isDropoutLoading, setIsDropoutLoading] = useState(false);
 
+  // 🎯 [기능 추가 - 사용자 요청: "히스토리에는 관심종목, 장마감후보군등 새로 만들어진게 없던데 그거
+  // 업데이트해야지"] 실시간 탭(InvestorRankingTable.tsx)에 이미 있는 두 탭을 히스토리에도 추가한다.
   const TABS: Array<{ id: RankingType; label: string }> = [
     { id: 'foreign', label: '외국인' },
     { id: 'organ', label: '기관' },
     { id: 'program', label: '프로그램' },
     { id: 'surging', label: '급등주' },
     { id: 'comprehensive', label: '단타 종합랭킹' },
+    { id: 'watchlist', label: '관심종목' },
+    { id: 'postmarket', label: '장마감 후보군' },
     { id: 'overlap', label: '수급교집합' },
   ];
 
-  const showDirectionToggle = activeTab !== 'surging' && activeTab !== 'comprehensive';
+  const showDirectionToggle = activeTab !== 'surging' && activeTab !== 'comprehensive' && activeTab !== 'postmarket' && activeTab !== 'watchlist';
   const isComprehensive = activeTab === 'comprehensive';
 
   // 단타 종합랭킹 슬라이더 가중치로 재계산 - 라이브 대시보드와 동일한 하이브리드 비선형(RMS) 공식
@@ -115,6 +122,7 @@ export default function HistoryPage() {
         });
         if (activeTab === 'overlap') params.set('mode', overlapMode);
         if (activeTab === 'surging') params.set('surgingMode', surgingMode);
+        if (activeTab === 'overlap' && quietFilter) params.set('quietFilter', '1');
 
         const res = await fetch(`/api/history/ranking?${params.toString()}`);
         if (res.ok) {
@@ -139,7 +147,7 @@ export default function HistoryPage() {
     return () => {
       isCancelled = true;
     };
-  }, [selectedDate, activeTab, market, period, direction, overlapMode, surgingMode]);
+  }, [selectedDate, activeTab, market, period, direction, overlapMode, surgingMode, quietFilter]);
 
   // 수급교집합 "이탈 종목" - 2일연속/3일연속 양쪽 다 조회해서 합쳐 보여준다(라이브 탭과 동일 방식)
   useEffect(() => {
@@ -346,6 +354,25 @@ export default function HistoryPage() {
           </div>
         )}
 
+        {/* 🎯 [기능 추가 - 사용자 요청: "수급교집합 장마감 후보만도 히스토리에 남겨"] 라이브 탭과 동일한
+            "장마감 후보만" 토글 - 기준 탭(당일/2일연속/3일연속) 위에 얹는 독립 필터. */}
+        {activeTab === 'overlap' && !showDropouts && (
+          <div className="mb-4">
+            <button
+              onClick={() => setQuietFilter((v) => !v)}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold border transition-all ${
+                quietFilter
+                  ? 'bg-amber-500 text-white border-amber-500 shadow-sm'
+                  : 'bg-white dark:bg-slate-900 text-amber-700 dark:text-amber-400 border-amber-200 dark:border-amber-900/50 hover:bg-amber-50 dark:hover:bg-amber-950/30'
+              }`}
+              title="종가위치·거래량배율·5일누적수익률이 낮을수록 유리하다는 실측 백테스트 기준으로 재정렬합니다"
+            >
+              <span>🌙</span>
+              <span>장마감 후보만</span>
+            </button>
+          </div>
+        )}
+
         {/* 단타 종합랭킹 가중치 슬라이더 패널 - 라이브 대시보드와 동일 구성 */}
         {isComprehensive && (
           <div className="mb-4 bg-gradient-to-r from-purple-900/5 via-indigo-900/5 to-blue-900/5 dark:from-purple-950/30 dark:via-indigo-950/30 dark:to-blue-950/30 border border-purple-200 dark:border-purple-900/40 rounded-2xl p-3.5 space-y-3">
@@ -473,6 +500,7 @@ export default function HistoryPage() {
             selectedDate={selectedDate}
             surgingMode={activeTab === 'surging' ? surgingMode : undefined}
             overlapMode={activeTab === 'overlap' ? overlapMode : undefined}
+            quietFilter={activeTab === 'overlap' ? quietFilter : undefined}
           />
         )}
       </main>
