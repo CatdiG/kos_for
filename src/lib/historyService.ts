@@ -15,6 +15,7 @@ import {
 import { TOP_300_STOCKS } from './stockUniverse300';
 import { getSupabaseAdmin, getSupabasePublic, RawDailyInvestorRecord, fetchWsWatchlist } from './supabase';
 import { resolveMarketType, resolveStockPriceAndChange } from './mockData';
+import { getGlobalMap } from './globalCache';
 
 // ============================================================================
 // 🛡️ [안전장치 1] 계산 로직 버전 관리 및 영구 저장 보류 스위치
@@ -146,7 +147,19 @@ export async function loadRawDailyRecordsForDate(targetDate: string): Promise<Ra
  * 1-1. 로컬 디스크 + Supabase에 실제로 수집돼 있는 날짜 목록을 오름차순으로 반환한다.
  * (수급교집합 2일/3일연속처럼 여러 날짜를 이어서 봐야 하는 계산에 사용)
  */
+// 🚨 [버그 수정 - 사용자 지적: "배포된 히스토리에 다음날 결과 다 미수집으로 뜨는데. 로컬에서는 잘뜨는구만"]
+// listAvailableRawDates()의 Supabase 조회 결과를 짧게 캐시한다 - 배포 환경에선 scratch/ 로컬 디스크
+// 폴백이 아예 없어(.gitignore로 배포 번들에서 제외) 매 요청마다 전체 페이지네이션을 다시 도는 건
+// 낭비다. 날짜 목록은 하루 한 번(장마감 후 배치 수집) 외엔 안 바뀌므로 5분이면 충분하다.
+const AVAILABLE_DATES_CACHE_TTL_MS = 5 * 60 * 1000;
+const availableDatesCacheStore = getGlobalMap<'dates', { data: string[]; timestamp: number }>('historyAvailableDatesCache');
+
 export async function listAvailableRawDates(): Promise<string[]> {
+  const cached = availableDatesCacheStore.get('dates');
+  if (cached && Date.now() - cached.timestamp < AVAILABLE_DATES_CACHE_TTL_MS) {
+    return cached.data;
+  }
+
   const dateSet = new Set<string>();
 
   // 로컬 디스크: scratch/raw_daily_data/{YYYYMMDD}.json 패턴만 (3m_* 3분봉 캐시 파일 제외)
@@ -162,20 +175,46 @@ export async function listAvailableRawDates(): Promise<string[]> {
     }
   }
 
-  // Supabase: distinct date (행이 많으므로 상위 2000건만 훑어 중복 제거)
+  // 🚨 [버그 수정 - 실측: scratch/diagnose_next_day_missing.js] 예전 코드는 order 절 없이
+  // .limit(2000)만 걸어서, raw_daily_data(현재 29,129행, 계속 증가)의 기본 반환 순서상 가장 오래된
+  // 4일치(20260424~20260429)만 돌아왔다 - 로컬에선 위 로컬 디스크 폴백이 전체 날짜를 갖고 있어서
+  // 가려졌지만, scratch/가 배포되지 않는 Vercel 프로덕션에서는 이 4일짜리 목록이 전부라 "다음 영업일"을
+  // 영원히 못 찾아 항상 "미수집"으로 떴다. date 컬럼만(행당 8바이트) 끝까지 페이지네이션해서 완전한
+  // 날짜 목록을 만든다 - 테이블이 수십만 행으로 커져도 date 컬럼만이라 전송량이 작아 안전하다.
   const client = getSupabaseAdmin() || getSupabasePublic();
   if (client) {
     try {
-      const { data, error } = await client.from('raw_daily_data').select('date').limit(2000);
-      if (!error && data) {
-        data.forEach((row: any) => row.date && dateSet.add(row.date));
+      // 🚨 [진단 스크립트로 실측 확인 - scratch/diagnose_next_day_missing.js] PostgREST가 서버 설정상
+      // 요청 range/limit과 무관하게 응답을 최대 1000행으로 잘라 보낸다(실측: range(0,4999) 요청해도
+      // 실제로는 1000행만 옴). 순차 while 루프로 끝까지 돌면 정확하긴 하지만(실측 31회 왕복, 3.9초)
+      // Vercel 서버리스 기본 타임아웃(10초)에 위험할 만큼 가깝다 - 먼저 count(head 요청, ~0.2초)로
+      // 전체 행 수를 알아낸 뒤, 필요한 페이지를 한꺼번에 Promise.all로 병렬 조회한다(실측 총 1.2초로
+      // 3배 이상 단축, 결과는 순차 방식과 100% 동일하게 99일치 전부 확인 - scratch/verify_fix_real_client.js).
+      const PAGE_SIZE = 1000;
+      const { count, error: countError } = await client
+        .from('raw_daily_data')
+        .select('date', { count: 'exact', head: true });
+      if (countError || !count) {
+        console.warn('[History Layer A] Supabase 행 수 조회 실패:', countError);
+      } else {
+        const pageCount = Math.ceil(count / PAGE_SIZE);
+        const pages = await Promise.all(
+          Array.from({ length: pageCount }, (_, i) =>
+            client.from('raw_daily_data').select('date').range(i * PAGE_SIZE, i * PAGE_SIZE + PAGE_SIZE - 1)
+          )
+        );
+        pages.forEach(({ data, error }) => {
+          if (!error && data) data.forEach((row: any) => row.date && dateSet.add(row.date));
+        });
       }
     } catch (e) {
       console.warn('[History Layer A] Supabase 날짜 목록 조회 실패:', e);
     }
   }
 
-  return [...dateSet].sort();
+  const result = [...dateSet].sort();
+  availableDatesCacheStore.set('dates', { data: result, timestamp: Date.now() });
+  return result;
 }
 
 /**
