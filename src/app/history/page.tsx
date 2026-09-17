@@ -57,6 +57,8 @@ export default function HistoryPage() {
 
   // 🎯 [기능 추가 - 사용자 요청: "히스토리에는 관심종목, 장마감후보군등 새로 만들어진게 없던데 그거
   // 업데이트해야지"] 실시간 탭(InvestorRankingTable.tsx)에 이미 있는 두 탭을 히스토리에도 추가한다.
+  // 🚨 [기능 통합 - 사용자 요청: "히스토리도 장마감 후보군 업데이트 해줘. 없어진건 지워주고"] 라이브
+  // 대시보드와 동일하게 급등/발굴/전조 3개 탭을 "장마감 후보군" 하나로 합친다(id는 postmarket 대표값).
   const TABS: Array<{ id: RankingType; label: string }> = [
     { id: 'foreign', label: '외국인' },
     { id: 'organ', label: '기관' },
@@ -67,8 +69,9 @@ export default function HistoryPage() {
     { id: 'postmarket', label: '장마감 후보군' },
     { id: 'overlap', label: '수급교집합' },
   ];
+  const isPostMarketGroup = activeTab === 'postmarket' || activeTab === 'discovery' || activeTab === 'precursor';
 
-  const showDirectionToggle = activeTab !== 'surging' && activeTab !== 'comprehensive' && activeTab !== 'postmarket' && activeTab !== 'watchlist';
+  const showDirectionToggle = activeTab !== 'surging' && activeTab !== 'comprehensive' && !isPostMarketGroup && activeTab !== 'watchlist';
   const isComprehensive = activeTab === 'comprehensive';
 
   // 단타 종합랭킹 슬라이더 가중치로 재계산 - 라이브 대시보드와 동일한 하이브리드 비선형(RMS) 공식
@@ -279,7 +282,8 @@ export default function HistoryPage() {
         {/* 탭 바 */}
         <div className="flex border-b border-slate-200 dark:border-slate-800 mb-3 overflow-x-auto gap-1">
           {TABS.map((tab) => {
-            const isActive = activeTab === tab.id;
+            // "장마감 후보군" 탭 버튼은 activeTab이 postmarket/discovery/precursor 중 무엇이든 활성 표시.
+            const isActive = tab.id === 'postmarket' ? isPostMarketGroup : activeTab === tab.id;
             return (
               <button
                 key={tab.id}
@@ -312,6 +316,30 @@ export default function HistoryPage() {
                   surgingMode === m.id
                     ? 'bg-orange-600 text-white shadow-sm'
                     : 'text-orange-700 dark:text-orange-300 hover:text-orange-900'
+                }`}
+              >
+                {m.label}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* 🚨 [기능 통합 - 사용자 요청: "히스토리도 장마감 후보군 업데이트 해줘"] 급등/발굴/전조 서브탭 -
+            라이브 대시보드(InvestorRankingTable.tsx)와 동일 구성. */}
+        {isPostMarketGroup && (
+          <div className="flex items-center gap-1 mb-4 bg-amber-50 dark:bg-amber-950/30 p-1 rounded-xl border border-amber-200 dark:border-amber-900/40 w-fit text-xs">
+            {([
+              { id: 'postmarket', label: '급등' },
+              { id: 'discovery', label: '발굴' },
+              { id: 'precursor', label: '전조' },
+            ] as Array<{ id: RankingType; label: string }>).map((m) => (
+              <button
+                key={m.id}
+                onClick={() => setActiveTab(m.id)}
+                className={`px-3 py-1.5 rounded-lg font-bold transition-all whitespace-nowrap ${
+                  activeTab === m.id
+                    ? 'bg-amber-600 text-white shadow-sm'
+                    : 'text-amber-700 dark:text-amber-300 hover:text-amber-900'
                 }`}
               >
                 {m.label}

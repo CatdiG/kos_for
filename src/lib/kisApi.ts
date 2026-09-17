@@ -4814,6 +4814,463 @@ export async function fetchKisPostMarketCandidates(market: MarketType = 'ALL'): 
   return res;
 }
 
+// ============================================================================
+// 🎯 [기능 추가 - 사용자 요청: "발굴 장마감" 탭] "급등 장마감"(위 fetchKisPostMarketCandidates)은
+// 등락률·거래량·거래대금 상위 종목군에서만 후보를 고르다 보니 다음날 결과가 신통치 않다는 실측 피드백을
+// 받았다("급등주에서 고르려니까 다음날 결과가 그다지 좋지않은거같아"). 이 함수는 그 랭킹 풀에 의존하지
+// 않고 KIS 등락률순위(FHPST01700000)·거래량/거래대금순위(FHPST01710000) 두 TR을 여러 정렬 기준으로
+// 반복 호출해 훨씬 넓은 후보군을 모은 뒤(실측: KOSPI+KOSDAQ 합쳐 약 260여 종목 - scratch/
+// diagnose_discovery_universe.js), "오늘 얼마나 올랐나"가 아니라 "오르는 과정에서 무엇이 있었나"를
+// 5가지 지표로 채점한다:
+//   1) absorption   - 상승 중 누가 물량을 받았는지(외국인/기관 장중 추정 순매수)
+//   2) afternoon    - 오늘 누적 거래대금 중 14시 이후 비중(매수세가 마감까지 유지됐는지)
+//   3) volumeSurge  - 오늘 거래대금 ÷ 최근 20거래일 평균 거래대금(평소 대비 얼마나 몰렸는지)
+//   4) pullback     - 당일 고가 등락률 대비 현재 등락률의 하락폭(눌림에도 안 무너졌는지)
+//   5) relative     - 현재 등락률 - 소속 시장(KOSPI/KOSDAQ) 지수 등락률(시장 대비 상대강도)
+// 장마감 "후"가 아니라 "전"(오후 2시 30분경)에 계산해야 그날 종가 매수 판단에 쓸 수 있다는 사용자
+// 요청에 따라, 이 함수는 cron(/api/cron/compute-discovery-postmarket)이 하루 한 번 호출해 결과를
+// discovery_snapshots 테이블에 영구 저장하고, 화면(/api/stock/discovery)은 그 저장값만 읽는다 -
+// 종목당 최대 4회(투자자동향 추정 1회 + 3분봉 당일 전체 1회(내부적으로 여러 슬롯 병렬) + 최근
+// 20거래일 일봉 1회 + 당일 시세 1회) KIS 호출이 필요해 라이브 페이지 요청마다 재계산하기엔 무겁다.
+//
+// ⚠️ [정직한 한계 고지 - 수칙 1-7] discoveryScore 가중치는 5개 지표를 동일 비중(각 20%)으로 단순
+// 평균한 값이다 - "급등 장마감"의 postMarketScore가 실측 백테스트로 선별력이 거의 없다고 판명났던
+// 것과 달리, 이 공식은 장마감 "전" 시점 스냅샷이 필요해서 과거 데이터로 미리 검증할 방법이 없다
+// (raw_daily_data는 장마감 확정치만 있어 14:30 시점 재현이 불가능하다). discovery_snapshots에
+// 매일 쌓이는 실측 결과가 모이면, "급등 장마감"에서 했던 것과 동일한 방식으로 반드시 재검증해야 한다.
+// ============================================================================
+const DISCOVERY_ENRICH_LIMIT = 40; // 넓은 seed 풀 중 값비싼 종목별 조회 대상으로 삼는 상위 개수(거래대금 기준)
+const DISCOVERY_ENRICH_CHUNK_SIZE = 3;
+const DISCOVERY_ENRICH_DELAY_MS = 900;
+
+/** 등락률순위/거래량·거래대금순위 TR을 여러 정렬 기준으로 반복 호출해 넓은 후보군을 모은다(실측: scratch/diagnose_discovery_universe.js). */
+async function fetchKisDiscoverySeedPool(market: MarketType): Promise<RankingItem[]> {
+  const iscdList = market === 'KOSPI' ? ['0001'] : market === 'KOSDAQ' ? ['1001'] : ['0001', '1001'];
+  const itemMap = new Map<string, RankingItem>();
+
+  const collect = (list: RankingItem[]) => {
+    list.forEach((item) => {
+      if (!itemMap.has(item.symbol)) itemMap.set(item.symbol, item);
+    });
+  };
+
+  for (const iscd of iscdList) {
+    // FID_RANK_SORT_CLS_CODE: 0=상승율, 1=하락율, 2=시가대비상승율, 3=상한가/하한가 근접 등 - 값마다
+    // 서로 다른 상위 30종목을 준다(실측 확인, 4는 3과 중복이라 제외).
+    for (const sortCode of ['0', '1', '2', '3']) {
+      await enforceRateLimit();
+      const list = await fetchKisDiscoveryRankingSlice('FHPST01700000', iscd, 'FID_RANK_SORT_CLS_CODE', sortCode);
+      collect(list);
+    }
+    // FID_BLNG_CLS_CODE: 0=거래량, 1=거래회전율, 2=평균거래량대비, 3=거래대금 등 - 마찬가지로 값마다
+    // 서로 다른 상위 30종목(4는 3과 중복이라 제외).
+    for (const blngCode of ['0', '1', '2', '3']) {
+      await enforceRateLimit();
+      const list = await fetchKisDiscoveryRankingSlice('FHPST01710000', iscd, 'FID_BLNG_CLS_CODE', blngCode);
+      collect(list);
+    }
+  }
+
+  return Array.from(itemMap.values()).filter((item) => !isEtfOrEtn(item.name));
+}
+
+async function fetchKisDiscoveryRankingSlice(
+  trId: 'FHPST01700000' | 'FHPST01710000',
+  iscd: string,
+  paramKey: 'FID_RANK_SORT_CLS_CODE' | 'FID_BLNG_CLS_CODE',
+  paramValue: string
+): Promise<RankingItem[]> {
+  const isVirtual = process.env.KIS_VIRTUAL === 'true';
+  const defaultBaseUrl = isVirtual
+    ? 'https://openapivts.koreainvestment.com:29443'
+    : 'https://openapi.koreainvestment.com:9443';
+  const baseUrl = process.env.KIS_BASE_URL || defaultBaseUrl;
+  const appKey = process.env.KIS_APPKEY!;
+  const appSecret = process.env.KIS_APPSECRET!;
+
+  const token = await getKisAccessToken();
+  if (!token) return [];
+
+  const url = trId === 'FHPST01700000'
+    ? `${baseUrl}/uapi/domestic-stock/v1/ranking/fluctuation?FID_COND_MRKT_DIV_CODE=J&FID_COND_SCR_DIV_CODE=20170&FID_INPUT_ISCD=${iscd}&FID_RANK_SORT_CLS_CODE=${paramKey === 'FID_RANK_SORT_CLS_CODE' ? paramValue : '0'}&FID_PRC_CLS_CODE=0&FID_INPUT_PRICE_1=0&FID_INPUT_PRICE_2=0&FID_VOL_CNT=0&FID_TRGT_CLS_CODE=0&FID_TRGT_EXLS_CLS_CODE=0&FID_DIV_CLS_CODE=0&FID_INPUT_CNT_1=0&FID_RSFL_RATE1=0&FID_RSFL_RATE2=0`
+    : `${baseUrl}/uapi/domestic-stock/v1/quotations/volume-rank?FID_COND_MRKT_DIV_CODE=J&FID_COND_SCR_DIV_CODE=20171&FID_INPUT_ISCD=${iscd}&FID_DIV_CLS_CODE=0&FID_BLNG_CLS_CODE=${paramKey === 'FID_BLNG_CLS_CODE' ? paramValue : '0'}&FID_TRGT_CLS_CODE=111111111&FID_TRGT_EXLS_CLS_CODE=000000000&FID_INPUT_PRICE_1=0&FID_INPUT_PRICE_2=0&FID_VOL_CNT=0&FID_INPUT_CNT_1=0`;
+
+  try {
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: {
+        'content-type': 'application/json; charset=utf-8',
+        authorization: `Bearer ${token}`,
+        appkey: appKey,
+        appsecret: appSecret,
+        tr_id: trId,
+        custtype: 'P',
+      },
+      cache: 'no-store',
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) return [];
+    const json = await res.json().catch(() => null);
+    if (!json || json.rt_cd !== '0' || !Array.isArray(json.output)) return [];
+
+    return json.output.map((item: any): RankingItem => {
+      const symbol = item.stck_shrn_iscd || item.mksc_shrn_iscd || '';
+      const rawName = item.hts_kor_isnm || '';
+      const name = getStockName(symbol, rawName);
+      if (symbol && rawName) registerRuntimeStockName(symbol, rawName);
+      const currentPrice = parseInt(item.stck_prpr || '0', 10);
+      const sign = item.prdy_vrss_sign || '3';
+      let change = parseInt(item.prdy_vrss || '0', 10);
+      if (sign === '4' || sign === '5') change = -Math.abs(change);
+      const changeRate = parseFloat(item.prdy_ctrt || '0');
+      const volume = parseInt(item.acml_vol || '0', 10);
+      const amountEok = item.acml_tr_pbmn
+        ? Number((parseInt(item.acml_tr_pbmn, 10) / 100000000).toFixed(1))
+        : Number(((currentPrice * volume) / 100000000).toFixed(1));
+
+      return {
+        rank: 0,
+        symbol,
+        name,
+        market: resolveMarketType(symbol),
+        currentPrice,
+        change,
+        changeRate,
+        netBuyQty: 0,
+        netBuyAmt: 0,
+        netBuyAmtEok: 0,
+        volume,
+        ratioVsVolume: 0,
+        amountEok,
+        type: 'discovery',
+      };
+    }).filter((item: RankingItem) => item.symbol);
+  } catch (e) {
+    console.warn(`[Discovery Seed Slice Error] ${trId}/${paramKey}=${paramValue}/${iscd}:`, (e as any)?.message || e);
+    return [];
+  }
+}
+
+/** 종목 하나의 발굴 지표 4종(absorption/afternoon/volumeSurge/pullback)을 계산한다 - relativeStrength는 지수 등락률을 공유해야 해서 호출부에서 더한다. */
+async function enrichDiscoveryCandidate(item: RankingItem): Promise<RankingItem> {
+  try {
+    const [estimate, todayPrice, bars, intraday] = await Promise.all([
+      fetchKisInvestorTrendEstimate(item.symbol).catch(() => null),
+      fetchKisDailyPrice(item.symbol).catch(() => undefined),
+      fetchKisRecentDailyBars(item.symbol).catch(() => undefined),
+      fetchKis3mCandlesFullDay(item.symbol).catch(() => null),
+    ]);
+
+    // 1) 매집 주체 - 장중 추정치(10:00/11:30/13:20/14:30 중 가장 최신 차수)의 부호로 판정
+    let absorptionDirection: 'foreign' | 'organ' | 'both' | 'none' = 'none';
+    let absorptionBadge = '데이터 없음';
+    if (estimate) {
+      const fBuy = estimate.foreignQty > 0;
+      const oBuy = estimate.organQty > 0;
+      if (fBuy && oBuy) { absorptionDirection = 'both'; absorptionBadge = '외국인+기관 동시 매수'; }
+      else if (fBuy) { absorptionDirection = 'foreign'; absorptionBadge = '외국인 매수 우위'; }
+      else if (oBuy) { absorptionDirection = 'organ'; absorptionBadge = '기관 매수 우위'; }
+      else { absorptionDirection = 'none'; absorptionBadge = '외국인·기관 매도 우위'; }
+    }
+
+    // 2) 눌림 저항 - 당일 고가 등락률 대비 현재 등락률 하락폭 (0에 가까울수록 고가권 유지) +
+    // "종가가 고가의 90% 이상" 채점용 현재가/고가 비율(%)도 같이 계산(수칙 1-6 - todayPrice 재사용)
+    let pullbackFromHighPct: number | undefined;
+    let closeToHighRatioPct: number | undefined;
+    if (todayPrice && todayPrice.high > 0 && item.currentPrice > 0) {
+      closeToHighRatioPct = Number(((item.currentPrice / todayPrice.high) * 100).toFixed(2));
+      const prevClose = item.currentPrice / (1 + item.changeRate / 100);
+      if (prevClose > 0) {
+        const highChangeRate = ((todayPrice.high - prevClose) / prevClose) * 100;
+        pullbackFromHighPct = Number((highChangeRate - item.changeRate).toFixed(2));
+      }
+    }
+
+    // 3) 거래대금/거래량 급증배율 - 오늘(현재까지 누적) ÷ 최근 20거래일(오늘 제외) 평균. bars에 이미
+    // amount(거래대금)와 volume(거래량)이 둘 다 있어 추가 KIS 호출 없이 둘 다 계산한다(수칙 1-6).
+    let volumeSurgeRatio: number | undefined; // 거래대금 배율
+    let rawVolumeSurgeRatio: number | undefined; // 거래량(주식 수) 배율
+    // 5) 최근 저점보다 높은 저점 - 최근 5거래일 최저가가 그 이전 5거래일 최저가보다 높으면 상승 저점 패턴
+    let higherLowPattern: boolean | undefined;
+    if (bars && bars.length > 0) {
+      const priorBars = bars.filter((b) => b.date !== undefined).slice(-21, -1); // 오늘 제외 최근 20개
+      if (priorBars.length >= 10) {
+        const avgAmount = priorBars.reduce((sum, b) => sum + b.amount, 0) / priorBars.length;
+        const avgVolume = priorBars.reduce((sum, b) => sum + b.volume, 0) / priorBars.length;
+        const todayAmount = (item.amountEok || 0) * 100000000;
+        if (avgAmount > 0) volumeSurgeRatio = Number((todayAmount / avgAmount).toFixed(2));
+        if (avgVolume > 0) rawVolumeSurgeRatio = Number(((item.volume || 0) / avgVolume).toFixed(2));
+      }
+      const excludingToday = bars.filter((b) => b.date !== undefined).slice(0, -1); // 오늘 제외, 오름차순(과거->최근)
+      if (excludingToday.length >= 10) {
+        const recentWindow = excludingToday.slice(-5);
+        const priorWindow = excludingToday.slice(-10, -5);
+        const recentLow = Math.min(...recentWindow.map((b) => b.low));
+        const priorLow = Math.min(...priorWindow.map((b) => b.low));
+        higherLowPattern = recentLow > priorLow;
+      }
+    }
+
+    // 4) 오후 매수세 지속 - 오늘 3분봉(현재 시각까지) 중 14시 이후 거래대금 비중
+    let afternoonVolumeRatioPct: number | undefined;
+    if (intraday && Array.isArray(intraday.candles) && intraday.candles.length > 0) {
+      let totalValue = 0;
+      let afternoonValue = 0;
+      intraday.candles.forEach((c: any) => {
+        const barValue = (c.closePrice || 0) * (c.volume || 0);
+        totalValue += barValue;
+        const hour = parseInt((c.time || '00:00').split(':')[0], 10);
+        if (hour >= 14) afternoonValue += barValue;
+      });
+      if (totalValue > 0) afternoonVolumeRatioPct = Number(((afternoonValue / totalValue) * 100).toFixed(1));
+    }
+
+    return {
+      ...item,
+      absorptionDirection,
+      absorptionBadge,
+      pullbackFromHighPct,
+      closeToHighRatioPct,
+      volumeSurgeRatio,
+      rawVolumeSurgeRatio,
+      higherLowPattern,
+      afternoonVolumeRatioPct,
+      foreignAbsorptionQty: estimate?.foreignQty,
+      organAbsorptionQty: estimate?.organQty,
+    };
+  } catch (e) {
+    console.warn(`[Discovery Enrich Skip] ${item.symbol}:`, (e as any)?.message || e);
+    return item;
+  }
+}
+
+export async function fetchKisDiscoveryCandidates(market: MarketType = 'ALL'): Promise<InvestorRankingResponse> {
+  const dateLabel = getSettledAsOfDateLabel();
+
+  // 1. 넓은 seed 풀 수집 (실측 약 260여 종목 - 등락률/거래량/거래대금 랭킹 의존 없이 여러 정렬 기준 합집합)
+  const seedPool = await fetchKisDiscoverySeedPool(market);
+  if (seedPool.length === 0) {
+    return { type: 'discovery', direction: 'buy', period: '1d', list: [], isMock: false, updatedAt: new Date().toISOString(), lastBatchTime: dateLabel };
+  }
+
+  // 2. 값비싼 종목별 조회는 비용이 커서(종목당 최대 4회 KIS 호출) 거래대금 상위 N개로 제한한다.
+  const candidates = [...seedPool].sort((a, b) => (b.amountEok || 0) - (a.amountEok || 0)).slice(0, DISCOVERY_ENRICH_LIMIT);
+
+  // 3. 시장 지수(KOSPI/KOSDAQ) 등락률 - 종목 전체가 공유하므로 딱 2회만 호출
+  const [kospiIdx, kosdaqIdx] = await Promise.all([
+    fetchKisIndexDailyTrend('KOSPI', '5d', true).catch(() => null),
+    fetchKisIndexDailyTrend('KOSDAQ', '5d', true).catch(() => null),
+  ]);
+  const indexChangeRate = { KOSPI: kospiIdx?.indexInfo?.changeRate ?? 0, KOSDAQ: kosdaqIdx?.indexInfo?.changeRate ?? 0 };
+
+  // 4. 종목별 지표 계산 - KIS 초당 건수 제한 여유 확보를 위해 청크 단위 처리(다른 청크 기반 로직과 동일 패턴)
+  const enriched: RankingItem[] = [];
+  for (let i = 0; i < candidates.length; i += DISCOVERY_ENRICH_CHUNK_SIZE) {
+    const chunk = candidates.slice(i, i + DISCOVERY_ENRICH_CHUNK_SIZE);
+    const results = await Promise.all(chunk.map((item) => enrichDiscoveryCandidate(item)));
+    results.forEach((item) => {
+      const marketKey = (item.market === 'KOSDAQ' ? 'KOSDAQ' : 'KOSPI') as 'KOSPI' | 'KOSDAQ';
+      item.relativeStrengthPct = Number((item.changeRate - indexChangeRate[marketKey]).toFixed(2));
+      enriched.push(item);
+    });
+    if (i + DISCOVERY_ENRICH_CHUNK_SIZE < candidates.length) {
+      await new Promise((resolve) => setTimeout(resolve, DISCOVERY_ENRICH_DELAY_MS));
+    }
+  }
+
+  // 5. 수급 필터 - 사용자 요청: "외국인+기관 둘 다 강한 순매도 → 후보에서 제외, 한쪽만 매도 → 후보
+  // 유지(점수만 낮아짐), 둘 다 매수 → 정상 고득점". absorptionBadge가 '외국인·기관 매도 우위'인 경우만
+  // 정확히 "둘 다 확정적으로 순매도"를 뜻한다(estimate 자체가 없어 '데이터 없음'인 경우는 실패로 인한
+  // 결측일 뿐 매도 신호가 아니므로 걸러내지 않는다 - 수칙 1-3, 결측을 나쁜 신호로 오판하지 않음).
+  const beforeFilterCount = enriched.length;
+  const filtered = enriched.filter((item) => item.absorptionBadge !== '외국인·기관 매도 우위');
+  console.log(`[발굴 장마감 수급 필터] 외국인+기관 동시 순매도 제외: ${beforeFilterCount}개 -> ${filtered.length}개`);
+
+  // 6. 종합 점수 - 사용자가 직접 확정한 8개 조건 배점표(합계 100점)를 그대로 절대 점수로 매긴다.
+  // 이전엔 후보군 내 백분위 상대평가였는데, 그 방식은 "외국인·기관 매도 우위"인 종목도 다른 4개 지표가
+  // 세면 percentile 평균으로 상쇄돼 1위까지 오르는 문제가 실측으로 확인됐다(비츠로테크 사례, 2026-09-18).
+  // 절대 점수제는 조건을 못 채우면 그 항목이 0점으로 확실히 깎여서 이 문제가 구조적으로 사라진다.
+  // 배점: 거래대금 3배+(15)·거래량 3배+(5)·종가 고가 90%+(10)·저점 상승(15)·오후 매수세(15)·
+  // 상대강도(15)·외국인 순매수(12)·기관 순매수(13) = 100점. "당일 신규 뉴스/공시"는 KIS API에 없는
+  // DART 공시 연동이 필요해 이번엔 제외했다(사용자와 합의 - 나중에 별도 데이터소스 연동 후 추가).
+  // 배율/비율형 조건은 "이상"을 완전히 못 채워도 부분점수를 주는 선형 램프로 구현했다(임계값 코앞에서
+  // 0점으로 뚝 떨어지는 절벽 방지) - 값이 시작점 이하면 0점, 목표치 이상이면 만점으로 캡핑한다.
+  const ramp = (value: number | undefined, from: number, to: number, maxScore: number): number => {
+    if (value === undefined) return 0;
+    if (value <= from) return 0;
+    if (value >= to) return maxScore;
+    return Number((((value - from) / (to - from)) * maxScore).toFixed(2));
+  };
+
+  filtered.forEach((item) => {
+    const amountSurgeScore = ramp(item.volumeSurgeRatio, 1, 3, 15); // 거래대금 평소 대비 3배 이상
+    const rawVolumeSurgeScore = ramp(item.rawVolumeSurgeRatio, 1, 3, 5); // 거래량 평소 대비 3배 이상
+    const closeToHighScore = ramp(item.closeToHighRatioPct, 80, 90, 10); // 종가가 고가의 90% 이상
+    const higherLowScore = item.higherLowPattern ? 15 : 0; // 최근 저점보다 높은 저점
+    const afternoonScore = ramp(item.afternoonVolumeRatioPct, 23, 40, 15); // 장 막판 거래량 증가(23%=시간 비례 균등 기준선)
+    const relativeScore = ramp(item.relativeStrengthPct, 0, 5, 15); // 시장 대비 강함
+    const foreignScore = (item.foreignAbsorptionQty || 0) > 0 ? 12 : 0; // 외국인 순매수
+    const organScore = (item.organAbsorptionQty || 0) > 0 ? 13 : 0; // 기관 순매수
+    item.discoveryScore = Number((amountSurgeScore + rawVolumeSurgeScore + closeToHighScore + higherLowScore + afternoonScore + relativeScore + foreignScore + organScore).toFixed(1));
+  });
+
+  filtered.sort((a, b) => (b.discoveryScore || 0) - (a.discoveryScore || 0));
+  filtered.forEach((item, idx) => { item.rank = idx + 1; });
+
+  return {
+    type: 'discovery',
+    direction: 'buy',
+    period: '1d',
+    list: filtered,
+    isMock: false,
+    updatedAt: new Date().toISOString(),
+    lastBatchTime: dateLabel,
+  };
+}
+
+// ============================================================================
+// 🎯 [기능 추가 - 사용자 요청: "전조 장마감" 탭] "발굴 장마감"이 이미 오른 종목을 고르는 것과 정반대로,
+// 이 탭은 "아직 크게 안 올랐는데 거래량/거래대금만 조용히 늘고 있는" 돌파 전조 종목을 찾는다:
+//   1) 최근 며칠 상승률이 과하지 않음 - 이미 급등한 종목 제외(하드 필터)
+//   2) 오늘 거래량/거래대금이 평소 대비 비정상 증가 + 그 증가가 하루짜리가 아니라 최근 며칠 추세
+//   3) 그 거래 증가 대비 가격 상승은 아직 작음(다이버전스)
+//   4) 그런데도 장중 고가 부근을 유지 중
+// seed 후보군은 등락률순위가 아니라 거래량/거래대금순위(FHPST01710000)만 여러 정렬로 모은다 -
+// "가격은 안 움직였는데 거래량만 튄" 종목은 등락률순위엔 애초에 안 잡히기 때문이다. 투자자동향
+// 추정치나 3분봉은 이 4개 조건에 필요 없어 호출하지 않는다(종목당 2회만 - 발굴 장마감의 절반 비용).
+// ⚠️ 이 점수식(거래량급증 35·증가추세 20·다이버전스 20·고가유지 25)은 사용자가 직접 정한 배점이
+// 아니라 "발굴 장마감"과 같은 절대 점수제 스타일을 참고해 제안한 잠정치다 - 실측 결과를 보고 조정 필요.
+// ============================================================================
+const PRECURSOR_ENRICH_LIMIT = 80;
+const PRECURSOR_ENRICH_CHUNK_SIZE = 4;
+const PRECURSOR_ENRICH_DELAY_MS = 700;
+const PRECURSOR_MAX_RECENT_RETURN_PCT = 15; // 최근 5거래일 누적 등락률이 이보다 크면 "이미 급등"으로 제외
+const PRECURSOR_MAX_TODAY_CHANGE_PCT = 8; // 오늘 하루 등락률이 이보다 크면 "가격이 이미 크게 움직임"으로 제외
+
+async function fetchKisPrecursorSeedPool(market: MarketType): Promise<RankingItem[]> {
+  const iscdList = market === 'KOSPI' ? ['0001'] : market === 'KOSDAQ' ? ['1001'] : ['0001', '1001'];
+  const itemMap = new Map<string, RankingItem>();
+  for (const iscd of iscdList) {
+    for (const blngCode of ['0', '1', '2', '3']) {
+      await enforceRateLimit();
+      const list = await fetchKisDiscoveryRankingSlice('FHPST01710000', iscd, 'FID_BLNG_CLS_CODE', blngCode);
+      list.forEach((item) => { if (!itemMap.has(item.symbol)) itemMap.set(item.symbol, item); });
+    }
+  }
+  return Array.from(itemMap.values()).filter((item) => !isEtfOrEtn(item.name));
+}
+
+async function enrichPrecursorCandidate(item: RankingItem): Promise<RankingItem | null> {
+  try {
+    const [todayPrice, bars] = await Promise.all([
+      fetchKisDailyPrice(item.symbol).catch(() => undefined),
+      fetchKisRecentDailyBars(item.symbol).catch(() => undefined),
+    ]);
+
+    if (!bars || bars.length < 15) return null; // 이력 부족 - 판단 불가능한 종목은 후보에서 제외
+
+    // bars는 오늘(장중이면 진행 중인 값)을 마지막 원소로 포함한 오름차순(과거->최근) 배열이다.
+    const allBars = bars.filter((b) => b.date !== undefined);
+    // 1) 최근 5거래일 누적 등락률 - "이미 급등한 종목 제외" 하드 필터용
+    const fiveDaysAgoIdx = allBars.length - 6; // 오늘 포함 6개 중 첫 번째 = 5거래일 전
+    let recentReturnPct: number | undefined;
+    if (fiveDaysAgoIdx >= 0) {
+      const refClose = allBars[fiveDaysAgoIdx].close;
+      if (refClose > 0) recentReturnPct = Number((((item.currentPrice - refClose) / refClose) * 100).toFixed(2));
+    }
+    if (recentReturnPct !== undefined && Math.abs(recentReturnPct) > PRECURSOR_MAX_RECENT_RETURN_PCT) return null;
+    if (Math.abs(item.changeRate) > PRECURSOR_MAX_TODAY_CHANGE_PCT) return null;
+
+    // 2) 거래대금 급증배율 - 오늘(현재까지 누적) ÷ 최근 20거래일(오늘 제외) 평균
+    const prior20Bars = allBars.slice(-21, -1); // 오늘 제외
+    let volumeSurgeRatio: number | undefined;
+    let volumeTrendIncreasing: boolean | undefined;
+    if (prior20Bars.length >= 10) {
+      const avgAmount = prior20Bars.reduce((sum, b) => sum + b.amount, 0) / prior20Bars.length;
+      const todayAmount = (item.amountEok || 0) * 100000000;
+      if (avgAmount > 0) volumeSurgeRatio = Number((todayAmount / avgAmount).toFixed(2));
+    }
+    // 🚨 [버그 수정 - 사용자 지적: "거래대금배율이 0.5~0.96배인데도 40점 채워지는" 실측 확인] 거래대금
+    // 급증이 이 탭의 핵심 조건인데, 정작 급증하지 않은(오히려 평소보다 적은) 종목이 "증가추세+고가유지"
+    // 두 항목만으로 바닥점수(40점)를 채워 리스트에 섞여 들어왔다 - 하루 종일 안 움직인 밋밋한 종목은
+    // 변동폭 자체가 작아 종가가 고가에 가까운 게 당연해서(진짜 매수세 유지가 아님) 이 함정이 생겼다.
+    // 핵심 조건(거래대금 최소 1.5배 급증)을 못 채우면 아예 후보에서 제외한다.
+    if (volumeSurgeRatio === undefined || volumeSurgeRatio < 1.5) return null;
+    if (allBars.length >= 6) {
+      const recent3 = allBars.slice(-3).reduce((sum, b) => sum + b.volume, 0) / 3; // 오늘 포함 최근 3일
+      const prior3 = allBars.slice(-6, -3).reduce((sum, b) => sum + b.volume, 0) / 3; // 그 이전 3일
+      if (prior3 > 0) volumeTrendIncreasing = recent3 > prior3;
+    }
+
+    // 3) 가격 대비 거래량 다이버전스 - 거래대금은 급증했는데 가격은 안 움직일수록 큰 값
+    const priceVolumeDivergence = volumeSurgeRatio !== undefined
+      ? Number((volumeSurgeRatio / (1 + Math.abs(item.changeRate))).toFixed(2))
+      : undefined;
+
+    // 4) 장중 고가 부근 유지
+    let closeToHighRatioPct: number | undefined;
+    if (todayPrice && todayPrice.high > 0 && item.currentPrice > 0) {
+      closeToHighRatioPct = Number(((item.currentPrice / todayPrice.high) * 100).toFixed(2));
+    }
+
+    return { ...item, recentReturnPct, volumeSurgeRatio, volumeTrendIncreasing, priceVolumeDivergence, closeToHighRatioPct };
+  } catch (e) {
+    console.warn(`[Precursor Enrich Skip] ${item.symbol}:`, (e as any)?.message || e);
+    return null;
+  }
+}
+
+export async function fetchKisPrecursorCandidates(market: MarketType = 'ALL'): Promise<InvestorRankingResponse> {
+  const dateLabel = getSettledAsOfDateLabel();
+
+  const seedPool = await fetchKisPrecursorSeedPool(market);
+  if (seedPool.length === 0) {
+    return { type: 'precursor', direction: 'buy', period: '1d', list: [], isMock: false, updatedAt: new Date().toISOString(), lastBatchTime: dateLabel };
+  }
+
+  const candidates = [...seedPool].sort((a, b) => (b.amountEok || 0) - (a.amountEok || 0)).slice(0, PRECURSOR_ENRICH_LIMIT);
+
+  const enriched: RankingItem[] = [];
+  for (let i = 0; i < candidates.length; i += PRECURSOR_ENRICH_CHUNK_SIZE) {
+    const chunk = candidates.slice(i, i + PRECURSOR_ENRICH_CHUNK_SIZE);
+    const results = await Promise.all(chunk.map((item) => enrichPrecursorCandidate(item)));
+    results.forEach((item) => { if (item) enriched.push(item); });
+    if (i + PRECURSOR_ENRICH_CHUNK_SIZE < candidates.length) {
+      await new Promise((resolve) => setTimeout(resolve, PRECURSOR_ENRICH_DELAY_MS));
+    }
+  }
+
+  const ramp = (value: number | undefined, from: number, to: number, maxScore: number): number => {
+    if (value === undefined) return 0;
+    if (value <= from) return 0;
+    if (value >= to) return maxScore;
+    return Number((((value - from) / (to - from)) * maxScore).toFixed(2));
+  };
+
+  enriched.forEach((item) => {
+    // 배점(사용자 확정 - "거래가 먼저 비정상적으로 증가 → 가격은 아직 안 뜸 → 그런데 장중엔 안 무너짐"):
+    // 거래대금 급증(35) · 증가 추세(20) · 다이버전스(25) · 고가 유지(20) = 100점
+    const surgeScore = ramp(item.volumeSurgeRatio, 1.5, 4, 35);
+    const trendScore = item.volumeTrendIncreasing ? 20 : 0;
+    const divergenceScore = ramp(item.priceVolumeDivergence, 1, 5, 25);
+    const closeToHighScore = ramp(item.closeToHighRatioPct, 80, 95, 20);
+    item.precursorScore = Number((surgeScore + trendScore + divergenceScore + closeToHighScore).toFixed(1));
+  });
+
+  enriched.sort((a, b) => (b.precursorScore || 0) - (a.precursorScore || 0));
+  enriched.forEach((item, idx) => { item.rank = idx + 1; });
+
+  return {
+    type: 'precursor',
+    direction: 'buy',
+    period: '1d',
+    list: enriched,
+    isMock: false,
+    updatedAt: new Date().toISOString(),
+    lastBatchTime: dateLabel,
+  };
+}
+
 // 🚨 [기능 재설계 - 사용자 요청: "3일연속이 다음날 상승에 더 좋을려나?" → 실측 백테스트 → "다른 조건이면
 // 어떤게 더 좋은지 봐봐" → "2일연속/3일연속 풀에서도 확인해봐" → "토글 필터로 진행해줘"] 원래 있던
 // "수급 장마감 후보군"(3일연속 전용 4번째 버튼, fetchKisSupplyPostMarketCandidates)을 제거하고, 당일/
@@ -4833,7 +5290,7 @@ export async function fetchKisPostMarketCandidates(market: MarketType = 'ALL'): 
 // 3일연속은 개선되지만 본전 수준) - applyQuietAccumulationFilter가 이 새 공식이다.
 const QUIET_ACCUM_CACHE_TTL_MS = 5 * 60 * 1000; // 당일 캔들·거래량 기반 지표라 급등주(60초)만큼 자주 안 바뀜
 const quietAccumCacheStore = getGlobalMap<string, { data: InvestorRankingResponse; timestamp: number }>('quietAccumCacheStore');
-const recentDailyBarsCache = getGlobalMap<string, { data: Array<{ date: string; open: number; high: number; low: number; close: number; volume: number }>; timestamp: number }>('recentDailyBarsCache');
+const recentDailyBarsCache = getGlobalMap<string, { data: Array<{ date: string; open: number; high: number; low: number; close: number; volume: number; amount: number }>; timestamp: number }>('recentDailyBarsCache');
 // 🚨 [성능 수정 - 사용자 지적: "장마감 후보만은 왤케 로딩이 오래걸리는지"] 실측 46.5초 - 원인 두 가지를
 // fetchConsecutive3dOverlapRankingData(위 3772번 줄 PRIORITY_LIMIT 근방)가 이미 겪고 고쳐둔 것과
 // 동일한 패턴으로 해결한다:
@@ -4856,9 +5313,9 @@ const quietAccumBackgroundInFlight = getGlobalMap<string, boolean>('quietAccumBa
  * 시세뿐 아니라 직전 며칠치 거래량·종가까지 단 1회 호출로 받는다(수칙 1-6 - executeKisInvestorTrendFetch와
  * 같은 TR을 재사용하되 페이지네이션·수급 병합 등 무거운 부분은 걷어냄).
  */
-async function fetchKisRecentDailyBars(
+export async function fetchKisRecentDailyBars(
   symbol: string
-): Promise<Array<{ date: string; open: number; high: number; low: number; close: number; volume: number }> | undefined> {
+): Promise<Array<{ date: string; open: number; high: number; low: number; close: number; volume: number; amount: number }> | undefined> {
   const cached = recentDailyBarsCache.get(symbol);
   if (cached && Date.now() - cached.timestamp < getDynamicRankingTtl()) {
     return cached.data;
@@ -4886,7 +5343,7 @@ async function fetchKisRecentDailyBars(
 
 async function executeKisRecentDailyBarsFetch(
   symbol: string
-): Promise<Array<{ date: string; open: number; high: number; low: number; close: number; volume: number }> | undefined> {
+): Promise<Array<{ date: string; open: number; high: number; low: number; close: number; volume: number; amount: number }> | undefined> {
   const isVirtual = process.env.KIS_VIRTUAL === 'true';
   const defaultBaseUrl = isVirtual
     ? 'https://openapivts.koreainvestment.com:29443'
@@ -4901,7 +5358,11 @@ async function executeKisRecentDailyBarsFetch(
   const today = new Date();
   const endDate = today.toISOString().slice(0, 10).replace(/-/g, '');
   const startObj = new Date(today);
-  startObj.setDate(startObj.getDate() - 14); // 주말·공휴일 감안해 거래일 6~8일 확보
+  // 🚨 [기능 확장 - "발굴 장마감" 20일 평균 거래대금 계산용] 기존엔 -14일(거래일 6~8일)만 받았는데,
+  // 실측(scratch)으로 확인한 KRX 거래일 비율(주 5일)상 20거래일을 안전하게 확보하려면 최소 -30일은
+  // 필요하다 - 실측: -40일 요청 시 28거래일 확보됨. 기존 5일 lookback(quiet-accum)만 쓰는 호출부는
+  // 이 배열에서 필요한 만큼만 슬라이스해 쓰므로(하위 호환), 범위를 넓혀도 부작용이 없다(수칙 1-6).
+  startObj.setDate(startObj.getDate() - 40);
   const startDate = startObj.toISOString().slice(0, 10).replace(/-/g, '');
 
   // 🚨 [버그 수정 - NXT 거래소 누락] 위 dailyChartUrl(942번대)과 동일 TR, 동일 실측 근거로 UN 적용.
@@ -4933,6 +5394,7 @@ async function executeKisRecentDailyBarsFetch(
       low: parseInt(item.stck_lwpr || '0', 10),
       close: parseInt(item.stck_clpr || '0', 10),
       volume: parseInt(item.acml_vol || '0', 10),
+      amount: parseInt(item.acml_tr_pbmn || '0', 10),
     }))
     .filter((b: any) => b.date && b.close > 0)
     .reverse(); // KIS는 최신순(내림차순)으로 내려주므로 오름차순으로 뒤집는다
@@ -6386,7 +6848,7 @@ async function getPivotLevelsForSymbol(symbol: string): Promise<PivotLevels | nu
     // "장마감 후보만"과 그대로 공유해서 중복 라이브 호출을 막는다 - VWAP 감시의 fetchKisLiveVwapSample이
     // 동일한 이유로 이미 큐를 안 쓰는 선례가 있다(수칙 1-6, 캐시는 공유하되 동시성 정책만 분리).
     const dailyBarsCached = recentDailyBarsCache.get(symbol);
-    let bars: Array<{ date: string; open: number; high: number; low: number; close: number; volume: number }> | undefined;
+    let bars: Array<{ date: string; open: number; high: number; low: number; close: number; volume: number; amount: number }> | undefined;
     if (dailyBarsCached && Date.now() - dailyBarsCached.timestamp < getDynamicRankingTtl()) {
       bars = dailyBarsCached.data;
     } else {
@@ -6804,7 +7266,7 @@ export async function getStockBadgeSummary(symbol: string, market: MarketType = 
   // 7. 장마감 후보군(급등주 기반) - 항상 순매수 단일 방향(fetchKisPostMarketCandidates에 direction 파라미터 자체가 없음)
   {
     const list = shared.get(K.postmarket) || (postMarketCacheStore.get(`postmarket-${market}`)?.data.list as BadgeSourceItem[] | undefined);
-    pushIfFound('postmarket', '장마감 후보군', list);
+    pushIfFound('postmarket', '급등 장마감', list);
   }
 
   // 🚨 [기능 재설계 - "토글 필터로 진행해줘"] 예전엔 "수급 장마감 후보군"이 3일연속 전용 4번째 탭이라

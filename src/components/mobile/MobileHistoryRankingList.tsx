@@ -43,6 +43,10 @@ function HistoryCard({ item, type, isConsecutive, isSurgingOverlap, quietFilter 
     ? (item.surgingRanks || []).map((r) => `${r.label} ${r.rank}위`).join(' · ') || '-'
     : type === 'postmarket'
     ? (item.surgingBadge || '-')
+    : type === 'discovery'
+    ? `${item.absorptionBadge || '데이터 없음'} · 점수 ${item.discoveryScore != null ? item.discoveryScore.toFixed(1) : '-'}`
+    : type === 'precursor'
+    ? `거래대금 ${item.volumeSurgeRatio != null ? item.volumeSurgeRatio.toFixed(2) : '-'}배${item.volumeTrendIncreasing ? ' · 증가추세' : ''} · 점수 ${item.precursorScore != null ? item.precursorScore.toFixed(1) : '-'}`
     : type === 'surging' || type === 'watchlist'
     ? `거래대금 ${item.amountEok ? `${item.amountEok}억` : '-'}`
     : type === 'comprehensive'
@@ -50,8 +54,8 @@ function HistoryCard({ item, type, isConsecutive, isSurgingOverlap, quietFilter 
     : `순매수 ${formatEok(item.netBuyAmtEok)}`;
 
   // 🎯 [기능 추가 - 사용자 요청: "장마감 후보군들이 다음날 실제로 상승했는지 보고싶어" /
-  // "수급교집합 장마감 후보만도... 얼마나 올랐는지 두개 보여주고"]
-  const showNextDay = type === 'postmarket' || type === 'watchlist' || (type === 'overlap' && Boolean(quietFilter));
+  // "수급교집합 장마감 후보만도... 얼마나 올랐는지 두개 보여주고" / "히스토리도 장마감 후보군 업데이트"]
+  const showNextDay = type === 'postmarket' || type === 'discovery' || type === 'precursor' || type === 'watchlist' || (type === 'overlap' && Boolean(quietFilter));
 
   return (
     <div className="flex items-center gap-2.5 px-3 py-2.5 bg-white dark:bg-[#131722] border border-slate-200 dark:border-[#2a2e39] rounded-xl">

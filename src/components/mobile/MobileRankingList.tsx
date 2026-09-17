@@ -30,7 +30,7 @@ import {
   RankingType,
   SurgingMode,
 } from '@/lib/types';
-import { Rocket, Trophy, Globe2, Landmark, Cpu, Flame, ShieldCheck, ArrowUpDown, TrendingDown, RotateCcw, TrendingUp, Coins, Filter, ChevronDown, ChevronUp, Target, Zap, RefreshCw } from 'lucide-react';
+import { Rocket, Trophy, Globe2, Landmark, Cpu, Flame, ShieldCheck, ArrowUpDown, TrendingDown, RotateCcw, TrendingUp, Coins, Filter, ChevronDown, ChevronUp, Target, Zap, RefreshCw, Compass, Radar } from 'lucide-react';
 import MobileStockDetailPanel from './MobileStockDetailPanel';
 import MobileLoadingSpinner from './MobileLoadingSpinner';
 import { fetchReclaimWatchSignals, ReclaimWatchSignal } from '@/lib/vwapReclaimClient';
@@ -95,7 +95,8 @@ async function fetchDropouts(direction: RankingDirection, market: MarketType, sc
 const TABS: { id: RankingType; label: string; icon: any; badge?: string }[] = [
   { id: 'surging', label: '급등주', icon: Rocket, badge: 'LIVE' },
   { id: 'comprehensive', label: '단타종합', icon: Trophy, badge: 'SCORE' },
-  // 데스크톱 InvestorRankingTable.tsx 600번 줄과 동일 위치(단타종합-외국인 사이)·동일 아이콘/라벨.
+  // 🚨 [기능 통합 - 사용자 요청: "장마감 탭들을 장마감 후보군 탭으로 합쳐서 각자 토글로"] 데스크톱
+  // InvestorRankingTable.tsx와 동일하게 급등/발굴/전조 3개 탭을 화면엔 하나로 합친다.
   { id: 'postmarket', label: '장마감 후보군', icon: Target, badge: 'NEW' },
   { id: 'foreign', label: '외국인', icon: Globe2 },
   { id: 'organ', label: '기관', icon: Landmark },
@@ -266,6 +267,10 @@ function RankingCard({ item, activeTab, overlapMode, quietAccumFilter, vwapAppro
         <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate mt-0.5">
           {activeTab === 'overlap'
             ? buildOverlapSubLine(item, overlapMode, quietAccumFilter)
+            : activeTab === 'discovery'
+            ? (item.absorptionBadge || '데이터 없음')
+            : activeTab === 'precursor'
+            ? `거래대금 ${item.volumeSurgeRatio != null ? item.volumeSurgeRatio.toFixed(2) : '-'}배${item.volumeTrendIncreasing ? ' · 증가추세' : ''}`
             : activeTab === 'surging' || activeTab === 'postmarket'
             ? (item.surgingBadge || `거래량 ${item.volume?.toLocaleString() || '-'}`)
             : activeTab === 'comprehensive'
@@ -286,6 +291,16 @@ function RankingCard({ item, activeTab, overlapMode, quietAccumFilter, vwapAppro
           {(activeTab === 'surging' || activeTab === 'postmarket') && (
             <div className="text-[11px] font-mono font-bold text-amber-600 dark:text-amber-400">
               {(item.amountEok || 0).toLocaleString()}억
+            </div>
+          )}
+          {activeTab === 'discovery' && (
+            <div className="text-[11px] font-mono font-bold text-amber-600 dark:text-amber-400">
+              점수 {item.discoveryScore != null ? item.discoveryScore.toFixed(1) : '-'}
+            </div>
+          )}
+          {activeTab === 'precursor' && (
+            <div className="text-[11px] font-mono font-bold text-amber-600 dark:text-amber-400">
+              점수 {item.precursorScore != null ? item.precursorScore.toFixed(1) : '-'}
             </div>
           )}
         </div>
@@ -346,19 +361,46 @@ export default function MobileRankingList() {
 
   // 🚨 [기능 추가 - "모바일에는 장마감 후보군 안뜨던데"] 데스크톱 InvestorRankingTable.tsx 84번 줄과 동일 -
   // postmarket도 surgingMode 서브탭과 무관하게 항상 고정된 모드(postmarket)로 fetchSurging을 재사용한다.
-  const isSurging = activeTab === 'surging' || activeTab === 'comprehensive' || activeTab === 'postmarket';
+  // discovery/precursor도 순매수 개념이 없는 "장마감 후보군" 그룹이라 포함한다.
+  const isSurging = activeTab === 'surging' || activeTab === 'comprehensive' || activeTab === 'postmarket' || activeTab === 'discovery' || activeTab === 'precursor';
   const isComprehensive = activeTab === 'comprehensive';
+  // 🚨 [기능 통합 - 사용자 요청: "장마감 탭들을 장마감 후보군 탭으로 합쳐서 각자 토글로"] 데스크톱과
+  // 동일 - 화면엔 "장마감 후보군" 탭 하나만 보이고 activeTab 자체는 셋 중 하나를 유지한다.
+  const isPostMarketGroup = activeTab === 'postmarket' || activeTab === 'discovery' || activeTab === 'precursor';
 
   const surgingQueryMode = activeTab === 'comprehensive' ? 'comprehensive' : activeTab === 'postmarket' ? 'postmarket' : surgingMode;
 
   const { data, isLoading, isError } = useQuery<InvestorRankingResponse>({
-    queryKey: isSurging
+    queryKey: activeTab === 'discovery'
+      ? ['m-discovery', market]
+      : activeTab === 'precursor'
+      ? ['m-precursor', market]
+      : isSurging
       ? ['m-surging', surgingQueryMode, market]
       : ['m-ranking', activeTab, direction, period, overlapMode, market, quietAccumFilter],
-    queryFn: () =>
-      isSurging
+    queryFn: async () => {
+      // 🚨 [기능 추가 - "발굴 장마감" 탭] cron이 미리 계산해둔 오늘자 스냅샷만 읽는다(데스크톱과 동일).
+      if (activeTab === 'discovery') {
+        const res = await fetch(`/api/stock/discovery?market=${market}`);
+        if (!res.ok) {
+          const errJson = await res.json().catch(() => null);
+          throw new Error(errJson?.error || '발굴 장마감 데이터를 가져오는 중 오류가 발생했습니다.');
+        }
+        return res.json();
+      }
+      // 🚨 [기능 추가 - "전조 장마감" 탭] 발굴 장마감과 동일 패턴.
+      if (activeTab === 'precursor') {
+        const res = await fetch(`/api/stock/precursor?market=${market}`);
+        if (!res.ok) {
+          const errJson = await res.json().catch(() => null);
+          throw new Error(errJson?.error || '전조 장마감 데이터를 가져오는 중 오류가 발생했습니다.');
+        }
+        return res.json();
+      }
+      return isSurging
         ? fetchSurging(surgingQueryMode, market)
-        : fetchRanking(activeTab, direction, period, overlapMode, market, activeTab === 'overlap' && quietAccumFilter),
+        : fetchRanking(activeTab, direction, period, overlapMode, market, activeTab === 'overlap' && quietAccumFilter);
+    },
     staleTime: 30 * 1000,
     // 🚨 [버그 수정] 프로그램 탭이 콜드스타트 직후(더미 시그니처가 섞인 stillWarming:true 상태)일 때
     // 데스크톱(InvestorRankingTable.tsx:121)은 50초마다 자동 재조회해서 예열이 끝나는 대로 화면이
@@ -447,7 +489,8 @@ export default function MobileRankingList() {
   // 🚨 [버그 수정 - 코드 리뷰 발견: 다른 탭으로 이동해도 필터가 안 꺼짐] 데스크톱과 동일한 문제
   // (InvestorRankingTable.tsx) - 토글 버튼은 (activeTab === 'surging' || activeTab === 'overlap') &&
   // !showDropouts일 때만 렌더링되는데, 이 필터는 activeTab과 무관하게 적용되고 있었다.
-  const watchTogglesVisible = (activeTab === 'surging' || activeTab === 'overlap') && !showDropouts;
+  // 🚨 [기능 추가 - 사용자 요청: "장마감 후보군 탭에도 VWAP 실시간 감시, 피봇 재돌파 감시 넣어줘"]
+  const watchTogglesVisible = (activeTab === 'surging' || activeTab === 'overlap' || isPostMarketGroup) && !showDropouts;
   const vwapWatchActive = watchTogglesVisible && vwapWatchEnabled && !!vwapReclaimMap;
   const pivotWatchActive = watchTogglesVisible && pivotWatchEnabled && !!pivotReclaimMap;
   if (vwapWatchActive || pivotWatchActive) {
@@ -468,7 +511,8 @@ export default function MobileRankingList() {
       <div className="flex gap-1.5 overflow-x-auto pb-1 -mx-1 px-1">
         {TABS.map((t) => {
           const Icon = t.icon;
-          const isActive = activeTab === t.id;
+          // "장마감 후보군" 탭 버튼은 activeTab이 postmarket/discovery/precursor 중 무엇이든 활성 표시.
+          const isActive = t.id === 'postmarket' ? isPostMarketGroup : activeTab === t.id;
           return (
             <button
               key={t.id}
@@ -502,6 +546,34 @@ export default function MobileRankingList() {
                     ? m.id === 'overlap'
                       ? 'bg-gradient-to-r from-red-600 to-amber-600 text-white border-transparent'
                       : 'bg-red-50 dark:bg-red-950/50 text-red-700 dark:text-red-300 border-red-300 dark:border-red-800'
+                    : 'bg-white dark:bg-[#131722] text-slate-500 dark:text-slate-400 border-slate-200 dark:border-[#2a2e39]'
+                }`}
+              >
+                <Icon className="w-3 h-3" />
+                {m.label}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {/* 🚨 [기능 통합 - 사용자 요청: "장마감 탭들을 장마감 후보군 탭으로 합쳐서 각자 토글로"] 급등/발굴/전조 서브탭 */}
+      {isPostMarketGroup && (
+        <div className="flex gap-1.5 overflow-x-auto pb-1 -mx-1 px-1">
+          {([
+            { id: 'postmarket' as const, label: '급등', icon: Target },
+            { id: 'discovery' as const, label: '발굴', icon: Compass },
+            { id: 'precursor' as const, label: '전조', icon: Radar },
+          ]).map((m) => {
+            const Icon = m.icon;
+            const isActive = activeTab === m.id;
+            return (
+              <button
+                key={m.id}
+                onClick={() => setActiveTab(m.id)}
+                className={`flex items-center gap-1 shrink-0 px-2.5 py-1 rounded-lg text-[11px] font-bold border transition ${
+                  isActive
+                    ? 'bg-amber-600 text-white border-transparent'
                     : 'bg-white dark:bg-[#131722] text-slate-500 dark:text-slate-400 border-slate-200 dark:border-[#2a2e39]'
                 }`}
               >
@@ -590,8 +662,9 @@ export default function MobileRankingList() {
             장마감 후보만
           </button>
         )}
-        {/* 🎯 [재설계 - 데스크톱과 동일] 실시간 감시 토글 - 켜면 화면에 뜬 후보 전체를 15초 주기로 계속 갱신. */}
-        {(activeTab === 'surging' || activeTab === 'overlap') && !showDropouts && (
+        {/* 🎯 [재설계 - 데스크톱과 동일] 실시간 감시 토글 - 켜면 화면에 뜬 후보 전체를 15초 주기로 계속 갱신.
+            🚨 [기능 추가 - 사용자 요청: "장마감 후보군 탭에도 VWAP 실시간 감시, 피봇 재돌파 감시 넣어줘"] */}
+        {(activeTab === 'surging' || activeTab === 'overlap' || isPostMarketGroup) && !showDropouts && (
           <button
             onClick={() => setVwapWatchEnabled((v) => !v)}
             title="켜면 지금 보이는 후보 전체를 15초 주기로 계속 갱신해서 재돌파 임박 또는 완료 종목을 실시간으로 표시합니다"
@@ -608,7 +681,7 @@ export default function MobileRankingList() {
           </button>
         )}
         {/* 🎯 [기능 추가 - 데스크톱과 동일] R1/R2 재돌파 감시 - VWAP와 별개 토글. */}
-        {(activeTab === 'surging' || activeTab === 'overlap') && !showDropouts && (
+        {(activeTab === 'surging' || activeTab === 'overlap' || isPostMarketGroup) && !showDropouts && (
           <button
             onClick={() => setPivotWatchEnabled((v) => !v)}
             title="켜면 전일 확정 피봇 저항선(R1·R2)을 뚫었다가 눌린 뒤 다시 그 선을 향해 올라오는 종목을 15초 주기로 계속 갱신해서 실시간으로 표시합니다"

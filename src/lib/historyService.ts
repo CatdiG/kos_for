@@ -13,9 +13,10 @@ import {
   isEtfOrEtn,
 } from './types';
 import { TOP_300_STOCKS } from './stockUniverse300';
-import { getSupabaseAdmin, getSupabasePublic, RawDailyInvestorRecord, fetchWsWatchlist } from './supabase';
+import { getSupabaseAdmin, getSupabasePublic, RawDailyInvestorRecord, fetchWsWatchlist, fetchDiscoverySnapshots, fetchPrecursorSnapshots } from './supabase';
 import { resolveMarketType, resolveStockPriceAndChange } from './mockData';
 import { getGlobalMap } from './globalCache';
+import { fetchKisRecentDailyBars, fetchKisIndexDailyTrend } from './kisApi';
 
 // ============================================================================
 // 🛡️ [안전장치 1] 계산 로직 버전 관리 및 영구 저장 보류 스위치
@@ -1158,6 +1159,45 @@ export async function calculateWatchlistFromHistory(
   const rawRecords = await loadRawDailyRecordsForDate(normalizedDate);
   const recordMap = new Map(rawRecords.map((r) => [r.symbol, r]));
 
+  // 🚨 [버그 수정 - 사용자 지적: "미투온 왜 원본 데이터가 없다는거야"] TOP_300_STOCKS 밖의 관심종목은
+  // raw_daily_data 수집 크론(batchCollector.ts runRawDailyDataBackfill)이 이제부터는 같이 모으지만,
+  // 이미 지나간 최근 날짜(예: 어제·그제)는 그걸로 못 채운다. KIS 일봉 조회(fetchKisRecentDailyBars,
+  // 오늘 기준 최근 40일치)에서 해당 날짜를 직접 찾아 대체한다 - 외국인/기관/프로그램 순매수는 이 API에
+  // 없어 0으로 남지만, 관심종목 탭은 애초에 이 3개 필드를 전부 0으로만 표시하므로(순매수 개념이 없는
+  // 개별 종목 시세 탭) 정보 손실이 없다. 40일보다 오래된 날짜는 이 폴백으로도 복구 불가 - 그런 날짜는
+  // 그대로 "원본 데이터 없음"으로 정직하게 표시된다(수칙 1-3 - 가짜 값으로 채우지 않음).
+  const missingFromArchive = watchlist.filter((w) => !recordMap.has(w.symbol));
+  if (missingFromArchive.length > 0) {
+    const fallbackResults = await Promise.all(
+      missingFromArchive.map(async (w) => {
+        const bars = await fetchKisRecentDailyBars(w.symbol).catch(() => undefined);
+        if (!bars) return null;
+        const idx = bars.findIndex((b) => b.date === normalizedDate);
+        if (idx === -1) return null;
+        const bar = bars[idx];
+        const prevClose = idx > 0 ? bars[idx - 1].close : bar.open;
+        const changeRate = prevClose > 0 ? Number((((bar.close - prevClose) / prevClose) * 100).toFixed(2)) : 0;
+        const record: RawDailyInvestorRecord = {
+          date: normalizedDate,
+          symbol: w.symbol,
+          name: w.name || w.symbol,
+          close_price: bar.close,
+          open_price: bar.open,
+          high_price: bar.high,
+          low_price: bar.low,
+          volume: bar.volume,
+          change_rate: changeRate,
+          foreign_net_buy_qty: 0,
+          foreign_net_buy_amt: 0,
+          organ_net_buy_qty: 0,
+          organ_net_buy_amt: 0,
+        };
+        return record;
+      })
+    );
+    fallbackResults.forEach((r) => { if (r) recordMap.set(r.symbol, r); });
+  }
+
   const found = watchlist
     .map((w) => recordMap.get(w.symbol))
     .filter((r): r is RawDailyInvestorRecord => !!r);
@@ -1205,6 +1245,391 @@ export async function calculateWatchlistFromHistory(
 }
 
 /**
+ * 🎯 [기능 추가 - 사용자 요청: "히스토리도 장마감 후보군 업데이트 해줘"] "발굴 장마감"은 raw_daily_data
+ * 재구성이 아니라 매일 14:30(KST) cron이 저장해둔 discovery_snapshots 스냅샷을 그대로 읽는다 - 이
+ * 탭 자체가 "장마감 확정치"가 아니라 "장마감 직전 잠정 데이터" 기반이라 과거로 소급 재현이 불가능하고,
+ * 크론이 실제로 돈 날짜부터만 데이터가 쌓인다(수칙 1-3 - 없는 과거를 가짜로 채우지 않음). 다음날
+ * 결과는 다른 히스토리 탭과 동일하게 raw_daily_data(장마감 확정치)에서 가져와 붙인다.
+ */
+/**
+ * 🎯 [기능 추가 - 사용자 지적: "발굴, 전조는 계산 안되어서 진짜 못하는거야?"] 발굴 장마감 8개 조건 중
+ * 6개(거래대금·거래량 배율, 종가위치, 저점상승, 외국인·기관 매집)는 raw_daily_data만으로 재구성
+ * 가능하다. 나머지 2개는 근사/생략한다:
+ *   - 매집 주체: 라이브는 "14:30 장중 추정치"를 쓰지만 여기선 raw_daily_data의 "장마감 확정 순매수"로
+ *     대체한다(방향이 다를 수 있는 근사치 - 정직하게 알아둘 것).
+ *   - 오후 매수세 비중: 하루 안의 시간대별 데이터가 raw_daily_data엔 아예 없어 계산 불가 - 0점 처리
+ *     (해당 15점은 그냥 못 받는 것으로 정직하게 남긴다, 가짜 값 금지 - 수칙 1-3).
+ * 상대강도는 KOSPI/KOSDAQ 지수 일봉을 라이브로 1회씩만 조회해(종목 수와 무관, 수칙 1-6) 계산한다.
+ */
+async function reconstructDiscoveryFromRawData(
+  normalizedDate: string,
+  market: MarketType,
+  limit: number
+): Promise<RankingItem[]> {
+  const dateGroups = await loadRawRecordsForDateRange(normalizedDate, 22);
+  if (dateGroups.length < 22 || dateGroups[dateGroups.length - 1]?.date !== normalizedDate) return [];
+
+  const orderedDates = dateGroups.map((g) => g.date);
+  const bySymbol = new Map<string, Map<string, RawDailyInvestorRecord>>();
+  dateGroups.forEach(({ date, records }) => {
+    records.forEach((r) => {
+      if (market !== 'ALL' && resolveMarketType(r.symbol) !== market) return;
+      if (isEtfOrEtn(r.name)) return;
+      if (!bySymbol.has(r.symbol)) bySymbol.set(r.symbol, new Map());
+      bySymbol.get(r.symbol)!.set(date, r);
+    });
+  });
+
+  // 지수(KOSPI/KOSDAQ) 그날 등락률 - 종목 전체가 공유하므로 딱 2회만 라이브 조회
+  const indexChangeRate: { KOSPI: number; KOSDAQ: number } = { KOSPI: 0, KOSDAQ: 0 };
+  await Promise.all(
+    (['KOSPI', 'KOSDAQ'] as const).map(async (m) => {
+      try {
+        const trend = await fetchKisIndexDailyTrend(m, '60d', false);
+        const days = trend?.trend || [];
+        const idx = days.findIndex((d) => d.date === normalizedDate);
+        if (idx > 0) {
+          const prevClose = days[idx - 1].closePrice;
+          if (prevClose > 0) indexChangeRate[m] = Number((((days[idx].closePrice - prevClose) / prevClose) * 100).toFixed(2));
+        }
+      } catch (e) {
+        console.warn(`[Discovery History Reconstruct] ${m} 지수 조회 실패:`, (e as any)?.message || e);
+      }
+    })
+  );
+
+  const ramp = (value: number | undefined, from: number, to: number, maxScore: number): number => {
+    if (value === undefined) return 0;
+    if (value <= from) return 0;
+    if (value >= to) return maxScore;
+    return Number((((value - from) / (to - from)) * maxScore).toFixed(2));
+  };
+
+  const candidates: RankingItem[] = [];
+  const todayRecords = dateGroups[dateGroups.length - 1].records;
+  todayRecords.forEach((today) => {
+    if (market !== 'ALL' && resolveMarketType(today.symbol) !== market) return;
+    if (isEtfOrEtn(today.name)) return;
+    const symDates = bySymbol.get(today.symbol);
+    if (!symDates || !orderedDates.every((d) => symDates.has(d))) return;
+
+    const history = orderedDates.map((d) => symDates.get(d)!);
+    const todayRow = history[history.length - 1];
+    const amount = (r: RawDailyInvestorRecord) => r.close_price * r.volume;
+
+    const prior20 = history.slice(0, -1);
+    const avgAmount = prior20.reduce((s, r) => s + amount(r), 0) / prior20.length;
+    const avgVolume = prior20.reduce((s, r) => s + r.volume, 0) / prior20.length;
+    const volumeSurgeRatio = avgAmount > 0 ? Number((amount(todayRow) / avgAmount).toFixed(2)) : undefined;
+    const rawVolumeSurgeRatio = avgVolume > 0 ? Number(((todayRow.volume || 0) / avgVolume).toFixed(2)) : undefined;
+
+    const high = todayRow.high_price || todayRow.close_price;
+    const closeToHighRatioPct = high > 0 ? Number(((todayRow.close_price / high) * 100).toFixed(2)) : undefined;
+
+    const priorForLow = history.slice(0, -1); // 오늘 제외, 오름차순
+    let higherLowPattern: boolean | undefined;
+    if (priorForLow.length >= 10) {
+      const recentLow = Math.min(...priorForLow.slice(-5).map((r) => r.low_price || r.close_price));
+      const priorLow = Math.min(...priorForLow.slice(-10, -5).map((r) => r.low_price || r.close_price));
+      higherLowPattern = recentLow > priorLow;
+    }
+
+    // 🚨 [버그 수정 - 실측으로 발견: scratch/backtest_discovery_history.js] 20260611처럼 KIS가 아직
+    // 확정 순매수를 반영하기 전에 raw_daily_data가 수집된 날은 외국인/기관 순매수가 전부 정확히 0으로
+    // 저장돼 있다(batchCollector.ts의 isSettled 체크와 동일 현상). 이걸 "0은 매수가 아니니 매도 우위"로
+    // 잘못 판정하면, 그런 날은 295종목 전부가 "매도 우위"로 몰려 후보가 하루 통째로 0개가 되는 게
+    // 실측 확인됐다(77일 중 48일이 이 이유로 통째로 날아감). 0 하나만 있어도 됐던 게 아니라 "둘 다
+    // 정확히 0"인 경우만 미확정으로 보고, 그때는 매도 우위로 단정하지 않는다.
+    const isSettled = (todayRow.foreign_net_buy_amt || 0) !== 0 || (todayRow.organ_net_buy_amt || 0) !== 0;
+    const fBuy = (todayRow.foreign_net_buy_amt || 0) > 0;
+    const oBuy = (todayRow.organ_net_buy_amt || 0) > 0;
+    let absorptionDirection: 'foreign' | 'organ' | 'both' | 'none' = 'none';
+    let absorptionBadge = '데이터 없음';
+    if (isSettled) {
+      if (fBuy && oBuy) { absorptionDirection = 'both'; absorptionBadge = '외국인+기관 동시 매수'; }
+      else if (fBuy) { absorptionDirection = 'foreign'; absorptionBadge = '외국인 매수 우위'; }
+      else if (oBuy) { absorptionDirection = 'organ'; absorptionBadge = '기관 매수 우위'; }
+      else { absorptionDirection = 'none'; absorptionBadge = '외국인·기관 매도 우위'; }
+    }
+
+    // 🚨 [수급 필터 - 라이브와 동일] 외국인+기관 둘 다 확정 순매도(미확정 아님)면 후보에서 제외
+    if (absorptionBadge === '외국인·기관 매도 우위') return;
+
+    const marketKey = (resolveMarketType(today.symbol) === 'KOSDAQ' ? 'KOSDAQ' : 'KOSPI') as 'KOSPI' | 'KOSDAQ';
+    const relativeStrengthPct = Number(((todayRow.change_rate || 0) - indexChangeRate[marketKey]).toFixed(2));
+
+    const amountSurgeScore = ramp(volumeSurgeRatio, 1, 3, 15);
+    const rawVolumeSurgeScore = ramp(rawVolumeSurgeRatio, 1, 3, 5);
+    const closeToHighScore = ramp(closeToHighRatioPct, 80, 90, 10);
+    const higherLowScore = higherLowPattern ? 15 : 0;
+    const afternoonScore = 0; // raw_daily_data엔 시간대별 데이터가 없어 계산 불가 - 정직하게 0점
+    const relativeScore = ramp(relativeStrengthPct, 0, 5, 15);
+    const foreignScore = fBuy ? 12 : 0;
+    const organScore = oBuy ? 13 : 0;
+    const discoveryScore = Number((amountSurgeScore + rawVolumeSurgeScore + closeToHighScore + higherLowScore + afternoonScore + relativeScore + foreignScore + organScore).toFixed(1));
+
+    candidates.push({
+      rank: 0,
+      symbol: today.symbol,
+      name: today.name,
+      market: marketKey,
+      currentPrice: todayRow.close_price,
+      change: 0,
+      changeRate: todayRow.change_rate || 0,
+      netBuyQty: 0,
+      netBuyAmt: 0,
+      netBuyAmtEok: 0,
+      volume: 0,
+      ratioVsVolume: 0,
+      absorptionDirection,
+      absorptionBadge,
+      volumeSurgeRatio,
+      relativeStrengthPct,
+      discoveryScore,
+    });
+  });
+
+  candidates.sort((a, b) => (b.discoveryScore || 0) - (a.discoveryScore || 0));
+  return candidates.slice(0, limit).map((item, idx) => ({ ...item, rank: idx + 1 }));
+}
+
+export async function calculateDiscoveryFromHistory(
+  normalizedDate: string,
+  params: HistoryQueryParams
+): Promise<InvestorRankingResponse> {
+  const dateLabel = formatDateLabel(normalizedDate);
+  const market = params.market || 'ALL';
+  const limit = params.limit || 50;
+
+  const rows = await fetchDiscoverySnapshots(normalizedDate);
+  let filtered: RankingItem[] = (market === 'ALL' ? rows : rows.filter((r) => r.market === market))
+    .slice(0, limit)
+    .map((r) => ({
+      rank: r.rank || 0,
+      symbol: r.symbol,
+      name: r.name,
+      market: r.market,
+      currentPrice: r.current_price,
+      change: 0,
+      changeRate: r.change_rate,
+      netBuyQty: 0,
+      netBuyAmt: 0,
+      netBuyAmtEok: 0,
+      volume: 0,
+      ratioVsVolume: 0,
+      absorptionDirection: r.absorption_direction as any,
+      absorptionBadge: r.absorption_badge,
+      afternoonVolumeRatioPct: r.afternoon_volume_ratio_pct,
+      volumeSurgeRatio: r.volume_surge_ratio,
+      pullbackFromHighPct: r.pullback_from_high_pct,
+      relativeStrengthPct: r.relative_strength_pct,
+      discoveryScore: r.discovery_score,
+      asOfDateLabel: dateLabel,
+    }));
+
+  let reconstructed = false;
+  if (filtered.length === 0) {
+    filtered = await reconstructDiscoveryFromRawData(normalizedDate, market, limit);
+    reconstructed = true;
+    filtered = filtered.map((item) => ({ ...item, asOfDateLabel: dateLabel }));
+  }
+
+  if (filtered.length === 0) {
+    return {
+      type: 'discovery', direction: 'buy', period: params.period || '1d', list: [],
+      isMock: false, updatedAt: new Date().toISOString(), lastBatchTime: dateLabel,
+      error: `${dateLabel} 기준 20거래일치 원본 데이터가 부족해 발굴 장마감을 계산할 수 없습니다.`,
+    };
+  }
+
+  const nextDay = await loadNextTradingDayRecords(normalizedDate);
+  const withNextDay = attachNextDayResults(filtered, nextDay);
+
+  return {
+    type: 'discovery',
+    direction: 'buy',
+    period: params.period || '1d',
+    list: withNextDay,
+    isMock: false,
+    updatedAt: new Date().toISOString(),
+    // 🚨 [정직 표시 - 수칙 1-5] 재구성치는 "장중 14:30 시점"이 아니라 "장마감 확정치" 기반 근사이고,
+    // 오후 매수세 지표는 계산 자체가 빠져 있다는 걸 명시한다.
+    lastBatchTime: reconstructed ? `${dateLabel} (장마감 확정치로 재구성 - 매집주체는 확정 기준, 오후매수세 미계산)` : dateLabel,
+  };
+}
+
+/** 전조 장마감 히스토리 - calculateDiscoveryFromHistory와 동일 패턴, precursor_snapshots 재사용. */
+// 전조 장마감 4개 조건 배점 - kisApi.ts fetchKisPrecursorCandidates의 절대 점수제와 동일 공식(수칙 1-6).
+const PRECURSOR_MIN_SURGE_RATIO = 1.5;
+const PRECURSOR_MAX_RECENT_RETURN_PCT_H = 15;
+const PRECURSOR_MAX_TODAY_CHANGE_PCT_H = 8;
+function rampScore(value: number | undefined, from: number, to: number, maxScore: number): number {
+  if (value === undefined) return 0;
+  if (value <= from) return 0;
+  if (value >= to) return maxScore;
+  return Number((((value - from) / (to - from)) * maxScore).toFixed(2));
+}
+
+/**
+ * 🎯 [기능 추가 - 사용자 지적: "발굴, 전조는 계산 안되어서 진짜 못하는거야? 히스토리는 기록을
+ * 남겨놓을텐데 거기서 하면 안되나?"] 전조 장마감의 4개 조건(거래대금급증·증가추세·다이버전스·고가유지)은
+ * 투자자동향 추정치나 3분봉 같은 "장중에만 존재하는" 데이터가 전혀 필요 없다 - raw_daily_data(일봉
+ * 종가/고가/저가/거래량)만으로 완전히 재구성 가능하다(실측 백테스트로 확인 - scratch/
+ * backtest_precursor_history.js). precursor_snapshots에 그 날짜 스냅샷이 없으면(과거 날짜, 또는 아직
+ * 크론이 안 돈 날) 이 재구성으로 대체한다.
+ * ⚠️ 라이브 버전은 장마감 "전"(14:40) 시점 데이터로 계산하지만, 여기선 raw_daily_data의 장마감 확정치
+ * (하루 전체 거래량/고가)를 쓴다 - "급등 장마감"(calculatePostMarketFromHistory)도 동일한 근사를 이미
+ * 쓰고 있어 이 코드베이스의 기존 관례와 일치한다.
+ */
+async function reconstructPrecursorFromRawData(
+  normalizedDate: string,
+  market: MarketType,
+  limit: number
+): Promise<RankingItem[]> {
+  const dateGroups = await loadRawRecordsForDateRange(normalizedDate, 22); // 오늘 포함 22거래일(20일 평균 + 5일 수익률 + 오늘)
+  if (dateGroups.length < 22 || dateGroups[dateGroups.length - 1]?.date !== normalizedDate) return [];
+
+  const orderedDates = dateGroups.map((g) => g.date);
+  const bySymbol = new Map<string, Map<string, RawDailyInvestorRecord>>();
+  dateGroups.forEach(({ date, records }) => {
+    records.forEach((r) => {
+      if (market !== 'ALL' && resolveMarketType(r.symbol) !== market) return;
+      if (isEtfOrEtn(r.name)) return;
+      if (!bySymbol.has(r.symbol)) bySymbol.set(r.symbol, new Map());
+      bySymbol.get(r.symbol)!.set(date, r);
+    });
+  });
+
+  const candidates: RankingItem[] = [];
+  const todayRecords = dateGroups[dateGroups.length - 1].records;
+  todayRecords.forEach((today) => {
+    if (market !== 'ALL' && resolveMarketType(today.symbol) !== market) return;
+    if (isEtfOrEtn(today.name)) return;
+    const symDates = bySymbol.get(today.symbol);
+    if (!symDates || !orderedDates.every((d) => symDates.has(d))) return; // 22일 이력 온전한 종목만
+
+    const history = orderedDates.map((d) => symDates.get(d)!);
+    const todayRow = history[history.length - 1];
+    const amount = (r: RawDailyInvestorRecord) => r.close_price * r.volume;
+
+    const fiveDaysAgo = history[history.length - 6];
+    const recentReturnPct = fiveDaysAgo.close_price > 0
+      ? Number((((todayRow.close_price - fiveDaysAgo.close_price) / fiveDaysAgo.close_price) * 100).toFixed(2))
+      : 0;
+    if (Math.abs(recentReturnPct) > PRECURSOR_MAX_RECENT_RETURN_PCT_H) return;
+    if (Math.abs(todayRow.change_rate || 0) > PRECURSOR_MAX_TODAY_CHANGE_PCT_H) return;
+
+    const prior20 = history.slice(0, -1);
+    const avgAmount = prior20.reduce((s, r) => s + amount(r), 0) / prior20.length;
+    const volumeSurgeRatio = avgAmount > 0 ? Number((amount(todayRow) / avgAmount).toFixed(2)) : 0;
+    if (volumeSurgeRatio < PRECURSOR_MIN_SURGE_RATIO) return;
+
+    const recent3 = history.slice(-3).reduce((s, r) => s + r.volume, 0) / 3;
+    const prior3 = history.slice(-6, -3).reduce((s, r) => s + r.volume, 0) / 3;
+    const volumeTrendIncreasing = prior3 > 0 && recent3 > prior3;
+
+    const priceVolumeDivergence = Number((volumeSurgeRatio / (1 + Math.abs(todayRow.change_rate || 0))).toFixed(2));
+
+    const high = todayRow.high_price || todayRow.close_price;
+    const closeToHighRatioPct = high > 0 ? Number(((todayRow.close_price / high) * 100).toFixed(2)) : 100;
+
+    const surgeScore = rampScore(volumeSurgeRatio, 1.5, 4, 35);
+    const trendScore = volumeTrendIncreasing ? 20 : 0;
+    const divergenceScore = rampScore(priceVolumeDivergence, 1, 5, 25);
+    const closeToHighScore = rampScore(closeToHighRatioPct, 80, 95, 20);
+    const precursorScore = Number((surgeScore + trendScore + divergenceScore + closeToHighScore).toFixed(1));
+
+    candidates.push({
+      rank: 0,
+      symbol: today.symbol,
+      name: today.name,
+      market: resolveMarketType(today.symbol),
+      currentPrice: todayRow.close_price,
+      change: 0,
+      changeRate: todayRow.change_rate || 0,
+      netBuyQty: 0,
+      netBuyAmt: 0,
+      netBuyAmtEok: 0,
+      volume: 0,
+      ratioVsVolume: 0,
+      recentReturnPct,
+      volumeSurgeRatio,
+      volumeTrendIncreasing,
+      priceVolumeDivergence,
+      closeToHighRatioPct,
+      precursorScore,
+    });
+  });
+
+  candidates.sort((a, b) => (b.precursorScore || 0) - (a.precursorScore || 0));
+  return candidates.slice(0, limit).map((item, idx) => ({ ...item, rank: idx + 1 }));
+}
+
+export async function calculatePrecursorFromHistory(
+  normalizedDate: string,
+  params: HistoryQueryParams
+): Promise<InvestorRankingResponse> {
+  const dateLabel = formatDateLabel(normalizedDate);
+  const market = params.market || 'ALL';
+  const limit = params.limit || 50;
+
+  const rows = await fetchPrecursorSnapshots(normalizedDate);
+  let filtered: RankingItem[] = (market === 'ALL' ? rows : rows.filter((r) => r.market === market))
+    .slice(0, limit)
+    .map((r) => ({
+      rank: r.rank || 0,
+      symbol: r.symbol,
+      name: r.name,
+      market: r.market,
+      currentPrice: r.current_price,
+      change: 0,
+      changeRate: r.change_rate,
+      netBuyQty: 0,
+      netBuyAmt: 0,
+      netBuyAmtEok: 0,
+      volume: 0,
+      ratioVsVolume: 0,
+      recentReturnPct: r.recent_return_pct,
+      volumeSurgeRatio: r.volume_surge_ratio,
+      volumeTrendIncreasing: r.volume_trend_increasing,
+      priceVolumeDivergence: r.price_volume_divergence,
+      closeToHighRatioPct: r.close_to_high_ratio_pct,
+      precursorScore: r.precursor_score,
+      asOfDateLabel: dateLabel,
+    }));
+
+  let reconstructed = false;
+  if (filtered.length === 0) {
+    filtered = await reconstructPrecursorFromRawData(normalizedDate, market, limit);
+    reconstructed = true;
+    filtered = filtered.map((item) => ({ ...item, asOfDateLabel: dateLabel }));
+  }
+
+  if (filtered.length === 0) {
+    return {
+      type: 'precursor', direction: 'buy', period: params.period || '1d', list: [],
+      isMock: false, updatedAt: new Date().toISOString(), lastBatchTime: dateLabel,
+      error: `${dateLabel} 기준 20거래일치 원본 데이터가 부족해 전조 장마감을 계산할 수 없습니다.`,
+    };
+  }
+
+  const nextDay = await loadNextTradingDayRecords(normalizedDate);
+  const withNextDay = attachNextDayResults(filtered, nextDay);
+
+  return {
+    type: 'precursor',
+    direction: 'buy',
+    period: params.period || '1d',
+    list: withNextDay,
+    isMock: false,
+    updatedAt: new Date().toISOString(),
+    // 실제 14:40 크론 스냅샷인지, raw_daily_data 장마감 확정치로 재구성한 값인지 구분해서 보여준다
+    // (수칙 1-5 - 대체 데이터 출처 명시. 재구성치는 "장마감 전" 시점이 아니라 하루 전체 확정 데이터 기준).
+    lastBatchTime: reconstructed ? `${dateLabel} (장마감 확정치로 재구성)` : dateLabel,
+  };
+}
+
+/**
  * 3. 랭킹 조회 및 버전 무효화 / 원본 재계산 관리 함수
  */
 export async function getHistoryRankingData(params: HistoryQueryParams): Promise<InvestorRankingResponse> {
@@ -1228,9 +1653,18 @@ export async function getHistoryRankingData(params: HistoryQueryParams): Promise
     return calculateComprehensiveFromHistory(normalizedDate, params);
   }
 
-  // 🎯 [기능 추가] 장마감 후보군 - 다음날 실제 결과를 붙이는 별도 경로 (comprehensive와 동일 패턴)
+  // 🎯 [기능 추가] 장마감 후보군(급등) - 다음날 실제 결과를 붙이는 별도 경로 (comprehensive와 동일 패턴)
   if (params.type === 'postmarket') {
     return calculatePostMarketFromHistory(normalizedDate, params);
+  }
+
+  // 🎯 [기능 추가 - 사용자 요청: "히스토리도 장마감 후보군 업데이트 해줘"] 장마감 후보군(발굴/전조) -
+  // raw_daily_data 재구성이 아니라 discovery_snapshots/precursor_snapshots 스냅샷을 그대로 읽는다.
+  if (params.type === 'discovery') {
+    return calculateDiscoveryFromHistory(normalizedDate, params);
+  }
+  if (params.type === 'precursor') {
+    return calculatePrecursorFromHistory(normalizedDate, params);
   }
 
   // 🎯 [기능 추가] 관심종목 - "그 날짜의 전체 랭킹"이 아니라 "지금 내 관심종목들의 그 날짜 실적 조회"라

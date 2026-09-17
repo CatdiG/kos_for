@@ -63,7 +63,9 @@ const TABS: { id: RankingType; label: string }[] = [
   { id: 'surging', label: '급등주' },
   { id: 'comprehensive', label: '단타종합' },
   { id: 'watchlist', label: '관심종목' },
-  { id: 'postmarket', label: '장마감후보' },
+  // 🚨 [기능 통합 - 사용자 요청: "히스토리도 장마감 후보군 업데이트 해줘. 없어진건 지워주고"] 급등/발굴/
+  // 전조 3개 탭을 "장마감 후보군" 하나로 합친다(id는 postmarket 대표값) - PC 버전과 동일 구성.
+  { id: 'postmarket', label: '장마감 후보군' },
   { id: 'overlap', label: '수급교집합' },
 ];
 
@@ -112,7 +114,8 @@ export default function MobileHistoryPage() {
   const [dropoutNote, setDropoutNote] = useState('');
   const [isDropoutLoading, setIsDropoutLoading] = useState(false);
 
-  const showDirectionToggle = activeTab !== 'surging' && activeTab !== 'comprehensive' && activeTab !== 'postmarket' && activeTab !== 'watchlist';
+  const isPostMarketGroup = activeTab === 'postmarket' || activeTab === 'discovery' || activeTab === 'precursor';
+  const showDirectionToggle = activeTab !== 'surging' && activeTab !== 'comprehensive' && !isPostMarketGroup && activeTab !== 'watchlist';
   const isComprehensive = activeTab === 'comprehensive';
 
   // 가중치 재계산 - history/page.tsx 67~98번 줄과 100% 동일한 하이브리드 RMS 공식.
@@ -239,18 +242,41 @@ export default function MobileHistoryPage() {
 
         {/* 6개 탭 */}
         <div className="flex gap-1.5 overflow-x-auto pb-1 -mx-1 px-1">
-          {TABS.map((t) => (
-            <button
-              key={t.id}
-              onClick={() => { setActiveTab(t.id); if (t.id !== 'overlap') setShowDropouts(false); }}
-              className={`shrink-0 px-2.5 py-1.5 rounded-lg text-xs font-bold border transition ${
-                activeTab === t.id ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white dark:bg-[#131722] text-slate-500 dark:text-slate-400 border-slate-200 dark:border-[#2a2e39]'
-              }`}
-            >
-              {t.label}
-            </button>
-          ))}
+          {TABS.map((t) => {
+            // "장마감 후보군" 탭 버튼은 activeTab이 postmarket/discovery/precursor 중 무엇이든 활성 표시.
+            const isActive = t.id === 'postmarket' ? isPostMarketGroup : activeTab === t.id;
+            return (
+              <button
+                key={t.id}
+                onClick={() => { setActiveTab(t.id); if (t.id !== 'overlap') setShowDropouts(false); }}
+                className={`shrink-0 px-2.5 py-1.5 rounded-lg text-xs font-bold border transition ${
+                  isActive ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white dark:bg-[#131722] text-slate-500 dark:text-slate-400 border-slate-200 dark:border-[#2a2e39]'
+                }`}
+              >
+                {t.label}
+              </button>
+            );
+          })}
         </div>
+
+        {/* 🚨 [기능 통합 - 사용자 요청: "히스토리도 장마감 후보군 업데이트 해줘"] 급등/발굴/전조 서브탭 */}
+        {isPostMarketGroup && (
+          <div className="flex bg-amber-50 dark:bg-amber-950/30 p-0.5 rounded-lg w-fit flex-wrap">
+            {([
+              { id: 'postmarket' as const, label: '급등' },
+              { id: 'discovery' as const, label: '발굴' },
+              { id: 'precursor' as const, label: '전조' },
+            ]).map((m) => (
+              <button
+                key={m.id}
+                onClick={() => setActiveTab(m.id)}
+                className={`px-2.5 py-1 rounded-md text-[11px] font-bold transition ${activeTab === m.id ? 'bg-amber-600 text-white' : 'text-amber-700 dark:text-amber-300'}`}
+              >
+                {m.label}
+              </button>
+            ))}
+          </div>
+        )}
 
         {/* 급등주 서브탭 */}
         {activeTab === 'surging' && (

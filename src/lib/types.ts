@@ -228,7 +228,7 @@ export interface InvestorTrendResponse {
 }
 
 export type MarketType = 'ALL' | 'KOSPI' | 'KOSDAQ';
-export type RankingType = 'foreign' | 'organ' | 'program' | 'overlap' | 'surging' | 'comprehensive' | 'postmarket' | 'watchlist';
+export type RankingType = 'foreign' | 'organ' | 'program' | 'overlap' | 'surging' | 'comprehensive' | 'postmarket' | 'watchlist' | 'discovery' | 'precursor';
 export type RankingDirection = 'buy' | 'sell';
 export type RankingPeriod = '1d' | '1w' | '1m' | 'consecutive2d' | 'consecutive3d';
 export type SurgingMode = 'fluctuation' | 'volume' | 'amount' | 'overlap' | 'comprehensive' | 'postmarket';
@@ -316,6 +316,40 @@ export interface RankingItem {
   // 함께 보여줘 "장중 최대로 얼마나 갔었는지"를 알 수 있게 한다(nextDayChangeRate와 동일한 raw_daily_data
   // 소스, high_price 컬럼만 다르게 사용 - 수칙 1-6).
   nextDayHighChangeRate?: number; // 다음 영업일 고가 기준 등락률 (%) - (다음날 고가-당일 종가)/당일 종가*100
+
+  // ============================================================================
+  // 🎯 [기능 추가 - 사용자 요청: "발굴 장마감" 탭] "급등 장마감"(postmarket)이 등락률·거래량·거래대금
+  // 상위 종목군에서만 후보를 고르다 보니 다음날 결과가 신통치 않았다("급등주에서 고르려니까 다음날
+  // 결과가 그다지 좋지않은거같아") - 이 탭은 그 랭킹 풀에 의존하지 않고 KIS 여러 순위 API(등락률순위
+  // 정렬 4종 + 거래량/거래대금순위 정렬 4종, 시장별)를 합쳐 훨씬 넓은 후보군에서 "물량을 누가 받았는지·
+  // 오후까지 매수세가 유지됐는지·평소 대비 거래가 얼마나 몰렸는지·눌림에도 버텼는지·시장 대비 강한지"를
+  // 본다. 오후 2시 30분경(장마감 전) 배치로 한 번 계산해 화면에서는 이 값만 그대로 보여준다.
+  // ============================================================================
+  absorptionBadge?: string;      // 상승 과정에서 누가 물량을 받았는지 (예: "외국인 순매수 우위")
+  absorptionDirection?: 'foreign' | 'organ' | 'both' | 'none'; // 매집 주체 방향
+  foreignAbsorptionQty?: number;  // 외국인 장중 추정 순매수 수량(주) - 부호가 매수/매도 방향
+  organAbsorptionQty?: number;    // 기관 장중 추정 순매수 수량(주)
+  afternoonVolumeRatioPct?: number; // 오늘 누적 거래대금 중 14시 이후 비중 (%) - 높을수록 매수세 유지
+  volumeSurgeRatio?: number;     // 오늘 거래대금 ÷ 최근 20거래일 평균 거래대금 (배)
+  rawVolumeSurgeRatio?: number;  // 오늘 거래량(주) ÷ 최근 20거래일 평균 거래량 (배)
+  higherLowPattern?: boolean;    // 최근 5거래일 최저가가 그 이전 5거래일 최저가보다 높은지(저점 상승 패턴)
+  pullbackFromHighPct?: number;  // 당일 고가 등락률 - 현재 등락률 (%p) - 0에 가까울수록 고가권 유지
+  closeToHighRatioPct?: number;  // 현재가 ÷ 당일 고가 * 100 (%) - "종가가 고가의 90% 이상" 채점용
+  relativeStrengthPct?: number;  // 현재 등락률 - 소속 시장(KOSPI/KOSDAQ) 지수 등락률 (%p)
+  discoveryScore?: number;       // 사용자가 확정한 8개 조건 배점(합계 100점) 절대 점수 - 백분위 상대평가 아님
+
+  // ============================================================================
+  // 🎯 [기능 추가 - 사용자 요청: "전조 장마감" 탭] "발굴 장마감"이 이미 오른 종목을 고르는 반면, 이 탭은
+  // 아직 크게 안 오른 상태에서 거래량/거래대금만 조용히 늘고 있는 "돌파 전조" 종목을 찾는다: (1) 최근
+  // 며칠 상승률이 과하지 않고(이미 급등한 종목 제외), (2) 오늘 거래량/거래대금이 평소 대비 비정상적으로
+  // 늘었고 그 증가가 하루짜리가 아니라 최근 며칠간 추세이며, (3) 그 거래 증가에 비해 가격 상승은 아직
+  // 작고, (4) 그런데도 장중 고가 부근을 유지 중인 경우. "급등 장마감"과 마찬가지로 장마감 전(14:40 KST)
+  // 배치로 계산해 저장한다.
+  // ============================================================================
+  recentReturnPct?: number;      // 최근 5거래일 누적 등락률(오늘 포함, %) - 절대값이 크면 "이미 급등" 판정
+  volumeTrendIncreasing?: boolean; // 최근 3거래일 평균 거래량이 그 이전 3거래일 평균보다 높은지(거래량 증가 추세)
+  priceVolumeDivergence?: number; // 거래대금 배율 대비 가격 변동폭 비율이 낮을수록(거래는 느는데 가격은 안 움직임) 큰 값
+  precursorScore?: number;       // 4개 조건 배점(합계 100점) 절대 점수 - 아직 실측 백테스트 전 잠정치
 }
 
 export interface SurgingRankItem {

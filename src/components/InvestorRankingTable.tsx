@@ -37,6 +37,8 @@ import {
   ChevronUp,
   Target,
   Star,
+  Compass,
+  Radar,
 } from 'lucide-react';
 
 interface InvestorRankingTableProps {
@@ -106,7 +108,13 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
   const selectedSymbol = propSelectedSymbol || internalSymbol;
   // 🚨 [기능 추가 - 관심종목 탭] watchlist도 여기 포함시켜서 순매수/순매도 토글·기간 필터·KRX 공표
   // 일정 배지(수급 데이터 전용, 관심종목엔 안 맞음) 등 !isSurging 조건부 UI가 자동으로 숨겨지게 한다.
-  const isSurging = activeTab === 'surging' || activeTab === 'comprehensive' || activeTab === 'postmarket' || activeTab === 'watchlist';
+  // discovery/precursor도 postmarket과 동일하게 순매수 개념이 없는 "장마감 후보군" 그룹이라 포함한다.
+  const isSurging = activeTab === 'surging' || activeTab === 'comprehensive' || activeTab === 'postmarket' || activeTab === 'discovery' || activeTab === 'precursor' || activeTab === 'watchlist';
+  // 🚨 [기능 추가 - 사용자 요청: "장마감 탭들을 장마감 후보군 탭으로 합쳐서 각자 토글로"] 급등 장마감
+  // (postmarket)·발굴 장마감(discovery)·전조 장마감(precursor) 3개를 화면엔 "장마감 후보군" 탭 하나로
+  // 보여주고, 내부적으로만 이 3개 값 사이를 토글한다 - activeTab 자체는 그대로 셋 중 하나를 유지한다
+  // (데이터 조회·컬럼 렌더링 로직을 안 건드리고 탭 버튼 표시만 합치기 위함, 수칙 1-6).
+  const isPostMarketGroup = activeTab === 'postmarket' || activeTab === 'discovery' || activeTab === 'precursor';
 
   const queryClient = useQueryClient();
 
@@ -149,10 +157,32 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
   };
 
   const { data, isLoading, isError, refetch, isFetching } = useQuery<InvestorRankingResponse>({
-    queryKey: isSurging
+    queryKey: activeTab === 'discovery'
+      ? ['discovery', market]
+      : activeTab === 'precursor'
+      ? ['precursor', market]
+      : isSurging
       ? ['surging', activeTab === 'comprehensive' ? 'comprehensive' : activeTab === 'postmarket' ? 'postmarket' : activeTab === 'watchlist' ? 'watchlist' : surgingMode, market, surgingMode === 'overlap' ? overlapMinCount : null]
       : ['ranking', activeTab, direction, period, overlapMode, overlapLimit, market, quietAccumFilter],
     queryFn: async () => {
+      // 🚨 [기능 추가 - "발굴 장마감" 탭] cron이 미리 계산해둔 오늘자 스냅샷만 읽는다(라이브 재계산 없음).
+      if (activeTab === 'discovery') {
+        const res = await fetch(`/api/stock/discovery?market=${market}`);
+        if (!res.ok) {
+          const errJson = await res.json().catch(() => null);
+          throw new Error(errJson?.error || '발굴 장마감 데이터를 가져오는 중 오류가 발생했습니다.');
+        }
+        return res.json();
+      }
+      // 🚨 [기능 추가 - "전조 장마감" 탭] 발굴 장마감과 동일 패턴.
+      if (activeTab === 'precursor') {
+        const res = await fetch(`/api/stock/precursor?market=${market}`);
+        if (!res.ok) {
+          const errJson = await res.json().catch(() => null);
+          throw new Error(errJson?.error || '전조 장마감 데이터를 가져오는 중 오류가 발생했습니다.');
+        }
+        return res.json();
+      }
       if (activeTab === 'comprehensive') {
         const res = await fetch(`/api/stock/surging?mode=comprehensive&market=${market}`);
         if (!res.ok) {
@@ -232,7 +262,9 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
   // 판단 없이 vwapWatchEnabled/pivotWatchEnabled 상태만 봤다 - 급등주 탭에서 감시를 켜둔 채로 장마감
   // 후보군(또는 외국인/기관/프로그램 등) 탭으로 이동해도 꺼질 방법이 없어 감시 신호 열과 API 호출이
   // 그대로 따라갔다. 토글이 실제로 보이는 탭에서만 감시가 살아있도록 맞춘다.
-  const watchTogglesVisible = activeTab === 'surging' || (activeTab === 'overlap' && !showDropouts);
+  // 🚨 [기능 추가 - 사용자 요청: "장마감 후보군 탭에도 VWAP 실시간 감시, 피봇 재돌파 감시 넣어줘"]
+  // 예전엔 "장마감 후보군 등 다른 탭엔 안 새어나간다"고 의도적으로 막아뒀는데, 이번 요청으로 그 제한을 푼다.
+  const watchTogglesVisible = activeTab === 'surging' || isPostMarketGroup || (activeTab === 'overlap' && !showDropouts);
   const reclaimWatchEnabled = watchTogglesVisible && (vwapWatchEnabled || pivotWatchEnabled);
   const { data: reclaimWatchMap, isFetching: reclaimWatchFetching } = useQuery<Map<string, ReclaimWatchSignal>>({
     queryKey: ['reclaim-watch', activeTab, surgingMode, market, direction, period, overlapMode, overlapLimit, quietAccumFilter, vwapWatchSymbolsKey],
@@ -783,8 +815,10 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
     // 장마감 후보군 사이에"] 종목 상세(RankingStockDetailChart)의 "실시간" 토글로 등록한 관심종목
     // (ws_watchlist, 오라클 웹소켓 브릿지 구독 대상과 동일 목록)의 현재가를 보여주는 탭.
     { id: 'watchlist', label: '관심종목', icon: Star, isRealtime: true },
-    // 🚨 [기능 추가 - 사용자 요청: "단타종합랭킹-외국인 사이에 넣자"] 급등주 교집합 종목 중 R2 근접도
-    // (변동폭·고가권 마감)와 기관 지속매수 기준으로 다음 거래일 후보를 추리는 탭 - fetchKisPostMarketCandidates(kisApi.ts) 재사용.
+    // 🚨 [기능 통합 - 사용자 요청: "장마감 탭들을 장마감 후보군 탭으로 합쳐서 각자 토글로"] 원래 급등
+    // 장마감(postmarket)·발굴 장마감(discovery)·전조 장마감(precursor) 3개 탭이었는데, 화면엔 이 하나로
+    // 합치고 내부 토글(급등/발굴/전조)로 전환한다 - isPostMarketGroup/POSTMARKET_SUBMODES 참고.
+    // id는 postmarket을 대표값으로 쓴다(처음 클릭 시 기본 서브모드).
     { id: 'postmarket', label: '장마감 후보군', icon: Target, isRealtime: false, badge: 'NEW' },
     { id: 'foreign', label: '외국인', icon: Globe2, isRealtime: true },
     { id: 'organ', label: '기관', icon: Landmark, isRealtime: true },
@@ -987,7 +1021,8 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
             <div className="flex items-center gap-1 overflow-x-auto pb-1 sm:pb-0 scrollbar-none max-w-full">
               {tabs.map((tab) => {
                 const Icon = tab.icon;
-                const isActive = activeTab === tab.id;
+                // "장마감 후보군" 탭 버튼은 activeTab이 postmarket/discovery/precursor 중 무엇이든 활성 표시.
+                const isActive = tab.id === 'postmarket' ? isPostMarketGroup : activeTab === tab.id;
                 const isOverlapTab = tab.id === 'overlap';
                 const isSurgingTab = tab.id === 'surging';
                 return (
@@ -1170,6 +1205,80 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
                     활용해봐"] 아이콘 자체를 pulse시키는 것만으로는 15초 주기로 다시 조회 중인 순간이 잘
                     안 보였다 - 기존 새로고침 버튼(RefreshCw + animate-spin, 수칙 1-6 재사용)과 동일한
                     패턴으로, isFetching일 때만 옆에 작은 회전 아이콘을 별도로 띄운다. */}
+                {vwapWatchEnabled && vwapWatchFetching && <RefreshCw className="w-3 h-3 animate-spin text-sky-100" />}
+              </button>
+              <button
+                type="button"
+                onClick={() => setPivotWatchEnabled((v) => !v)}
+                className={`px-2.5 py-1 rounded-xl text-xs font-bold transition flex items-center gap-1 whitespace-nowrap cursor-pointer border shrink-0 ${
+                  pivotWatchEnabled
+                    ? 'bg-gradient-to-r from-violet-600 to-purple-600 text-white border-transparent shadow-xs font-black'
+                    : 'bg-slate-100 dark:bg-[#1e222d] text-slate-600 dark:text-gray-400 border-slate-200/60 dark:border-[#2a2e39] hover:border-slate-300 dark:hover:border-slate-700'
+                }`}
+                title="켜면 전일 확정 피봇 저항선(R1·R2)을 뚫었다가 눌린 뒤 다시 그 선을 향해 올라오는 종목을 15초 주기로 계속 갱신해서 실시간으로 표시합니다"
+              >
+                <Target className={`w-3.5 h-3.5 ${pivotWatchEnabled ? 'text-violet-200' : 'text-violet-600'}`} />
+                <span>{pivotWatchEnabled ? '피봇 재돌파 감시 중' : '피봇 재돌파 감시'}</span>
+                {pivotWatchEnabled && pivotWatchFetching && <RefreshCw className="w-3 h-3 animate-spin text-violet-100" />}
+              </button>
+            </div>
+          )}
+
+          {/* 🚨 [기능 통합 - 사용자 요청: "장마감 탭들을 장마감 후보군 탭으로 합쳐서 각자 토글로 만들고,
+              VWAP 실시간 감시·피봇 재돌파 감시도 넣어줘"] 급등/발굴/전조 3개 서브모드 토글 + 위 급등주
+              탭과 동일한 VWAP/피봇 감시 버튼(수칙 1-6 - 같은 버튼 JSX를 그대로 재사용). */}
+          {isPostMarketGroup && (
+            <div className="flex flex-wrap items-center gap-2 pt-2.5 border-t border-amber-100 dark:border-amber-950/40">
+              <div className="bg-amber-50 dark:bg-amber-950/30 p-1 rounded-xl flex items-center text-xs font-medium border border-amber-200 dark:border-amber-800/40 max-w-full overflow-hidden gap-0.5 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => handleTabChange('postmarket')}
+                  className={`px-2.5 py-1 rounded-lg transition whitespace-nowrap cursor-pointer text-xs font-bold flex items-center gap-1 shrink-0 ${
+                    activeTab === 'postmarket'
+                      ? 'bg-amber-600 text-white shadow-xs'
+                      : 'text-amber-700 dark:text-amber-300 hover:text-amber-900'
+                  }`}
+                >
+                  <Target className="w-3 h-3 shrink-0" />
+                  급등
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleTabChange('discovery')}
+                  className={`px-2.5 py-1 rounded-lg transition whitespace-nowrap cursor-pointer text-xs font-bold flex items-center gap-1 shrink-0 ${
+                    activeTab === 'discovery'
+                      ? 'bg-amber-600 text-white shadow-xs'
+                      : 'text-amber-700 dark:text-amber-300 hover:text-amber-900'
+                  }`}
+                >
+                  <Compass className="w-3 h-3 shrink-0" />
+                  발굴
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleTabChange('precursor')}
+                  className={`px-2.5 py-1 rounded-lg transition whitespace-nowrap cursor-pointer text-xs font-bold flex items-center gap-1 shrink-0 ${
+                    activeTab === 'precursor'
+                      ? 'bg-amber-600 text-white shadow-xs'
+                      : 'text-amber-700 dark:text-amber-300 hover:text-amber-900'
+                  }`}
+                >
+                  <Radar className="w-3 h-3 shrink-0" />
+                  전조
+                </button>
+              </div>
+              <button
+                type="button"
+                onClick={() => setVwapWatchEnabled((v) => !v)}
+                className={`px-2.5 py-1 rounded-xl text-xs font-bold transition flex items-center gap-1 whitespace-nowrap cursor-pointer border shrink-0 ${
+                  vwapWatchEnabled
+                    ? 'bg-gradient-to-r from-sky-600 to-cyan-600 text-white border-transparent shadow-xs font-black'
+                    : 'bg-slate-100 dark:bg-[#1e222d] text-slate-600 dark:text-gray-400 border-slate-200/60 dark:border-[#2a2e39] hover:border-slate-300 dark:hover:border-slate-700'
+                }`}
+                title="켜면 지금 보이는 후보 전체를 15초 주기로 계속 갱신해서, 재돌파 임박(아직 미돌파+간격 좁혀짐+거래량 선행) 또는 재돌파 완료 종목을 실시간으로 표시합니다"
+              >
+                <Zap className={`w-3.5 h-3.5 ${vwapWatchEnabled ? 'text-sky-200' : 'text-sky-600'}`} />
+                <span>{vwapWatchEnabled ? 'VWAP 실시간 감시 중' : 'VWAP 실시간 감시'}</span>
                 {vwapWatchEnabled && vwapWatchFetching && <RefreshCw className="w-3 h-3 animate-spin text-sky-100" />}
               </button>
               <button
@@ -1769,7 +1878,7 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
                     {/* 🚨 [UI 정리 - 사용자 지적: "코스피, 코스닥, 신용뱃지는 종목 옆에 그대로 두고 다른
                         뱃지들을 옮겨줘. 헷갈려."] VWAP/피봇 재돌파 배지를 종목명 칸에서 분리해 전용 칸으로
                         옮긴다 - 감시를 켰을 때만 나타난다. reclaimWatchEnabled로 판단해 토글이 실제로
-                        보이는 탭(급등주/수급교집합)에서만 뜨고 장마감 후보군 등 다른 탭엔 안 새어나간다. */}
+                        보이는 탭(급등주/수급교집합/장마감 후보군)에서만 뜨고 다른 탭엔 안 새어나간다. */}
                     {reclaimWatchEnabled && (
                       <th className="p-2.5 whitespace-nowrap min-w-[140px] sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]">감시 신호</th>
                     )}
@@ -1788,6 +1897,31 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
                         <th className="p-2.5 whitespace-nowrap sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]">외국인 수급</th>
                         <th className="p-2.5 whitespace-nowrap sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]">기관 수급</th>
                         <th className="p-2.5 text-center whitespace-nowrap sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]">7개 세부 지표</th>
+                      </>
+                    ) : activeTab === 'discovery' ? (
+                      // 🚨 [기능 추가 - "발굴 장마감" 탭] 급등주 랭킹과 무관한 5가지 신규 지표 전용 컬럼.
+                      <>
+                        <th className="p-2.5 text-right whitespace-nowrap sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]">현재가</th>
+                        <th className="p-2.5 text-right whitespace-nowrap sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]">등락률</th>
+                        <th className="p-2.5 whitespace-nowrap sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]" title="상승 과정에서 누가 물량을 받았는지(장중 추정)">매집 주체</th>
+                        <th className="p-2.5 text-right whitespace-nowrap sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]" title="오늘 누적 거래대금 중 14시 이후 비중">오후 매수세</th>
+                        <th className="p-2.5 text-right whitespace-nowrap sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]" title="오늘 거래대금 ÷ 최근 20거래일 평균">거래대금 배율</th>
+                        <th className="p-2.5 text-right whitespace-nowrap sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]" title="당일 고가 등락률 대비 현재 등락률 하락폭(0에 가까울수록 고가권 유지)">눌림 저항</th>
+                        <th className="p-2.5 text-right whitespace-nowrap sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]" title="현재 등락률 - 소속 시장 지수 등락률">상대강도</th>
+                        <th className="p-2.5 text-center whitespace-nowrap sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]" title="5개 지표 백분위 평균 - 아직 실측 백테스트 전 잠정치">종합점수</th>
+                      </>
+                    ) : activeTab === 'precursor' ? (
+                      // 🚨 [기능 추가 - "전조 장마감" 탭] 아직 크게 안 오른 상태에서 거래량만 조용히
+                      // 늘고 있는지를 보는 4가지 지표 전용 컬럼.
+                      <>
+                        <th className="p-2.5 text-right whitespace-nowrap sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]">현재가</th>
+                        <th className="p-2.5 text-right whitespace-nowrap sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]">등락률</th>
+                        <th className="p-2.5 text-right whitespace-nowrap sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]" title="최근 5거래일 누적 등락률 - 이미 급등한 종목은 후보에서 제외됨">최근5일 등락</th>
+                        <th className="p-2.5 text-right whitespace-nowrap sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]" title="오늘 거래대금 ÷ 최근 20거래일 평균">거래대금 배율</th>
+                        <th className="p-2.5 text-center whitespace-nowrap sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]" title="최근 3거래일 평균 거래량이 그 이전 3거래일보다 높은지">증가 추세</th>
+                        <th className="p-2.5 text-right whitespace-nowrap sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]" title="거래대금 배율 대비 가격변동 - 클수록 거래는 느는데 가격은 안 움직임">다이버전스</th>
+                        <th className="p-2.5 text-right whitespace-nowrap sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]" title="현재가 ÷ 당일 고가">고가유지</th>
+                        <th className="p-2.5 text-center whitespace-nowrap sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]" title="4개 조건 배점 합계 - 아직 실측 백테스트 전 잠정치">종합점수</th>
                       </>
                     ) : activeTab === 'surging' || activeTab === 'postmarket' || activeTab === 'watchlist' ? (
                       activeTab === 'postmarket' ? (
@@ -2368,6 +2502,90 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
                                 <span>7개 지표</span>
                                 {expandedSymbols[item.symbol] ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
                               </button>
+                            </td>
+                          </>
+                        ) : activeTab === 'discovery' ? (
+                          <>
+                            <td className="p-2.5 text-right font-bold text-slate-900 dark:text-white whitespace-nowrap">
+                              {item.currentPrice.toLocaleString()} 원
+                            </td>
+                            <td className="p-2.5 text-right font-bold font-mono whitespace-nowrap">
+                              <span className={item.changeRate >= 0 ? 'text-red-600 dark:text-red-400' : 'text-blue-600 dark:text-blue-400'}>
+                                {item.changeRate >= 0 ? '+' : ''}{item.changeRate.toFixed(2)}%
+                              </span>
+                            </td>
+                            <td className="p-2.5 whitespace-nowrap">
+                              <span
+                                className={`text-[10px] px-2 py-0.5 rounded-md font-bold border ${
+                                  item.absorptionDirection === 'both'
+                                    ? 'bg-gradient-to-r from-red-600 to-amber-600 text-white border-transparent'
+                                    : item.absorptionDirection === 'foreign' || item.absorptionDirection === 'organ'
+                                    ? 'bg-red-50 dark:bg-red-950/50 text-red-700 dark:text-red-300 border-red-200 dark:border-red-800/60'
+                                    : 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-slate-700'
+                                }`}
+                              >
+                                {item.absorptionBadge || '데이터 없음'}
+                              </span>
+                            </td>
+                            <td className="p-2.5 text-right font-mono text-slate-700 dark:text-slate-300 whitespace-nowrap">
+                              {item.afternoonVolumeRatioPct != null ? `${item.afternoonVolumeRatioPct.toFixed(1)}%` : '-'}
+                            </td>
+                            <td className="p-2.5 text-right font-mono text-slate-700 dark:text-slate-300 whitespace-nowrap">
+                              {item.volumeSurgeRatio != null ? `${item.volumeSurgeRatio.toFixed(2)}배` : '-'}
+                            </td>
+                            <td className="p-2.5 text-right font-mono whitespace-nowrap">
+                              {item.pullbackFromHighPct != null ? (
+                                <span className={item.pullbackFromHighPct <= 1 ? 'text-red-600 dark:text-red-400' : 'text-slate-600 dark:text-slate-400'}>
+                                  -{item.pullbackFromHighPct.toFixed(2)}%p
+                                </span>
+                              ) : '-'}
+                            </td>
+                            <td className="p-2.5 text-right font-mono whitespace-nowrap">
+                              {item.relativeStrengthPct != null ? (
+                                <span className={item.relativeStrengthPct >= 0 ? 'text-red-600 dark:text-red-400' : 'text-blue-600 dark:text-blue-400'}>
+                                  {item.relativeStrengthPct >= 0 ? '+' : ''}{item.relativeStrengthPct.toFixed(2)}%p
+                                </span>
+                              ) : '-'}
+                            </td>
+                            <td className="p-2.5 text-center font-bold text-slate-900 dark:text-white whitespace-nowrap">
+                              {item.discoveryScore != null ? item.discoveryScore.toFixed(1) : '-'}
+                            </td>
+                          </>
+                        ) : activeTab === 'precursor' ? (
+                          <>
+                            <td className="p-2.5 text-right font-bold text-slate-900 dark:text-white whitespace-nowrap">
+                              {item.currentPrice.toLocaleString()} 원
+                            </td>
+                            <td className="p-2.5 text-right font-bold font-mono whitespace-nowrap">
+                              <span className={item.changeRate >= 0 ? 'text-red-600 dark:text-red-400' : 'text-blue-600 dark:text-blue-400'}>
+                                {item.changeRate >= 0 ? '+' : ''}{item.changeRate.toFixed(2)}%
+                              </span>
+                            </td>
+                            <td className="p-2.5 text-right font-mono text-slate-700 dark:text-slate-300 whitespace-nowrap">
+                              {item.recentReturnPct != null ? (
+                                <span className={item.recentReturnPct >= 0 ? 'text-red-600 dark:text-red-400' : 'text-blue-600 dark:text-blue-400'}>
+                                  {item.recentReturnPct >= 0 ? '+' : ''}{item.recentReturnPct.toFixed(2)}%
+                                </span>
+                              ) : '-'}
+                            </td>
+                            <td className="p-2.5 text-right font-mono text-slate-700 dark:text-slate-300 whitespace-nowrap">
+                              {item.volumeSurgeRatio != null ? `${item.volumeSurgeRatio.toFixed(2)}배` : '-'}
+                            </td>
+                            <td className="p-2.5 text-center whitespace-nowrap">
+                              {item.volumeTrendIncreasing != null ? (
+                                item.volumeTrendIncreasing
+                                  ? <span className="text-[10px] px-2 py-0.5 rounded-md font-bold bg-red-50 dark:bg-red-950/50 text-red-700 dark:text-red-300 border border-red-200 dark:border-red-800/60">증가 ↑</span>
+                                  : <span className="text-[10px] text-slate-400 dark:text-slate-500">-</span>
+                              ) : '-'}
+                            </td>
+                            <td className="p-2.5 text-right font-mono text-slate-700 dark:text-slate-300 whitespace-nowrap">
+                              {item.priceVolumeDivergence != null ? item.priceVolumeDivergence.toFixed(2) : '-'}
+                            </td>
+                            <td className="p-2.5 text-right font-mono text-slate-700 dark:text-slate-300 whitespace-nowrap">
+                              {item.closeToHighRatioPct != null ? `${item.closeToHighRatioPct.toFixed(1)}%` : '-'}
+                            </td>
+                            <td className="p-2.5 text-center font-bold text-slate-900 dark:text-white whitespace-nowrap">
+                              {item.precursorScore != null ? item.precursorScore.toFixed(1) : '-'}
                             </td>
                           </>
                         ) : activeTab === 'surging' || activeTab === 'postmarket' || activeTab === 'watchlist' ? (

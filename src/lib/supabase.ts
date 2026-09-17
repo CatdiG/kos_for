@@ -338,6 +338,146 @@ export async function removeFromWsWatchlist(symbol: string): Promise<boolean> {
   }
 }
 
+// ============================================================================
+// 🎯 [기능 추가 - 사용자 요청: "발굴 장마감" 탭] 매 거래일 14:30(KST) 크론이 계산한 그날의 발굴
+// 후보군 스냅샷을 영구 저장한다. raw_daily_data(장마감 확정치)와 달리 장마감 "직전" 잠정 데이터라
+// 별도 테이블(discovery_snapshots, scratch/create_discovery_snapshots_table.sql)로 분리했다.
+// ============================================================================
+export interface DiscoverySnapshotRecord {
+  date: string;
+  symbol: string;
+  name: string;
+  market: string;
+  current_price: number;
+  change_rate: number;
+  absorption_direction?: string;
+  absorption_badge?: string;
+  afternoon_volume_ratio_pct?: number;
+  volume_surge_ratio?: number;
+  pullback_from_high_pct?: number;
+  relative_strength_pct?: number;
+  discovery_score?: number;
+  rank?: number;
+}
+
+export async function saveDiscoverySnapshots(records: DiscoverySnapshotRecord[]): Promise<boolean> {
+  if (!records || records.length === 0) return false;
+  const client = getSupabaseAdmin();
+  if (!client) return false;
+  const date = records[0].date;
+  try {
+    // 🚨 [버그 수정 - 실측으로 발견] upsert만 쓰면 "이번 회차엔 후보에서 빠진 종목"(예: 수급 필터로
+    // 걸러진 종목)의 지난 회차 행이 그대로 남는다 - 같은 날짜에 크론이 두 번 이상 돈 경우(재시도,
+    // 수동 재계산 등) 오래된 종목이 최신 결과와 섞여 순위가 중복되는 게 확인됐다. 저장 전에 그 날짜
+    // 행을 전부 지우고 이번 회차 결과로 다시 채워서, 그날의 스냅샷이 항상 "이번 계산 결과 그대로"가
+    // 되도록 멱등성을 보장한다.
+    const { error: deleteError } = await client.from('discovery_snapshots').delete().eq('date', date);
+    if (deleteError) {
+      console.warn('[Supabase discovery_snapshots Delete Error]', deleteError.message);
+    }
+
+    const { error } = await client
+      .from('discovery_snapshots')
+      .upsert(records, { onConflict: 'date,symbol' });
+    if (error) {
+      console.warn('[Supabase discovery_snapshots Save Error]', error.message);
+      return false;
+    }
+    console.log(`[Supabase discovery_snapshots Save] ${date} 발굴 장마감 스냅샷 ${records.length}건 저장 완료(기존 행 삭제 후 재적재)`);
+    return true;
+  } catch (e: any) {
+    console.error('[Supabase discovery_snapshots Save Exception]', e?.message || e);
+    return false;
+  }
+}
+
+export async function fetchDiscoverySnapshots(date: string): Promise<DiscoverySnapshotRecord[]> {
+  const client = getSupabaseAdmin() || getSupabasePublic();
+  if (!client || !date) return [];
+  try {
+    const { data, error } = await client
+      .from('discovery_snapshots')
+      .select('*')
+      .eq('date', date)
+      .order('rank', { ascending: true });
+    if (error) {
+      console.warn('[Supabase discovery_snapshots List Error]', error.message);
+      return [];
+    }
+    return data || [];
+  } catch (e: any) {
+    console.warn('[Supabase discovery_snapshots List Exception]', e?.message || e);
+    return [];
+  }
+}
+
+// ============================================================================
+// 🎯 [기능 추가 - 사용자 요청: "전조 장마감" 탭] discovery_snapshots와 동일한 이유(장마감 "직전" 잠정
+// 데이터라 raw_daily_data와 별도)로 분리한 테이블(precursor_snapshots,
+// scratch/create_precursor_snapshots_table.sql). 저장/조회 패턴도 100% 동일하게 재사용한다(수칙 1-6).
+// ============================================================================
+export interface PrecursorSnapshotRecord {
+  date: string;
+  symbol: string;
+  name: string;
+  market: string;
+  current_price: number;
+  change_rate: number;
+  recent_return_pct?: number;
+  volume_surge_ratio?: number;
+  volume_trend_increasing?: boolean;
+  price_volume_divergence?: number;
+  close_to_high_ratio_pct?: number;
+  precursor_score?: number;
+  rank?: number;
+}
+
+export async function savePrecursorSnapshots(records: PrecursorSnapshotRecord[]): Promise<boolean> {
+  if (!records || records.length === 0) return false;
+  const client = getSupabaseAdmin();
+  if (!client) return false;
+  const date = records[0].date;
+  try {
+    const { error: deleteError } = await client.from('precursor_snapshots').delete().eq('date', date);
+    if (deleteError) {
+      console.warn('[Supabase precursor_snapshots Delete Error]', deleteError.message);
+    }
+
+    const { error } = await client
+      .from('precursor_snapshots')
+      .upsert(records, { onConflict: 'date,symbol' });
+    if (error) {
+      console.warn('[Supabase precursor_snapshots Save Error]', error.message);
+      return false;
+    }
+    console.log(`[Supabase precursor_snapshots Save] ${date} 전조 장마감 스냅샷 ${records.length}건 저장 완료(기존 행 삭제 후 재적재)`);
+    return true;
+  } catch (e: any) {
+    console.error('[Supabase precursor_snapshots Save Exception]', e?.message || e);
+    return false;
+  }
+}
+
+export async function fetchPrecursorSnapshots(date: string): Promise<PrecursorSnapshotRecord[]> {
+  const client = getSupabaseAdmin() || getSupabasePublic();
+  if (!client || !date) return [];
+  try {
+    const { data, error } = await client
+      .from('precursor_snapshots')
+      .select('*')
+      .eq('date', date)
+      .order('rank', { ascending: true });
+    if (error) {
+      console.warn('[Supabase precursor_snapshots List Error]', error.message);
+      return [];
+    }
+    return data || [];
+  } catch (e: any) {
+    console.warn('[Supabase precursor_snapshots List Exception]', e?.message || e);
+    return [];
+  }
+}
+
 /**
  * Supabase DB intraday_3m_candles 테이블에서 특정 날짜에 "실제로 조회되어 저장된 적 있는" 심볼과
  * 그 시점의 봉 개수 목록을 반환한다. 큐레이션된 TOP_300_STOCKS 밖의 종목(검색으로 연 임의 종목 등)도

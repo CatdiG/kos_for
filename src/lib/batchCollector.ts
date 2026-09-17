@@ -4,7 +4,7 @@ import { TOP_50_STOCKS, getStockName, resolveMarketType, getSettledAsOfDateLabel
 import { TOP_300_STOCKS } from './stockUniverse300';
 import { fetchKisInvestorTrend, fetchKisProgramTrade, fetchKisProgramTradeDaily, fetchKisForeignInstitutionRanking, assertNoMockLeak, getKisAccessToken, getEvaluatedCreditStatus, computeStatusBadgeFromTrend, resolveTrendForBadge, getGlobalMap, syncSharedRankCache, kisQueue } from './kisApi';
 import { InvestorRankingResponse, RankingItem, RankingType, RankingDirection, RankingPeriod, MarketType } from './types';
-import { saveRawDailyDataToSupabase, RawDailyInvestorRecord, upsertSharedRankCache, fetchSharedRankCacheBatch } from './supabase';
+import { saveRawDailyDataToSupabase, RawDailyInvestorRecord, upsertSharedRankCache, fetchSharedRankCacheBatch, fetchWsWatchlist } from './supabase';
 
 // 🚨 [버그 수정 - 수칙 1-3/1-6] DELAY_MS/CHUNK_SIZE/MAX_RETRIES/RETRY_DELAY_MS는 선언만 되고 실제
 // 로직에서 단 한 곳도 참조되지 않는 죽은 설정값이었다(실사용 청크 크기는 759번 줄의 별도 로컬
@@ -752,7 +752,26 @@ export async function runRawDailyDataBackfill(
   // (실측: SK스퀘어 등 - 사용자가 "차트에서 계속 바닥반등 하는데 왜 랭킹은 다르냐"고 지적해서 발견).
   // 60일보다 여유있게 90일로 늘려서 ma60 계산에 필요한 최소 60개 종가를 항상 확보한다.
 ): Promise<{ collectedCount: number; datesBackfilled: string[]; failedCount: number; unsettledCount: number; elapsedMs: number }> {
-  const targetList = TOP_300_STOCKS.slice(Math.max(0, startIdx), Math.min(TOP_300_STOCKS.length, endIdx));
+  const baseList = TOP_300_STOCKS.slice(Math.max(0, startIdx), Math.min(TOP_300_STOCKS.length, endIdx));
+  // 🚨 [버그 수정 - 사용자 지적: "히스토리 관심종목에서 미투온 왜 원본 데이터가 없다는거야"] 이 함수가
+  // 순회하는 종목이 TOP_300_STOCKS 300개로 고정돼 있어서, 사용자가 실시간 탭에서 검색해 관심종목
+  // (ws_watchlist)에 추가한 종목이 이 300개 밖이면(실측: 미투온 201490) raw_daily_data에 영원히
+  // 안 쌓여 히스토리 관심종목 탭에서 항상 "원본 데이터 없음"으로 제외됐다. startIdx=0 호출(하루 두 번의
+  // 크론 쌍 중 첫 구간) 때만 현재 관심종목 중 TOP_300에 없는 것들을 덧붙여 같이 수집한다 - 두 번째
+  // 구간(startIdx=148)에서도 덧붙이면 중복 수집이라 startIdx===0일 때만 처리한다(upsert라 무해하긴
+  // 하지만 불필요한 KIS 호출을 줄인다).
+  let targetList: Array<{ symbol: string; name: string }> = baseList;
+  if (startIdx === 0) {
+    const watchlist = await fetchWsWatchlist().catch(() => []);
+    const top300Symbols = new Set(TOP_300_STOCKS.map((s) => s.symbol));
+    const extra = watchlist
+      .filter((w) => !top300Symbols.has(w.symbol))
+      .map((w) => ({ symbol: w.symbol, name: w.name || w.symbol }));
+    if (extra.length > 0) {
+      console.log(`[Raw Daily Data Backfill] 관심종목 중 TOP_300 밖 ${extra.length}개 추가 수집: ${extra.map((e) => e.name).join(', ')}`);
+      targetList = [...baseList, ...extra];
+    }
+  }
   const startedAt = Date.now();
   const recordsByDate = new Map<string, RawDailyInvestorRecord[]>();
   const unsettled: string[] = [];

@@ -31,10 +31,12 @@ export const HistoryRankingTable: React.FC<HistoryRankingTableProps> = ({
   // 순매수금액 개념이 없고(포스트마켓은 급등주 기반, 관심종목은 개별 종목 목록) 대신 거래대금·다음날 결과가
   // 더 유의미하다 - surging/comprehensive와 같은 컬럼 취급으로 묶는다.
   const showAmountColumn = type === 'surging' || type === 'comprehensive' || type === 'postmarket' || type === 'watchlist';
-  const showNetBuyColumn = !showAmountColumn;
+  // 🚨 [기능 추가 - 사용자 요청: "히스토리도 장마감 후보군 업데이트 해줘"] discovery/precursor는 거래대금·
+  // 순매수 둘 다 의미 있는 값이 없다(0으로 고정) - 대신 전용 요약 칸(급등 상세 순위와 동일한 자리)을 쓴다.
+  const showNetBuyColumn = !showAmountColumn && type !== 'discovery' && type !== 'precursor';
   // 🎯 [기능 추가 - 사용자 요청: "수급교집합 장마감 후보만도... 얼마나 올랐는지 두개 보여주고"] 수급교집합에
   // "장마감 후보만" 토글이 켜져 있을 때도 postmarket과 동일하게 다음날 결과(종가/고가)를 보여준다.
-  const showNextDayColumn = type === 'postmarket' || type === 'watchlist' || (type === 'overlap' && Boolean(quietFilter));
+  const showNextDayColumn = type === 'postmarket' || type === 'discovery' || type === 'precursor' || type === 'watchlist' || (type === 'overlap' && Boolean(quietFilter));
   const [searchTerm, setSearchTerm] = useState('');
   // 🚨 [기능 수정 - 사용자 지적: "누른 종목밑에 바로 떠야하지않겠니? 지금 로컬에서처럼"] 처음엔 부모
   // (history/page.tsx)가 selectedSymbol을 받아 테이블 "위"에 고정 패널로 차트를 띄웠는데, 실시간
@@ -107,6 +109,12 @@ export const HistoryRankingTable: React.FC<HistoryRankingTableProps> = ({
               {type === 'postmarket' ? (
                 <th className="py-3 px-4 min-w-[220px]">급등 상세 순위</th>
               ) : null}
+              {type === 'discovery' ? (
+                <th className="py-3 px-4 min-w-[220px]">매집·강도 요약</th>
+              ) : null}
+              {type === 'precursor' ? (
+                <th className="py-3 px-4 min-w-[220px]">거래 급증 요약</th>
+              ) : null}
               {showNextDayColumn ? (
                 <th className="py-3 px-4 text-right min-w-[130px]" title="raw_daily_data에 실제로 수집된 다음 영업일 종가/고가 기준">
                   다음날 결과
@@ -174,7 +182,8 @@ export const HistoryRankingTable: React.FC<HistoryRankingTableProps> = ({
                       {isPositive ? '+' : ''}{(item.changeRate || 0).toFixed(2)}%
                     </td>
                     <td className="py-3 px-4 text-right text-slate-600 dark:text-slate-400 text-xs">
-                      {(item.volume || 0).toLocaleString()}
+                      {/* discovery/precursor는 거래량을 별도로 계산하지 않는다(전용 요약 칸으로 대체) - 의미 없는 0 대신 대시 표시 */}
+                      {type === 'discovery' || type === 'precursor' ? '-' : (item.volume || 0).toLocaleString()}
                     </td>
                     {showAmountColumn ? (
                       <td className="py-3 px-4 text-right font-medium text-slate-800 dark:text-slate-200">
@@ -248,6 +257,20 @@ export const HistoryRankingTable: React.FC<HistoryRankingTableProps> = ({
                       <td className="py-3 px-4 max-w-[240px]">
                         <span className="text-[10px] px-2 py-0.5 rounded-md font-bold bg-amber-100 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-700/50 whitespace-normal leading-snug inline-block">
                           {item.surgingBadge || '-'}
+                        </span>
+                      </td>
+                    ) : null}
+                    {type === 'discovery' ? (
+                      <td className="py-3 px-4 max-w-[240px]">
+                        <span className="text-[10px] px-2 py-0.5 rounded-md font-bold bg-amber-100 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-700/50 whitespace-normal leading-snug inline-block">
+                          {item.absorptionBadge || '데이터 없음'} · 점수 {item.discoveryScore != null ? item.discoveryScore.toFixed(1) : '-'}
+                        </span>
+                      </td>
+                    ) : null}
+                    {type === 'precursor' ? (
+                      <td className="py-3 px-4 max-w-[240px]">
+                        <span className="text-[10px] px-2 py-0.5 rounded-md font-bold bg-amber-100 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-700/50 whitespace-normal leading-snug inline-block">
+                          거래대금 {item.volumeSurgeRatio != null ? item.volumeSurgeRatio.toFixed(2) : '-'}배{item.volumeTrendIncreasing ? ' · 증가추세' : ''} · 점수 {item.precursorScore != null ? item.precursorScore.toFixed(1) : '-'}
                         </span>
                       </td>
                     ) : null}
