@@ -5,7 +5,7 @@ import os from 'os';
 import { InvestorTrendDay, InvestorTrendResponse, KisTokenResponse, ProgramTradeIntradayPoint, ProgramTradeSummary, SupplySummary, TrendPeriod, InvestorRankingResponse, RankingItem, RankingDirection, RankingPeriod, RankingType, OverlapInvestorRank, MarketType, SurgingRankItem, ScoreBreakdown, SurgingMode, isEtfOrEtn, IntradayCandlePoint, IntradayPivotFibonacciLevels, IntradayChartResponse, IndexTrendResponse, IndexTrendDay, StockBadgeItem, StockBadgeSummaryResponse, VwapReclaimSignal, PivotReclaimSignal, PivotLevelSignal } from './types';
 import { getStockName, resolveStockPriceAndChange, updateRuntimeStockPrice, registerRuntimeStockName, resolveMarketType, computeUnifiedStatusBadge, getSettledAsOfDateLabel, getKrxEstimateSlotInfo, findSplitSafeStartIndex, roundToKrxTick, computeRecentVolumeRatio } from './mockData';
 import { TOP_300_STOCKS } from './stockUniverse300';
-import { fetchTokenFromSupabase, fetchCreditBatchFromSupabase, saveCreditBatchToSupabase, fetchIntraday3mCandlesFromSupabase, fetchFreshIntraday3mCandlesFromSupabase, saveIntraday3mCandlesToSupabase, fetchConsecutiveOverlapWatch, upsertConsecutiveOverlapWatch, fetchDailyOverlapFirstSeen, insertDailyOverlapFirstSeenIfMissing, fetchLatestActiveBeforeDate, upsertSharedRankCache, fetchSharedRankCacheBatch, fetchWatchSignalState, upsertWatchSignalState } from './supabase';
+import { fetchTokenFromSupabase, fetchCreditBatchFromSupabase, saveCreditBatchToSupabase, CreditBatchRow, fetchIntraday3mCandlesFromSupabase, fetchFreshIntraday3mCandlesFromSupabase, saveIntraday3mCandlesToSupabase, fetchConsecutiveOverlapWatch, upsertConsecutiveOverlapWatch, fetchDailyOverlapFirstSeen, insertDailyOverlapFirstSeenIfMissing, fetchLatestActiveBeforeDate, upsertSharedRankCache, fetchSharedRankCacheBatch, fetchWatchSignalState, upsertWatchSignalState, logReclaimSignalEvent, updateReclaimSignalOutcome } from './supabase';
 // mockData.ts도 함께 써야 해서(runtimePriceCache 공유) kisApi.ts↔mockData.ts 순환 참조를 피하려고
 // getGlobalMap 정의를 별도 파일(globalCache.ts)로 옮겼다 - 기존 호출부(batchCollector.ts 등)가 계속
 // `from './kisApi'`로 가져다 쓸 수 있도록 여기서 재수출한다.
@@ -387,6 +387,18 @@ function getKstTodayStr(): string {
   const utc = now.getTime() + now.getTimezoneOffset() * 60000;
   const kstDate = new Date(utc + 9 * 60 * 60000);
   return `${kstDate.getFullYear()}${String(kstDate.getMonth() + 1).padStart(2, '0')}${String(kstDate.getDate()).padStart(2, '0')}`;
+}
+
+// 🎯 [기능 추가 - 사용자 요청: "오늘 정상 속도는 별도 인프라 없이 오늘 누적 평균으로 먼저 가자"] 오늘
+// KST 정규장 시작(09:00) 시각을 epoch ms로 반환한다 - cumVol(장 시작부터의 누적 거래량)을 이 시각부터
+// 지금까지의 경과시간으로 나누면 새 데이터 수집 없이 "오늘 지금까지의 평균 거래 속도"를 근사할 수 있다.
+// KST 09:00은 UTC 00:00과 같은 순간(같은 KST 날짜)이므로, getKstTodayStr과 동일한 관례(수칙 1-6)로
+// 서버 타임존과 무관하게 KST 달력 필드만 뽑아 Date.UTC로 직접 조립한다.
+function getKstMarketOpenTs(referenceTs: number): number {
+  const ref = new Date(referenceTs);
+  const utc = ref.getTime() + ref.getTimezoneOffset() * 60000;
+  const kst = new Date(utc + 9 * 60 * 60000);
+  return Date.UTC(kst.getFullYear(), kst.getMonth(), kst.getDate(), 0, 0, 0, 0);
 }
 
 // 🚨 [버그 수정 - 코드 리뷰 발견: 15:30~16:00 휴장이 "장중"으로 오판됨] 이 파일 곳곳에 있던
@@ -1970,12 +1982,24 @@ export async function mergeCreditStatusToRanking(items: RankingItem[]): Promise<
   });
 
   // 3. Batch Supabase DB check for missing symbols
+  // 🚨 [버그 수정 - 사용자 지적: "두산에너빌리티는 신용 가능한데 왜 자꾸 가능했다가 안됐다고 뜨는거야?
+  // 한번 저장하면 계속 쓰는거 아니었어?"] 예전엔 Supabase에 행이 있기만 하면 그게 몇 주 전 값이든 그대로
+  // 신뢰해서 timestamp: Date.now()로 "방금 확인한 것처럼" 메모리 캐시에 24시간 도장을 찍었다 - 실측:
+  // 두산에너빌리티(034020)가 8/28 저장된 is_credit:false를 오늘(KIS 라이브 원본은 Y=가능)도 그대로
+  // 물려받고 있었다. 이제 저장된 시각(updatedAtMs)이 CREDIT_CACHE_TTL_MS(24시간) 이내인 행만 신뢰하고,
+  // timestamp도 지금 시각이 아니라 실제 저장 시각을 그대로 써서 메모리 캐시의 24시간 TTL이 "진짜 확인된
+  // 시점" 기준으로 정확히 계산되게 한다. 24시간 넘은 행은 신뢰하지 않고 "미확인" 상태로 남겨서, 아래
+  // 호출부(ranking/surging route의 after() 백그라운드 로직)가 isCreditAvailable===undefined로 보고
+  // 실시간 KIS 재검증 + Supabase 재저장 대상에 자동으로 포함시킨다(수칙 1-6, 기존 재검증 경로 재사용 -
+  // 새 크론 없음).
   if (missingSymbols.length > 0) {
     // 3a. Supabase DB Check (Instant DB Read)
-    const supabaseMap: Record<string, boolean> = await fetchCreditBatchFromSupabase(missingSymbols).catch(() => ({} as Record<string, boolean>));
+    const supabaseMap = await fetchCreditBatchFromSupabase(missingSymbols).catch(() => ({} as Record<string, CreditBatchRow>));
+    const now = Date.now();
     missingSymbols.forEach((sym) => {
-      if (supabaseMap && supabaseMap[sym] !== undefined) {
-        creditStatusCache.set(sym, { isCredit: supabaseMap[sym], timestamp: Date.now() });
+      const row = supabaseMap?.[sym];
+      if (row && now - row.updatedAtMs < CREDIT_CACHE_TTL_MS) {
+        creditStatusCache.set(sym, { isCredit: row.isCredit, timestamp: row.updatedAtMs });
       }
     });
   }
@@ -6441,15 +6465,25 @@ interface VwapWatchState {
   // 거래일 것인지 - 이게 없으면 프로세스가 자정을 넘겨 살아있는 동안(서버리스 웜 인스턴스) 어제자
   // hasBeenBelow/crossCount가 오늘 판정에 그대로 섞여 들어간다. pivotLevelsCache가 이미 쓰던 것과
   // 동일한 패턴(수칙 1-6).
-  samples: VwapWatchSample[]; // 최근 N개(추세/거래량 비교용) - approaching·volSurge 계산 전용
+  samples: VwapWatchSample[]; // 최근 N개(추세/거래량 비교용) - approaching·거래량 속도 계산 전용
   hasBeenBelow: boolean; // 감시 시작 후 한 번이라도 VWAP 아래였는지 - 영구 보존(창 밖으로 안 밀려남)
   crossCount: number; // 감시 시작 후 below→above 전환 누적 횟수 - 영구 보존
   wasAbove: boolean | null; // 직전 관측 상태(표본 창이 비워져도 전환 감지가 끊기지 않도록)
-  // 🚨 [버그 수정 - 사용자 지적: "3분봉 보면 거래량 다 뜨는데 왜 거래량 미확인으로 나와? 돌파할때
-  // 거래량이 중요한거 아님?"] hasBeenBelow/crossCount와 완전히 같은 이유로 samples 창(20개, 약 5분)
-  // 밖으로 밀려나면 "그 돌파 순간의 거래량 증가 여부"까지 같이 유실됐다 - 창 안에서 크로스를 찾을 때마다
-  // 계산되는 결과를 영구 보존해서, 창 밖으로 밀려난 뒤에도 마지막으로 확인된 값을 계속 보여준다.
-  lastKnownVolSurge: boolean;
+  // 🎯 [기능 재설계 - 사용자 요청: "가격 cross → 가격 cross + 일정 시간 유지"] 실시간으로 직접 관측한
+  // below→above 전환 시각(ms) - 이 시각으로부터 30초/60초가 지났는지를 재서 reclaimConfirmed/
+  // strongReclaim을 판정한다. 감시 시작 전에 이미 돌파해 있었거나(첫 관측이 above) 기준선 아래로
+  // 다시 내려가면 즉시 null로 리셋한다(사용자 확정: "30초 동안 아래로 내려가면 즉시 실패/리셋") -
+  // null이면 "돌파 시각을 모름"으로 간주해 reclaimed(즉시)만 보여주고 상위 등급은 전부 미확인 처리한다.
+  breakoutTs: number | null;
+  // 🎯 [기능 추가 - 사용자 요청: "테이블기록 만들자"] approaching/sellPressureWarning이 막 true로
+  // 전환된 순간(rising edge)에만 reclaim_signal_events에 기록하기 위한 직전 상태 - 매 15초 폴링마다
+  // 중복 기록하지 않는다.
+  wasApproaching: boolean;
+  wasSellPressure: boolean;
+  // 🎯 [기능 추가 - 사용자 요청: "approaching이 나중에 실제 재돌파 성공으로 이어졌는지 outcome을 기록하자"]
+  // rising edge에 기록한 reclaim_signal_events 행의 id - falling edge(approaching이 꺼지는 순간)에
+  // 그 사이 실제로 뚫었는지(성공) 아니면 힘이 빠져 꺼졌는지(실패)를 판정해 이 id로 UPDATE한다.
+  pendingApproachEventId: number | null;
 }
 
 // 종목별 최근 표본 이력(감시가 시작된 시점부터 누적) - 프로세스 전역 공유(getGlobalMap, 수칙 1-6).
@@ -6614,62 +6648,61 @@ export async function fetchKisWatchlistQuotes(symbols: string[]): Promise<Rankin
 const APPROACHING_GAP_THRESHOLD_PCT = 1.5;
 
 interface ApproachSample {
+  ts: number; // 🎯 [기능 추가 - 사용자 요청: "현재 rate / baseline rate / 오늘 평균 rate를 전부 로깅"]
+  // 시간당(60초 환산) 거래량 속도를 계산하려면 실제 체결 시각이 필요하다 - 원래 이 필드가 빠져 있어서
+  // computeVolumeRate(시간 윈도우 기반, computeReclaimFreshness가 이미 쓰던 것)를 재사용하지 못하고
+  // "최근 표본 2개 vs 그 이전 표본들"이라는 표본 개수 기반의 별도 근사 로직이 따로 있었다(수칙 1-6).
   price: number;
   cumVol: number;
   target: number; // VWAP은 표본마다 그 시점의 VWAP 값(변동), 피봇은 고정된 R1/R2 값(불변)
 }
 
-// "근접 중"(간격 좁혀짐 + 임박 폭 이내 + 거래량 선행 증가) 판정 - VWAP과 피봇(R1/R2) 양쪽에서 완전히
-// 동일한 로직이 각자 인라인으로 중복돼 있던 것을 하나로 합쳤다(수칙 1-6).
-// 🎯 [기능 추가 - 사용자 지적: "3분봉 보면 거래량 다 뜨는데 왜 거래량 미확인으로 나와? 다른 방법은
-// 없는거야?"] 실시간 틱 5분 창을 넘어서도 volSurge를 알아내는 두 번째 방법 - 새 KIS 호출을 추가하지
-// 않고, 누군가(이 세션이든 다른 사용자든) 오늘 이미 그 종목 3분봉 차트를 한 번이라도 열어봤다면
-// fetchKis3mCandlesFullDay가 그 결과를 Supabase(intraday_3m_candles)에 이미 저장해뒀다(수칙 1-6,
-// 기존 저장 로직 그대로 재사용). 그 캐시가 있으면 하루 전체 3분봉에서 "가장 최근 돌파 시점"의 거래량
-// 증가 여부를 계산해 초기값으로 쓴다 - 없으면(아무도 아직 안 열어본 종목) 조용히 null을 반환하고
-// 기존처럼 실시간 틱 관측에 맡긴다(추가 KIS 호출 없음, 캐시 미스는 그냥 미스로 둔다).
-// 🚨 [버그 수정 - 실측: Supabase에 저장된 3분봉엔 vwap 필드가 없음] intraday_3m_candles 테이블
-// 진단 결과 저장되는 건 순수 OHLCV(open/high/low/close/volume)뿐이고, 화면 API가 응답에 얹어주는
-// vwap/ma5 등은 응답 시점에 그때그때 계산해서 붙이는 필드라 DB엔 없다 - 그래서 이 필드를 그대로
-// 참조하면 항상 undefined라 크로스를 절대 못 찾았다(백필이 조용히 죽어있던 원인). 종가×거래량 누적으로
-// 그 시점까지의 VWAP을 직접 재구성한다.
-function withRunningVwap(candles: any[]): any[] {
-  let cumVal = 0;
-  let cumVol = 0;
-  return candles.map((c) => {
-    cumVal += (c.closePrice || 0) * (c.volume || 0);
-    cumVol += c.volume || 0;
-    return { ...c, vwap: cumVol > 0 ? cumVal / cumVol : c.closePrice };
-  });
-}
-
-// 🚨 [시도했다가 되돌림 - 실측: 감시 대상 60종목이 동시에 fetchKis3mCandlesFullDay를 부르면 종목당
-// 최대 14슬롯 × 60종목 = 최대 840개 요청이 한꺼번에 KIS로 몰려서 500 에러가 대량 폭주함(로그로 직접
-// 확인, 예전에 고쳤던 kisQueue congestion 버그의 재발). 혼자 쓰는 경우에도 이 방식은 위험해서
-// Supabase 캐시가 있을 때만 공짜로 재사용하고, 없으면 새 KIS 호출 없이 조용히 포기한다(기존처럼
-// 실시간 틱 관측에 맡김) - 순차적으로 안전하게 채우는 방법은 별도 검토 필요.
-async function getCandlesForVolSurgeBackfill(symbol: string): Promise<any[] | null> {
-  const todayStr = getKstTodayStr();
-  return fetchIntraday3mCandlesFromSupabase(todayStr, symbol);
-}
-
-function computeHistoricalVolSurgeFromCandles(candles: any[] | null, isAbove: (c: any) => boolean): boolean | null {
-  if (!candles || candles.length < 2) return null;
-  let crossIdx = -1;
-  for (let i = 1; i < candles.length; i++) {
-    if (isAbove(candles[i]) && !isAbove(candles[i - 1])) crossIdx = i;
+// 🎯 [기능 재설계 - 사용자 요청: "거래량 증가 = 활동성, 매수 우위 = 방향성 둘 다 보게 - 거래량↑ + 매수
+// 우위 → 재돌파 임박, 거래량↑ + 매도 우위 → 임박에서 제외하고 매도 압박으로 표시"] 틱 테스트(Tick Test) -
+// 직전 표본보다 가격이 올랐으면 그 구간에 체결된 거래량을 매수 쪽으로, 내렸으면 매도 쪽으로 분류한다.
+// 호가창(매수/매도 잔량) 데이터 없이 기존에 이미 갖고 있는 표본(price, cumVol)만으로 계산 가능한 표준
+// 근사법이다. 가격이 안 변한 구간은 직전 방향을 그대로 이어받는다(Tick Test의 통상적인 처리 방식).
+function computeVolumeDirection(samples: ApproachSample[]): { buyVolume: number; sellVolume: number } {
+  let buyVolume = 0;
+  let sellVolume = 0;
+  let lastDirection: 1 | -1 = 1; // 첫 구간에서 가격 변화가 없으면 매수로 간주(보수적 기본값)
+  for (let i = 1; i < samples.length; i++) {
+    const delta = samples[i].cumVol - samples[i - 1].cumVol;
+    if (delta <= 0) continue;
+    if (samples[i].price > samples[i - 1].price) lastDirection = 1;
+    else if (samples[i].price < samples[i - 1].price) lastDirection = -1;
+    if (lastDirection === 1) buyVolume += delta; else sellVolume += delta;
   }
-  if (crossIdx === -1) return null;
-  const preVols = candles.slice(Math.max(0, crossIdx - 4), crossIdx).map((c) => c.volume || 0);
-  const postVols = candles.slice(crossIdx + 1, Math.min(candles.length, crossIdx + 4)).map((c) => c.volume || 0);
-  if (preVols.length === 0 || postVols.length === 0) return null;
-  const preAvg = preVols.reduce((a, b) => a + b, 0) / preVols.length;
-  const postAvg = postVols.reduce((a, b) => a + b, 0) / postVols.length;
-  return preAvg > 0 && postAvg > preAvg;
+  return { buyVolume, sellVolume };
 }
 
-function computeApproachingSignal(samples: ApproachSample[]): boolean {
-  if (samples.length < 5) return false;
+interface ApproachResult {
+  approaching: boolean;
+  sellPressureWarning: boolean; // 거래량은 늘었지만 매도 우위라 임박에서 제외된 경우(참고용 경고)
+  buyVolume: number; // 로깅용(reclaim_signal_events) - 판정에 쓰인 매수 방향 거래량
+  sellVolume: number; // 로깅용 - 판정에 쓰인 매도 방향 거래량
+  // 🎯 [기능 추가 - 사용자 요청: "절대 활성도 게이트는 지금 숫자를 임의로 박지 말고, 현재 rate / baseline
+  // rate / 오늘 평균 rate를 전부 로깅해서 데이터 쌓은 뒤 임계값을 정하자"] 세 값 모두 판정(approaching/
+  // sellPressureWarning)에는 아직 쓰지 않는다 - reclaim_signal_events에 기록만 해서, 나중에 실제 재돌파
+  // 성공/실패 데이터와 대조해 절대 활성도 기준과 시간대 프로파일을 데이터 기반으로 정한다.
+  recentRate: number | null; // 최근 60초 거래량 속도(60초 환산)
+  baselineRate: number | null; // 그 직전 60초 거래량 속도(60초 환산) - 표본 이력이 120초 미만이면 null(미확인)
+  todayAvgRate: number | null; // 오늘 09:00 장시작부터 지금까지의 누적 평균 거래량 속도(60초 환산)
+}
+const NO_APPROACH: ApproachResult = { approaching: false, sellPressureWarning: false, buyVolume: 0, sellVolume: 0, recentRate: null, baselineRate: null, todayAvgRate: null };
+
+// "근접 중"(간격 좁혀짐 + 임박 폭 이내 + 거래량 선행 증가 + 매수 우위) 판정 - VWAP과 피봇(R1/R2) 양쪽에서
+// 완전히 동일한 로직이 각자 인라인으로 중복돼 있던 것을 하나로 합쳤다(수칙 1-6).
+// 🚨 [버그 수정 - 사용자 지적: "지금 알고리즘의 volPickup은 '거래가 붙었다'만 말하고 있어서, 재돌파 임박
+// 판정의 방향성 정보가 없어 - 매도 우위인데 거래량만 급증한 종목은 임박 상태를 아예 띄우지 않는거 어때?
+// 지금 찾는게 '거래량 많은 종목'이 아니라 '재돌파할 가능성이 높은 종목'이니까"] volPickup(활동성)은 그대로
+// 두고, 그 증가분이 매수 쪽인지 매도 쪽인지(방향성)를 추가로 확인한다. 매수/매도 판정 임계값은 "매수
+// 60% 이상"처럼 임의로 세게 고정하지 않고(사용자 확정: "처음부터 정하기보다는 과거 데이터를 돌려서
+// 임계값을 찾는 게 낫겠어") 수학적으로 중립적인 단순 과반(매수량 > 매도량)만 본다 - 이 판정이 일어나는
+// 순간마다 buyVolume/sellVolume을 reclaim_signal_events에 기록해서(호출부 참고), 나중에 실제 결과와
+// 대조해 이 임계값을 데이터 기반으로 조정할 수 있게 한다(사용자 요청: "테이블기록 만들자").
+function computeApproachingSignal(samples: ApproachSample[]): ApproachResult {
+  if (samples.length < 5) return NO_APPROACH;
   const first = samples[samples.length - 5];
   const latest = samples[samples.length - 1];
   const gapNow = latest.target - latest.price;
@@ -6686,7 +6719,28 @@ function computeApproachingSignal(samples: ApproachSample[]): boolean {
   const priorAvg = priorDeltas.length > 0 ? priorDeltas.reduce((a, b) => a + b, 0) / priorDeltas.length : 0;
   const volPickup = priorAvg > 0 && recentAvg > priorAvg;
 
-  return stillBelow && narrowing && isImminent && volPickup;
+  if (!stillBelow || !narrowing || !isImminent || !volPickup) return NO_APPROACH;
+
+  // volPickup을 만든 바로 그 구간(최근 2개 델타 = 최근 3표본)의 매수/매도 방향을 확인한다.
+  const recentSamples = samples.slice(-3);
+  const { buyVolume, sellVolume } = computeVolumeDirection(recentSamples);
+  if (buyVolume + sellVolume === 0) return NO_APPROACH; // 방향 판단 불가 - 임박도 매도압박도 단정하지 않음
+
+  // 🎯 [기능 추가 - 사용자 요청: "지금 거래량도 적은데 임박이 너무 남발이야 - 절대 활성도 게이트는 지금
+  // 숫자를 임의로 박지 말고, rate 3종을 전부 로깅해서 데이터 쌓은 뒤 임계값을 정하자"] 판정(approaching/
+  // sellPressureWarning)은 위 volPickup(상대 비교)을 그대로 쓰고 바꾸지 않는다 - 아래 세 값은 오직
+  // reclaim_signal_events 로깅용이다. computeReclaimFreshness의 volSurge와 동일한 시간 윈도우 방식
+  // (computeVolumeRate 재사용, 수칙 1-6)이라 "표본 개수" 기반이던 volPickup보다 훨씬 정직한 속도값이다.
+  const recentWindowStart = latest.ts - VOLUME_BASELINE_WINDOW_MS;
+  const recentRate = computeVolumeRate(samples, recentWindowStart, latest.ts);
+  const baselineWindowStart = latest.ts - 2 * VOLUME_BASELINE_WINDOW_MS;
+  const baselineSufficient = samples[0].ts <= baselineWindowStart;
+  const baselineRate = baselineSufficient ? computeVolumeRate(samples, baselineWindowStart, recentWindowStart) : null;
+  const marketOpenTs = getKstMarketOpenTs(latest.ts);
+  const todayAvgRate = latest.ts > marketOpenTs ? (latest.cumVol / (latest.ts - marketOpenTs)) * 60_000 : null;
+
+  if (buyVolume > sellVolume) return { approaching: true, sellPressureWarning: false, buyVolume, sellVolume, recentRate, baselineRate, todayAvgRate };
+  return { approaching: false, sellPressureWarning: true, buyVolume, sellVolume, recentRate, baselineRate, todayAvgRate }; // 거래량은 늘었지만 매도 우위 - 임박 아님
 }
 
 // 표본 하나를 새로 받아와 이력에 추가하고, 그 이력으로 재돌파/임박/2차시도를 판정한다. 3분봉 버전과
@@ -6700,8 +6754,83 @@ function computeApproachingSignal(samples: ApproachSample[]): boolean {
 // 메모리)라 캐시가 전혀 공유되지 않아 효과가 없었다 - 로컬(단일 프로세스)에서만 통했던 셈이다. 진짜
 // 해법은 "같은 함수 안에서 한 번만 조회해서 같이 쓰는 것" - 아래 computeReclaimWatchSignal이 live를
 // 한 번만 fetch해서 이 함수와 computePivotSignalFromLive에 함께 넘긴다.
+// ============================================================================
+// 🎯 [기능 재설계 - 사용자 요청: "재돌파 임박 → 재돌파 확인(방금 발생, 힘 확인 중) → 돌파 완료(유지 중)
+// → 완료 후 5분 경과(오래된 이벤트) - 이런 신호의 신선도를 넣어"] 가격은 재돌파 판정의 본체, 거래량은
+// 재돌파의 신뢰도 - 거래량을 게이팅 조건으로 쓰지 않는다(사용자 확정). VWAP·피봇(R1/R2) 양쪽에서 완전히
+// 동일한 판정 로직이 중복되지 않도록 공용 함수로 뺐다(수칙 1-6).
+//
+// 사용자 확정 수치(2026-09-18 대화에서 직접 지정, 임의 매직넘버 아님):
+//   - 30초 미만: "재돌파 확인"(방금 발생했고 아직 힘 확인 중)
+//   - 30초~5분: "돌파 완료"(유지 중)
+//   - 5분 이상: "완료 후 5분 경과"(더 오래된 이벤트)
+//   - 30초 동안 기준선 아래로 다시 내려가면 즉시 실패/리셋(breakoutTs를 null로 되돌림)
+//   - 거래량 baseline = 돌파 전 60초 구간의 시간당(60초 환산) 거래량 속도, 최근 60초와 롤링 비교
+// ============================================================================
+const RECLAIM_CONFIRM_HOLD_MS = 30_000;
+const RECLAIM_STALE_MS = 5 * 60_000;
+const VOLUME_BASELINE_WINDOW_MS = 60_000;
+
+// 표본 배열에서 [fromTs, toTs] 구간의 "60초 환산 거래량 속도"를 구한다. 표본은 15초 폴링마다 실제
+// 체결(cumVol 증가)이 있을 때만 쌓이므로 간격이 균일하지 않다 - 그래서 표본 "개수"가 아니라 표본에
+// 실제로 찍힌 타임스탬프(ts)로 구간을 잘라 시간당 속도로 환산한다(사용자 확정: "표본 개수가 아니라
+// 실제 시간당 거래량으로 계산").
+function computeVolumeRate(samples: Array<{ ts: number; cumVol: number }>, fromTs: number, toTs: number): number {
+  if (samples.length === 0 || toTs <= fromTs) return 0;
+  const cumVolAt = (t: number) => {
+    let result = samples[0].cumVol;
+    for (const s of samples) {
+      if (s.ts > t) break;
+      result = s.cumVol;
+    }
+    return result;
+  };
+  const delta = cumVolAt(toTs) - cumVolAt(fromTs);
+  return (delta / (toTs - fromTs)) * 60_000;
+}
+
+interface ReclaimFreshnessResult {
+  elapsedMs: number | null;
+  volSurge: boolean;
+}
+
+const EMPTY_RECLAIM_FRESHNESS: ReclaimFreshnessResult = { elapsedMs: null, volSurge: false };
+
+// breakoutTs(관측된 below→above 전환 시각, 또는 "감시를 시작했을 때 이미 위였던" 첫 관측 시각을
+// 하한으로 삼은 값 - 아래 상태 갱신 로직 참고)로부터 지금까지 얼마나 지났는지를 신선도(elapsedMs)로
+// 반환한다. breakoutTs는 currentlyAbove인 한 절대 null이 아니다(상태 갱신 로직이 항상 채워준다) -
+// "타이밍을 몰라서 확인불가"라는 상태 자체를 없앴다(사용자 지적: "뭔 다 확인 불가라고 떠?").
+function computeReclaimFreshness(samples: Array<{ ts: number; cumVol: number }>, breakoutTs: number | null, currentlyAbove: boolean): ReclaimFreshnessResult {
+  if (!currentlyAbove || breakoutTs === null) return EMPTY_RECLAIM_FRESHNESS;
+
+  // 🚨 [버그 수정 - 사용자 지적: "가격만 보면 재돌파처럼 보이는데, 거래가 너무 느려서 의미 없는 움직임까지
+  // 신호로 잡고 있는 것같아"] 예전엔 elapsedMs를 Date.now()(벽시계 경과시간) 기준으로 쟀다 - 거래가
+  // 뜸한 종목은 돌파 순간 딱 1틱만 체결되고 그 뒤 20분 동안 재체결이 전혀 없어도 "20분째 유지 중"이라고
+  // 표시됐다(실제로는 그 20분 동안 아무 것도 재확인되지 않았다). "지금"을 벽시계가 아니라 "가장 최근에
+  // 실제로 체결된 시각"으로 바꿨다 - 재체결이 없으면 elapsedMs가 그대로 멈춰서, 진짜 거래로 재확인된
+  // 시간만 신선도로 인정한다(30초/5분 문턱도 이제 "실제 거래 시간"으로 재는 셈).
+  const now = samples.length > 0 ? samples[samples.length - 1].ts : breakoutTs;
+  const elapsedMs = now - breakoutTs;
+
+  // baseline 구간(돌파 전 60초)이 실제로 표본에 다 담겨있는지 확인 - 감시를 시작한 지 60초가 안 된
+  // 채로 바로 돌파가 나오면 baseline을 정직하게 잴 수 없으므로, 이 경우엔 volSurge를 false(미확인)로
+  // 둔다(과대/과소평가된 baseline으로 거짓 신호를 만들지 않기 위함).
+  const earliestTs = samples.length > 0 ? samples[0].ts : breakoutTs;
+  const baselineStart = breakoutTs - VOLUME_BASELINE_WINDOW_MS;
+  const baselineSufficient = earliestTs <= baselineStart;
+  const baselineRate = baselineSufficient ? computeVolumeRate(samples, baselineStart, breakoutTs) : 0;
+
+  // 최근 60초(또는 돌파 이후 전체 구간, 더 짧은 쪽) 속도 vs baseline - 매 폴링마다 롤링 재계산되므로
+  // 30초 시점에 한 번 확인하고 끝나는 게 아니라 계속 최신 상태를 반영한다.
+  const recentWindowStart = Math.max(breakoutTs, now - VOLUME_BASELINE_WINDOW_MS);
+  const recentRate = computeVolumeRate(samples, recentWindowStart, now);
+  const volSurge = baselineSufficient && baselineRate > 0 && recentRate > baselineRate;
+
+  return { elapsedMs, volSurge };
+}
+
 async function computeVwapSignalFromLive(symbol: string, live: { price: number; cumVol: number; cumVal: number } | null): Promise<VwapReclaimSignal> {
-  const fallback: VwapReclaimSignal = { symbol, signal: false, reclaimed: false, volSurge: false, approaching: false, hadPriorReclaim: false, crossCount: 0, insufficientData: true };
+  const fallback: VwapReclaimSignal = { symbol, signal: false, reclaimed: false, elapsedMs: null, volSurge: false, approaching: false, sellPressureWarning: false, hadPriorReclaim: false, crossCount: 0, insufficientData: true };
   if (!live) return fallback;
 
   const vwap = live.cumVal / live.cumVol;
@@ -6713,27 +6842,27 @@ async function computeVwapSignalFromLive(symbol: string, live: { price: number; 
     // 있지만 어제자 - 코드 리뷰에서 발견된 자정 경계 미처리 버그 수정) - 오늘자로 이미 Supabase에
     // 저장된 플래그가 있으면 그걸로 복구하고, 없으면(진짜 처음이거나 Supabase 미설정) 빈 상태로 시작.
     const persisted = await fetchWatchSignalState(todayStr, symbol);
-    state = { dateStr: todayStr, samples: [], hasBeenBelow: persisted?.vwapHasBeenBelow ?? false, crossCount: persisted?.vwapCrossCount ?? 0, wasAbove: null, lastKnownVolSurge: false };
+    state = { dateStr: todayStr, samples: [], hasBeenBelow: persisted?.vwapHasBeenBelow ?? false, crossCount: persisted?.vwapCrossCount ?? 0, wasAbove: null, breakoutTs: null, wasApproaching: false, wasSellPressure: false, pendingApproachEventId: null };
   }
-  // 🎯 [기능 추가 - 사용자 지적: "지금은 나 혼자만 쓰는데 방법이 없나"] 초기화 시점 한 번만 확인하면
-  // 그 뒤에 배경 예열(prewarmCandleCacheForSymbols)이 Supabase를 채워도 영영 못 본다 - 아직 확인 안 된
-  // 동안(lastKnownVolSurge가 false인 동안)은 매 폴링마다 이 값을 다시 확인한다. Supabase 읽기는
-  // KIS 호출이 아니라 가벼워서(수칙 2-6, 겉핥기 아님 - 실제로 DB 읽기 vs KIS 호출 비용 차이가 근거)
-  // 매번 다시 물어봐도 부담이 없고, 한 번 true로 확정되면 더는 필요 없다.
-  if (!state.lastKnownVolSurge) {
-    const cachedCandles = await getCandlesForVolSurgeBackfill(symbol);
-    const candlesWithVwap = cachedCandles ? withRunningVwap(cachedCandles) : null;
-    const seededVolSurge = computeHistoricalVolSurgeFromCandles(candlesWithVwap, (c) => c.closePrice > c.vwap);
-    if (seededVolSurge) state.lastKnownVolSurge = true;
-  }
+
   const lastStoredSample = state.samples[state.samples.length - 1];
   // 누적거래량이 실제로 늘어난 새 체결일 때만 표본으로 기록 - 체결 없이 호가만 바뀐 중복 조회 방지.
   if (!lastStoredSample || live.cumVol > lastStoredSample.cumVol) {
     const prevHasBeenBelow = state.hasBeenBelow;
     const prevCrossCount = state.crossCount;
     const isAboveNow = live.price > vwap;
+    // 🚨 [버그 수정 - 사용자 지적: "뭔 다 확인 불가라고 떠?"] wasAbove가 false(진짜 below→above 전환)일
+    // 때뿐 아니라, null(이 프로세스에서 이 심볼을 처음 관측하는 순간인데 이미 위인 경우 - 감시를 늦게
+    // 켰거나 서버가 막 재시작된 흔한 경우)에도 breakoutTs를 지금 시각으로 잡는다. 실제 돌파는 더 일찍
+    // 일어났을 수 있어 elapsedMs가 진짜 유지시간보다 짧게(하한으로) 나올 수는 있지만, 시간이 지날수록
+    // 계속 자라나므로 "확인불가"에 영원히 갇히지 않는다(단, crossCount는 진짜 전환일 때만 증가).
+    const isFreshAboveObservation = (state.wasAbove === false || state.wasAbove === null) && isAboveNow;
     if (state.wasAbove === false && isAboveNow) state.crossCount++;
-    if (!isAboveNow) state.hasBeenBelow = true;
+    if (isFreshAboveObservation) state.breakoutTs = Date.now();
+    if (!isAboveNow) {
+      state.hasBeenBelow = true;
+      state.breakoutTs = null; // 기준선 아래로 내려가면 진행 중이던 시도는 즉시 무효(사용자 확정)
+    }
     state.wasAbove = isAboveNow;
 
     state.samples.push({ ts: Date.now(), price: live.price, cumVol: live.cumVol, vwap });
@@ -6751,32 +6880,48 @@ async function computeVwapSignalFromLive(symbol: string, live: { price: number; 
 
   const isAbove = (s: VwapWatchSample) => s.price > s.vwap;
   const latest = state.samples[state.samples.length - 1];
-  const reclaimed = isAbove(latest) && state.hasBeenBelow;
+  const currentlyAbove = isAbove(latest);
+  const reclaimed = currentlyAbove && state.hasBeenBelow; // 즉시(가격만) - 기존과 동일한 정의, 회귀 없음
   const hadPriorReclaim = state.crossCount >= 2;
 
-  // 🚨 [버그 수정 - 사용자 지적: "3분봉 보면 거래량 다 뜨는데 왜 거래량 미확인으로 나와?"] "지금 보존
-  // 중인 최근 표본 창" 안에서 크로스 지점을 찾을 수 있을 때 계산한 결과를 state.lastKnownVolSurge에
-  // 영구 보존한다(hasBeenBelow/crossCount와 동일한 패턴, 수칙 1-6) - 크로스가 창 밖(5분 이전)으로
-  // 밀려나도 "그때 확인했던 마지막 결과"를 계속 보여주지, 무조건 "미확인"으로 리셋하지 않는다.
-  let crossIdxInWindow = -1;
-  for (let i = 1; i < state.samples.length; i++) {
-    if (isAbove(state.samples[i]) && !isAbove(state.samples[i - 1])) crossIdxInWindow = i;
-  }
-  if (crossIdxInWindow !== -1) {
-    const preDeltas: number[] = [];
-    for (let i = Math.max(1, crossIdxInWindow - 4); i < crossIdxInWindow; i++) preDeltas.push(state.samples[i].cumVol - state.samples[i - 1].cumVol);
-    const postDeltas: number[] = [];
-    for (let i = crossIdxInWindow + 1; i < Math.min(state.samples.length, crossIdxInWindow + 4); i++) postDeltas.push(state.samples[i].cumVol - state.samples[i - 1].cumVol);
-    const preAvg = preDeltas.length > 0 ? preDeltas.reduce((a, b) => a + b, 0) / preDeltas.length : 0;
-    const postAvg = postDeltas.length > 0 ? postDeltas.reduce((a, b) => a + b, 0) / postDeltas.length : 0;
-    state.lastKnownVolSurge = preAvg > 0 && postAvg > preAvg;
-  }
+  const freshness = computeReclaimFreshness(state.samples, state.breakoutTs, reclaimed);
 
-  const approaching = computeApproachingSignal(
-    state.samples.map((s) => ({ price: s.price, cumVol: s.cumVol, target: s.vwap }))
+  const approach = computeApproachingSignal(
+    state.samples.map((s) => ({ ts: s.ts, price: s.price, cumVol: s.cumVol, target: s.vwap }))
   );
 
-  return { symbol, signal: reclaimed && state.lastKnownVolSurge, reclaimed, volSurge: state.lastKnownVolSurge, approaching, hadPriorReclaim, crossCount: state.crossCount, insufficientData: false };
+  // 🎯 [기능 추가 - 사용자 요청: "테이블기록 만들자"] approaching/sellPressureWarning으로 막 전환된
+  // 순간(rising edge)에만 1행 기록한다 - fire-and-forget(응답 지연 없음). approaching은 insert된 행의
+  // id를 기억해뒀다가, 이 approaching이 꺼지는 순간(falling edge, 바로 아래) outcome을 채워 넣는다.
+  if (approach.approaching && !state.wasApproaching) {
+    logReclaimSignalEvent({ date: todayStr, symbol, levelType: 'vwap', eventType: 'approaching', price: latest.price, target: latest.vwap, buyVolume: approach.buyVolume, sellVolume: approach.sellVolume, recentRate: approach.recentRate, baselineRate: approach.baselineRate, todayAvgRate: approach.todayAvgRate })
+      .then((id) => { state.pendingApproachEventId = id; })
+      .catch(() => {});
+  } else if (approach.sellPressureWarning && !state.wasSellPressure) {
+    logReclaimSignalEvent({ date: todayStr, symbol, levelType: 'vwap', eventType: 'sell_pressure', price: latest.price, target: latest.vwap, buyVolume: approach.buyVolume, sellVolume: approach.sellVolume, recentRate: approach.recentRate, baselineRate: approach.baselineRate, todayAvgRate: approach.todayAvgRate }).catch(() => {});
+  } else if (!approach.approaching && state.wasApproaching && state.pendingApproachEventId !== null) {
+    // 🎯 [기능 추가 - 사용자 요청: "outcome을 지금 같이 추가하자"] approaching은 정의상 가격이 기준선을
+    // 넘는 순간(stillBelow=false) 즉시 꺼진다 - 그래서 falling edge 시점의 currentlyAbove만 보면 "그
+    // approaching 시도가 실제 돌파로 이어졌는지(success)"와 "힘이 빠져 그냥 꺼졌는지(failed)"가 별도
+    // 대기시간 없이 정확히 갈린다(사용자 확정: "임의 숫자 새로 만들지 말자").
+    updateReclaimSignalOutcome(state.pendingApproachEventId, currentlyAbove ? 'success' : 'failed').catch(() => {});
+    state.pendingApproachEventId = null;
+  }
+  state.wasApproaching = approach.approaching;
+  state.wasSellPressure = approach.sellPressureWarning;
+
+  return {
+    symbol,
+    signal: freshness.elapsedMs !== null && freshness.elapsedMs >= RECLAIM_CONFIRM_HOLD_MS && freshness.volSurge,
+    reclaimed,
+    elapsedMs: freshness.elapsedMs,
+    volSurge: freshness.volSurge,
+    approaching: approach.approaching,
+    sellPressureWarning: approach.sellPressureWarning,
+    hadPriorReclaim,
+    crossCount: state.crossCount,
+    insufficientData: false,
+  };
 }
 
 // 화면에 보이는 후보 전부를 한 번에 갱신 - 콜당 비용이 가벼워졌으므로(14콜→1콜) 5개로 좁힐 필요 없이
@@ -6885,8 +7030,11 @@ interface PivotLevelState {
   hasBroken: boolean; // 오늘 이 선을 한 번이라도 뚫은 적 있음(영구 보존)
   hasBeenBelowAfterBreak: boolean; // 뚫은 "이후에" 다시 이 선 아래로 내려간 적 있음(영구 보존, 깊이 무관)
   wasAbove: boolean | null;
-  lastKnownVolSurge: boolean; // VWAP과 동일한 이유(수칙 1-6) - 표본 창 밖으로 밀려나도 마지막으로 확인된
-  // 거래량 증가 여부를 계속 보여준다.
+  breakoutTs: number | null; // VWAP과 동일(수칙 1-6) - 실시간으로 직접 관측한 재돌파 시각, 30/60초
+  // 카운트다운의 기준점. 감시 시작 전 이미 돌파해 있었거나 선 아래로 내려가면 null.
+  wasApproaching: boolean; // VWAP과 동일(수칙 1-6) - reclaim_signal_events rising edge 기록용
+  wasSellPressure: boolean;
+  pendingApproachEventId: number | null; // VWAP과 동일(수칙 1-6) - outcome UPDATE 대상 id
 }
 
 interface PivotWatchState {
@@ -6906,39 +7054,56 @@ const pivotWatchHistory = getGlobalMap<string, PivotWatchState>('pivotWatchHisto
 // "뚫었다가 지금 다시 아래로 내려감"을 구분할 방법이 없었다. hadPriorBreak를 별도로 노출해서 화면단이
 // "지금 당장 액션 가능(approaching/reclaimed)" vs "이전 이력만 있음(hadPriorBreak)"을 구분해 정렬할 수
 // 있게 한다 - VWAP의 hadPriorReclaim과 동일한 목적(수칙 1-6, 대칭 설계).
-function computePivotLevelSignal(samples: PivotSample[], levelState: PivotLevelState, target: number): PivotLevelSignal {
+// 🚨 [버그 수정 - 사용자 지적: "성호전자 왜 r2 뚫엇는데 r1완료라고만 뜸?"] 예전엔 reclaimed 자체가
+// hadPriorBreak(뚫었다 눌렸다 다시 뚫음) 게이트 뒤에 있어서, "처음 뚫은 뒤 한 번도 안 내려가고 계속
+// 위(단순 돌파 유지)"인 경우는 reclaimed도 hadPriorBreak도 둘 다 false로 떨어져 아무 배지도 못 받았다
+// - 그래서 화면(level 선택 로직)이 R2는 아예 못 본 셈 치고 더 낮은 R1(예전에 진짜 재돌파했던 이력)을
+// 대신 보여줬다. hasBroken(뚫은 적 있음)만으로도 신호를 노출하되, "눌렸다 다시 뚫음(재돌파)"과 "처음
+// 뚫고 계속 유지(holding)"를 holding 필드로 구분해서 어느 쪽인지는 여전히 알 수 있게 한다.
+function computePivotLevelSignal(samples: PivotSample[], levelState: PivotLevelState, target: number, symbol: string, levelType: 'r1' | 'r2'): PivotLevelSignal {
   const hadPriorBreak = levelState.hasBroken && levelState.hasBeenBelowAfterBreak;
-  if (samples.length < 2 || !hadPriorBreak) {
-    return { reclaimed: false, approaching: false, volSurge: false, hadPriorBreak };
+  if (samples.length < 2 || !levelState.hasBroken) {
+    return { reclaimed: false, holding: false, elapsedMs: null, approaching: false, sellPressureWarning: false, volSurge: false, hadPriorBreak };
   }
 
   const isAbove = (s: PivotSample) => s.price > target;
   const latest = samples[samples.length - 1];
-  const reclaimed = isAbove(latest);
+  const currentlyAbove = isAbove(latest);
+  const reclaimed = currentlyAbove && hadPriorBreak; // 재돌파(눌렸다 다시 뚫음) - 기존과 동일한 정의, 회귀 없음
+  const holding = currentlyAbove && !hadPriorBreak; // 처음 뚫은 뒤 한 번도 안 내려가고 계속 유지 중(신규)
 
-  // 🚨 [버그 수정 - 사용자 지적: "3분봉 보면 거래량 다 뜨는데 왜 거래량 미확인으로 나와?"] 최근 표본
-  // 창 안에서 크로스 지점을 찾을 때마다 계산한 결과를 levelState.lastKnownVolSurge에 영구 보존한다
-  // (VWAP과 동일한 패턴, 수칙 1-6) - 크로스가 창 밖(5분 이전)으로 밀려나도 마지막으로 확인된 값을
-  // 계속 보여주지, 무조건 "미확인"으로 리셋하지 않는다.
-  let crossIdx = -1;
-  for (let i = 1; i < samples.length; i++) {
-    if (isAbove(samples[i]) && !isAbove(samples[i - 1])) crossIdx = i;
-  }
-  if (crossIdx !== -1) {
-    const preDeltas: number[] = [];
-    for (let i = Math.max(1, crossIdx - 4); i < crossIdx; i++) preDeltas.push(samples[i].cumVol - samples[i - 1].cumVol);
-    const postDeltas: number[] = [];
-    for (let i = crossIdx + 1; i < Math.min(samples.length, crossIdx + 4); i++) postDeltas.push(samples[i].cumVol - samples[i - 1].cumVol);
-    const preAvg = preDeltas.length > 0 ? preDeltas.reduce((a, b) => a + b, 0) / preDeltas.length : 0;
-    const postAvg = postDeltas.length > 0 ? postDeltas.reduce((a, b) => a + b, 0) / postDeltas.length : 0;
-    levelState.lastKnownVolSurge = preAvg > 0 && postAvg > preAvg;
-  }
+  // VWAP과 완전히 동일한 판정 로직을 재사용한다(수칙 1-6) - target이 VWAP처럼 표본마다 변하지 않고
+  // R1/R2로 하루 종일 고정이라는 차이만 있을 뿐, 신선도·거래량 baseline 비교는 동일하다. holding
+  // 상태에서도 breakoutTs는 이미 채워져 있으므로(첫 돌파 순간에 설정) elapsedMs가 정상적으로 나온다.
+  const freshness = computeReclaimFreshness(samples, levelState.breakoutTs, currentlyAbove);
 
-  const approaching = computeApproachingSignal(
-    samples.map((s) => ({ price: s.price, cumVol: s.cumVol, target }))
+  const approach = computeApproachingSignal(
+    samples.map((s) => ({ ts: s.ts, price: s.price, cumVol: s.cumVol, target }))
   );
 
-  return { reclaimed, approaching, volSurge: levelState.lastKnownVolSurge, hadPriorBreak };
+  // VWAP과 동일(수칙 1-6) - rising edge에만 기록, falling edge에 outcome(success/failed) 채움.
+  if (approach.approaching && !levelState.wasApproaching) {
+    logReclaimSignalEvent({ date: getKstTodayStr(), symbol, levelType, eventType: 'approaching', price: latest.price, target, buyVolume: approach.buyVolume, sellVolume: approach.sellVolume, recentRate: approach.recentRate, baselineRate: approach.baselineRate, todayAvgRate: approach.todayAvgRate })
+      .then((id) => { levelState.pendingApproachEventId = id; })
+      .catch(() => {});
+  } else if (approach.sellPressureWarning && !levelState.wasSellPressure) {
+    logReclaimSignalEvent({ date: getKstTodayStr(), symbol, levelType, eventType: 'sell_pressure', price: latest.price, target, buyVolume: approach.buyVolume, sellVolume: approach.sellVolume, recentRate: approach.recentRate, baselineRate: approach.baselineRate, todayAvgRate: approach.todayAvgRate }).catch(() => {});
+  } else if (!approach.approaching && levelState.wasApproaching && levelState.pendingApproachEventId !== null) {
+    updateReclaimSignalOutcome(levelState.pendingApproachEventId, currentlyAbove ? 'success' : 'failed').catch(() => {});
+    levelState.pendingApproachEventId = null;
+  }
+  levelState.wasApproaching = approach.approaching;
+  levelState.wasSellPressure = approach.sellPressureWarning;
+
+  return {
+    reclaimed,
+    holding,
+    elapsedMs: freshness.elapsedMs,
+    approaching: approach.approaching,
+    sellPressureWarning: approach.sellPressureWarning,
+    volSurge: freshness.volSurge,
+    hadPriorBreak,
+  };
 }
 
 // 🚨 [아키텍처 개선 - 사용자 질문: "다른 방법은 없어?"] live/levels를 파라미터로 받는 내부 함수로
@@ -6949,7 +7114,7 @@ async function computePivotSignalFromLive(
   live: { price: number; cumVol: number; cumVal: number } | null,
   levels: PivotLevels | null
 ): Promise<PivotReclaimSignal> {
-  const emptyLevel: PivotLevelSignal = { reclaimed: false, approaching: false, volSurge: false, hadPriorBreak: false };
+  const emptyLevel: PivotLevelSignal = { reclaimed: false, holding: false, elapsedMs: null, approaching: false, sellPressureWarning: false, volSurge: false, hadPriorBreak: false };
   const fallback: PivotReclaimSignal = { symbol, r1: emptyLevel, r2: emptyLevel, insufficientData: true };
   if (!live || !levels) return fallback;
 
@@ -6959,25 +7124,15 @@ async function computePivotSignalFromLive(
     // 🚨 [버그 수정 - 사용자 지적: "저걸 어떻게 고치지" (재시작/서버리스 콜드스타트에 플래그 유실)]
     // VWAP 감시와 동일한 이유(수칙 1-6) - 이 프로세스에서 이 심볼을 처음 감시하는 시점이거나 날짜가
     // 바뀐 시점(코드 리뷰에서 발견된 자정 경계 미처리 버그 수정)이면 오늘자로 이미 Supabase에 저장된
-    // R1/R2 돌파 플래그가 있는지 먼저 확인해서 복구한다.
+    // R1/R2 돌파 플래그가 있는지 먼저 확인해서 복구한다. breakoutTs는 VWAP과 동일한 이유로 영구
+    // 저장하지 않는다 - 유실되면 "타이밍 모름"으로 처리되고 다음 실시간 전환부터 다시 정확히 잰다.
     const persisted = await fetchWatchSignalState(todayStr, symbol);
     state = {
       dateStr: todayStr,
       samples: [],
-      r1: { hasBroken: persisted?.pivotR1HasBroken ?? false, hasBeenBelowAfterBreak: persisted?.pivotR1HasBeenBelowAfterBreak ?? false, wasAbove: null, lastKnownVolSurge: false },
-      r2: { hasBroken: persisted?.pivotR2HasBroken ?? false, hasBeenBelowAfterBreak: persisted?.pivotR2HasBeenBelowAfterBreak ?? false, wasAbove: null, lastKnownVolSurge: false },
+      r1: { hasBroken: persisted?.pivotR1HasBroken ?? false, hasBeenBelowAfterBreak: persisted?.pivotR1HasBeenBelowAfterBreak ?? false, wasAbove: null, breakoutTs: null, wasApproaching: false, wasSellPressure: false, pendingApproachEventId: null },
+      r2: { hasBroken: persisted?.pivotR2HasBroken ?? false, hasBeenBelowAfterBreak: persisted?.pivotR2HasBeenBelowAfterBreak ?? false, wasAbove: null, breakoutTs: null, wasApproaching: false, wasSellPressure: false, pendingApproachEventId: null },
     };
-  }
-  // 🎯 [기능 추가 - VWAP과 동일한 이유(수칙 1-6)] 초기화 시점 한 번만 보면 배경 예열이 나중에 채운
-  // Supabase 캐시를 영영 못 본다 - 아직 확인 안 된 동안은 매 폴링마다 다시 확인한다(가벼운 DB 읽기).
-  if (!state.r1.lastKnownVolSurge || !state.r2.lastKnownVolSurge) {
-    const cachedCandles = await getCandlesForVolSurgeBackfill(symbol);
-    if (cachedCandles && !state.r1.lastKnownVolSurge) {
-      if (computeHistoricalVolSurgeFromCandles(cachedCandles, (c) => c.closePrice > levels.r1)) state.r1.lastKnownVolSurge = true;
-    }
-    if (cachedCandles && !state.r2.lastKnownVolSurge) {
-      if (computeHistoricalVolSurgeFromCandles(cachedCandles, (c) => c.closePrice > levels.r2)) state.r2.lastKnownVolSurge = true;
-    }
   }
 
   const lastStoredSample = state.samples[state.samples.length - 1];
@@ -6988,8 +7143,16 @@ async function computePivotSignalFromLive(
     const prevR2Below = state.r2.hasBeenBelowAfterBreak;
     const updateLevelState = (levelState: PivotLevelState, target: number) => {
       const isAboveNow = live.price > target;
-      if (isAboveNow) levelState.hasBroken = true;
+      // VWAP과 동일한 버그 수정(수칙 1-6, 위 6749번째 줄 근처 주석 참고) - wasAbove가 null(이 프로세스
+      // 에서 처음 관측하는데 이미 위인 경우)이어도 breakoutTs를 지금 시각으로 잡아 "확인불가"에 갇히지
+      // 않게 한다. hasBroken은 원래대로 무조건 갱신.
+      const isFreshAboveObservation = (levelState.wasAbove === false || levelState.wasAbove === null) && isAboveNow;
+      if (isAboveNow) {
+        levelState.hasBroken = true;
+        if (isFreshAboveObservation) levelState.breakoutTs = Date.now(); // 실시간으로 직접 관측한 재돌파 순간
+      }
       if (levelState.hasBroken && !isAboveNow) levelState.hasBeenBelowAfterBreak = true;
+      if (!isAboveNow) levelState.breakoutTs = null; // VWAP과 동일(사용자 확정): 내려가면 즉시 리셋
       levelState.wasAbove = isAboveNow;
     };
     updateLevelState(state.r1, levels.r1);
@@ -7017,8 +7180,8 @@ async function computePivotSignalFromLive(
 
   return {
     symbol,
-    r1: computePivotLevelSignal(state.samples, state.r1, levels.r1),
-    r2: computePivotLevelSignal(state.samples, state.r2, levels.r2),
+    r1: computePivotLevelSignal(state.samples, state.r1, levels.r1, symbol, 'r1'),
+    r2: computePivotLevelSignal(state.samples, state.r2, levels.r2, symbol, 'r2'),
     insufficientData: false,
   };
 }
@@ -7047,29 +7210,6 @@ export async function computeReclaimWatchSignal(symbol: string): Promise<Reclaim
 export async function pollReclaimWatchBatch(symbols: string[]): Promise<ReclaimWatchSignal[]> {
   const uniqueSymbols = Array.from(new Set(symbols)).slice(0, 60);
   return runInChunks(uniqueSymbols, 30, (s) => computeReclaimWatchSignal(s));
-}
-
-// 오늘 하루 한 번씩만 배경 예열을 시도했는지 추적 - 매 15초 폴링마다 같은 종목을 다시 큐에 넣지 않는다.
-const candlePrewarmAttempted = getGlobalMap<string, boolean>('candlePrewarmAttempted');
-
-// 🎯 [기능 추가 - 사용자 지적: "지금은 나 혼자만 쓰는데 방법이 없나", "다음에 다룰거면 지금 해야지"]
-// 감시 대상 종목의 3분봉을 Supabase에 미리 채워서 volSurge "거래량 미확인"을 줄인다. 처음엔 60종목을
-// 한꺼번에 fetchKis3mCandlesFullDay로 호출했다가 종목당 14슬롯 × 60종목 = 최대 840개 요청이 동시에
-// KIS로 몰려서 500 에러가 대량 폭주하는 걸 실측으로 확인했다(수칙 2-8) - 청크 크기 5(=최대 70개 동시
-// 슬롯 요청, 이미 안전하다고 알려진 "종목 하나당 14개 동시"의 5배 수준)로 순차 처리해서 그 사태를
-// 피한다. 응답을 기다리게 하지 않도록 호출부(route.ts)에서 after()로 fire-and-forget 처리한다.
-export async function prewarmCandleCacheForSymbols(symbols: string[]): Promise<void> {
-  const todayStr = getKstTodayStr();
-  const targets = Array.from(new Set(symbols)).filter((s) => !candlePrewarmAttempted.has(`${todayStr}-${s}`));
-  if (targets.length === 0) return;
-  targets.forEach((s) => candlePrewarmAttempted.set(`${todayStr}-${s}`, true));
-  await runInChunks(targets, 5, async (s) => {
-    try {
-      await fetchKis3mCandlesFullDay(s);
-    } catch (e: any) {
-      console.warn(`[volSurge 배경 예열 실패] ${s}: ${e?.message || e}`);
-    }
-  });
 }
 
 // ============================================================================

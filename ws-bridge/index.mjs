@@ -98,6 +98,33 @@ async function fetchApprovalKey() {
   return body.approval_key;
 }
 
+// ── Supabase REST 업서트: 관심종목 실시간 현재가 (SDK 없이 PostgREST 직접 호출) ──────────────
+// 🎯 [기능 추가 - 사용자 요청: "관심종목 웹소캣으로 실시간 된다는거 아니였어? 안되는데" - "진짜 push로
+// 바꾸자"] 지금까지 이 프로세스는 KIS 체결 틱을 받아서 3분봉(intraday_3m_candles)에만 저장했다 - 화면의
+// 관심종목 현재가는 30초 REST 폴링으로 따로 조회했다. 이미 받고 있는 틱에서 전일대비/전일대비율/누적
+// 거래량 필드 3개를 추가로 읽어서 이 표에 upsert하면, 브라우저가 Supabase Realtime(Postgres 변경
+// 스트림)을 구독하는 것만으로 새 웹소켓 서버 없이 진짜 push가 된다.
+async function upsertQuotesToSupabase(rows) {
+  try {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/realtime_quotes?on_conflict=symbol`, {
+      method: 'POST',
+      headers: {
+        apikey: SUPABASE_SERVICE_ROLE_KEY,
+        authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+        'content-type': 'application/json',
+        prefer: 'resolution=merge-duplicates,return=minimal',
+      },
+      body: JSON.stringify(rows),
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      log(`[Supabase realtime_quotes 저장 실패] HTTP ${res.status} ${text}`);
+    }
+  } catch (e) {
+    log('[Supabase realtime_quotes 저장 예외]', e.message);
+  }
+}
+
 // ── Supabase REST 업서트 (SDK 없이 PostgREST 직접 호출) ─────────────────────
 async function upsertCandlesToSupabase(dateStr, symbol, candles) {
   try {
@@ -125,6 +152,40 @@ const FIELD_COUNT = 47; // 실측 확정값 - 절대 46으로 되돌리지 말 �
 
 const candleState = new Map(); // symbol -> Map<bucketKey(HH:MM), candle>
 const dirtySymbols = new Set(); // 마지막 플러시 이후 갱신된 종목
+
+// 🎯 [기능 추가 - 관심종목 실시간 현재가] symbol -> 최신 시세(가격/전일대비/등락율/누적거래량).
+// 3분봉과 별개로 "지금 이 순간 값"만 들고 있다가 짧은 주기로 realtime_quotes에 흘려보낸다.
+const latestQuotes = new Map();
+const dirtyQuoteSymbols = new Set();
+
+function ingestQuote(symbol, price, change, changeRate, cumVol) {
+  if (!Number.isFinite(price) || price <= 0) return;
+  latestQuotes.set(symbol, { price, change, changeRate, volume: cumVol });
+  dirtyQuoteSymbols.add(symbol);
+}
+
+async function flushDirtyQuotes() {
+  if (dirtyQuoteSymbols.size === 0) return;
+  const toFlush = [...dirtyQuoteSymbols];
+  dirtyQuoteSymbols.clear();
+
+  const rows = toFlush
+    .map((symbol) => {
+      const q = latestQuotes.get(symbol);
+      if (!q) return null;
+      return { symbol, price: q.price, change: q.change, change_rate: q.changeRate, volume: q.volume, updated_at: new Date().toISOString() };
+    })
+    .filter(Boolean);
+  if (rows.length === 0) return;
+  await upsertQuotesToSupabase(rows);
+}
+
+// 관심종목 현재가는 화면 체감 속도가 핵심이라 3분봉(15초)보다 훨씬 짧은 주기로 흘려보낸다 - 매 틱마다
+// 바로 쏘면 고빈도 종목에서 Supabase 쓰기 폭주가 나므로, 그 사이 값은 latestQuotes에서 계속 덮어쓰고
+// 이 주기에만 "그 순간의 최신값"을 내보낸다(3분봉 flushDirtySymbols와 동일한 dirty-set 패턴, 수칙 1-6).
+setInterval(() => {
+  flushDirtyQuotes().catch((e) => log('[관심종목 시세 플러시 에러]', e.message));
+}, 2000);
 
 function getKstDateStr() {
   const now = new Date();
@@ -218,12 +279,25 @@ function handleMessage(raw, ws) {
   const fields = parts[3].split('^');
   for (let i = 0; i < count; i++) {
     const block = fields.slice(i * FIELD_COUNT, (i + 1) * FIELD_COUNT);
-    if (block.length < 13) continue;
+    if (block.length < 14) continue;
     const symbol = block[0];
     const time = block[1];
     const price = parseInt(block[2], 10);
     const tickVol = parseInt(block[12], 10);
     ingestTick(symbol, time, price, tickVol);
+
+    // 🎯 [기능 추가 - 관심종목 실시간 현재가, 실측 확정(scratch/verify_ws_field_layout.mjs, SK하이닉스
+    // 기준 REST prdy_vrss_sign/prdy_vrss/prdy_ctrt와 필드 [3][4][5]가 정확히 일치함을 대조 확인)]
+    // [3]=전일대비부호(1/2=상승,3=보합,4/5=하락), [4]=전일대비, [5]=전일대비율, [13]=누적거래량.
+    // 부호 규칙은 fetchKisWatchlistQuotes(kisApi.ts)의 REST 응답 처리와 완전히 동일하게 맞춘다(수칙 1-6).
+    const sign = block[3];
+    const changeAbs = parseInt(block[4], 10);
+    const changeRate = parseFloat(block[5]);
+    const cumVol = parseInt(block[13], 10);
+    if (Number.isFinite(changeAbs) && Number.isFinite(changeRate) && Number.isFinite(cumVol)) {
+      const change = (sign === '4' || sign === '5') ? -Math.abs(changeAbs) : Math.abs(changeAbs);
+      ingestQuote(symbol, price, change, changeRate, cumVol);
+    }
   }
 }
 

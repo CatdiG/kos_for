@@ -141,16 +141,38 @@ export interface IntradayChartResponse {
 // 🚨 [기능 보강 - 사용자 지적: "이미 재돌파 하고나면 내가 또 못사잖아"] signal(reclaimed+volSurge)만
 // 있으면 이미 다 오른 뒤에야 뜨는 후행 지표라 매수 타이밍을 놓친다. approaching을 추가해 "아직 안
 // 뚫었지만 간격이 좁혀지고 거래량이 먼저 붙기 시작한" 선행 상태를 별도로 구분한다.
+// 🎯 [기능 재설계 - 사용자 요청: "가격 cross → 가격 cross + 일정 시간 유지", "거래량을 재돌파의 필수
+// 조건으로 만들지는 않게 - 가격: 재돌파 판정의 본체, 거래량: 재돌파의 신뢰도"] reclaimed(즉시)는 거래량과
+// 무관하게 그대로 즉시 뜨고, elapsedMs(신선도)로 "방금 확인/유지 중/오래된 완료"를 구분한다.
+// 🚨 [버그 수정 - 사용자 지적: "뭔 다 확인 불가라고 떠?"] 예전엔 "실시간으로 직접 관측한 돌파 시점"이
+// 없으면(감시 시작 전에 이미 돌파해 있었던 흔한 경우) timingKnown을 영구히 false로 묶어놔서 대부분의
+// 종목이 계속 "확인불가"로만 떴다 - breakoutTs를 아예 못 구하는 게 아니라, "우리가 관측을 시작한
+// 시점"을 하한(최소 이만큼은 유지됨)으로 삼으면 되는데 그걸 null로 버려둔 설계 실수였다. 이제
+// 처음 관측한 표본이 이미 선 위여도 그 시각을 breakoutTs로 잡아 elapsedMs가 계속 자라나게 한다 -
+// 실제 돌파 시각보다 짧게(과소평가) 나올 수는 있어도 "확인불가"에 영원히 갇히지 않는다.
 export interface VwapReclaimSignal {
   symbol: string;
-  signal: boolean; // 확정(후행): reclaimed && volSurge - 이미 돌파가 끝난 뒤라 참고용
-  reclaimed: boolean; // 직전 봉 VWAP 아래 → 돌파 봉 VWAP 위 → 최신 봉까지 유지
-  volSurge: boolean; // 돌파 봉 거래량이 돌파 직전 4개 봉 평균 거래량보다 높음
-  approaching: boolean; // 선행(액션 가능): 아직 미돌파 + 간격이 좁혀짐 + 임박(0.5% 이내) + 거래량 선행 증가(완결봉 기준)
+  signal: boolean; // 확정(후행): reclaimed && volSurge - 참고용 레거시 필드
+  reclaimed: boolean; // 즉시(가격만): 직전 표본 VWAP 아래 → 최신 표본 VWAP 위(오늘 한 번이라도 아래였음)
+  elapsedMs: number | null; // reclaimed일 때만 값이 있음 - 관측된(또는 관측 시작 시점을 하한으로 삼은)
+  // 돌파 이후 흐른 시간(ms). 화면은 이 값으로 "방금 확인(<30초)/유지 중(30초~5분)/오래된 완료(5분+)"
+  // 3단계 신선도를 매긴다(사용자 확정: "이런 신호의 신선도를 넣어").
+  volSurge: boolean; // 최근 60초(또는 돌파 이후 전체, 더 짧은 쪽) 거래량 속도가 돌파 전 60초 평균
+  // 속도보다 높음 - 매 폴링마다 롤링 재계산되므로 한 번 확인되면 고정되는 값이 아니다.
+  approaching: boolean; // 선행(액션 가능): 아직 미돌파 + 간격이 좁혀짐 + 임박(1.5% 이내) + 거래량 선행 증가
+  // + 그 증가분이 매수 우위(틱 테스트 근사, 사용자 확정: "거래량 증가=활동성, 매수 우위=방향성 둘 다 보게")
+  sellPressureWarning: boolean; // 🎯 [기능 추가 - 사용자 요청: "매도 우위인데 거래량만 급증한 종목은 임박
+  // 상태를 아예 띄우지 않는거 어때? 지금 찾는게 '거래량 많은 종목'이 아니라 '재돌파할 가능성이 높은
+  // 종목'이니까"] 간격 좁혀짐+임박 폭+거래량 증가까지는 approaching 조건을 다 만족했지만, 그 거래량
+  // 증가분이 매도 우위라서 approaching에서 제외된 경우 - "재돌파 임박" 대신 "매도 압박"으로 별도 표시한다.
   hadPriorReclaim: boolean; // 오늘 이미 2번 이상 below→above 전환이 있었음 - "한 번 뚫었다가 다시 뚫으려는 재시도"
-  crossCount: number; // 오늘 below→above 전환 누적 횟수(원본 숫자) - 4회 이상이면 "잦은 등락"(VWAP
-  // 근처 노이즈성 등락)으로 분류해 신뢰도 낮은 신호로 별도 표시한다(사용자 확인: 실측 90 백분위수=4)
-  insufficientData: boolean; // 오늘 3분봉이 8개 미만이라 판정 불가(장 시작 직후 등)
+  crossCount: number; // 오늘 below→above 전환 누적 횟수(원본 숫자) - 4회 이상이면서 아직 신선(elapsedMs
+  // 5분 미만)하면 "잦은 등락"(VWAP 근처 노이즈성 등락)으로 분류한다(사용자 확인: 실측 90 백분위수=4).
+  // 🚨 [버그 수정 - 사용자 지적: "대우건설이 무슨 잦은등락이야, 지금 계속 고가 뚫고 가는구만"] 예전엔
+  // 이 판정이 장중 누적치라 아침에 잠깐 흔들렸던 종목이 그 뒤 몇 시간을 안정적으로 버텨도 영원히
+  // "잦은 등락"으로 남았다 - 5분 이상 신선하게 유지 중이면 최근 행동이 안정적이라는 뜻이므로 더 이상
+  // 노이즈로 취급하지 않는다.
+  insufficientData: boolean; // 표본이 2개 미만이라 판정 불가(장 시작 직후 등)
 }
 
 // 🎯 [기능 추가 - 사용자 요청: "R2까지 안가고 R1까지 뚫었어도 괜찮아... 손절선에 가도 괜찮아... 다시
@@ -158,9 +180,17 @@ export interface VwapReclaimSignal {
 // 선을 향해 올라오는 종목을 잡는다 - VWAP 재돌파와 판정 로직은 동일(간격 좁혀짐+거래량 선행)하지만
 // 기준선이 계속 움직이는 VWAP 대신 하루 종일 고정인 R1/R2라는 점이 다르다.
 export interface PivotLevelSignal {
-  reclaimed: boolean; // 뚫은 적 있고(hasBroken) + 그 뒤 한 번이라도 밑으로 갔었고(hasBeenBelowAfterBreak) + 지금 다시 위
-  approaching: boolean; // 위 조건 + 지금은 밑인데 간격 좁혀짐 + 1.5% 이내 임박 + 거래량 선행 증가
-  volSurge: boolean; // 최근 표본 창 안에서 재돌파 시점의 거래량 증가가 확인됐는지(창 밖이면 미확인)
+  reclaimed: boolean; // 재돌파(가격만, 즉시): 뚫은 적 있고(hasBroken) + 그 뒤 한 번이라도 밑으로 갔었고
+  // (hasBeenBelowAfterBreak) + 지금 다시 위 - "눌렸다가 다시 뚫음"이 확인된 더 강한 신호
+  // 🚨 [버그 수정 - 사용자 지적: "성호전자 왜 r2 뚫엇는데 r1완료라고만 뜸?"] holding: 처음 뚫은 뒤 한
+  // 번도 안 내려가고 계속 위인 경우(재돌파 이력은 없지만 hasBroken=true) - 예전엔 이 경우 reclaimed도
+  // hadPriorBreak도 둘 다 false라 화면이 이 레벨을 아예 못 본 것처럼 취급해 더 낮은 레벨을 대신
+  // 보여줬다. reclaimed와 holding은 상호 배타적이다(동시에 true일 수 없음).
+  holding: boolean;
+  elapsedMs: number | null; // (reclaimed || holding)일 때만 값이 있는 신선도(ms)
+  approaching: boolean; // 위 조건 + 지금은 밑인데 간격 좁혀짐 + 1.5% 이내 임박 + 거래량 선행 증가 + 매수 우위
+  sellPressureWarning: boolean; // VWAP과 동일(수칙 1-6) - 거래량은 늘었지만 매도 우위라 임박에서 제외됨
+  volSurge: boolean; // 최근 60초(또는 돌파 이후 전체) 거래량 속도가 돌파 전 60초 평균보다 높음(롤링 재계산)
   hadPriorBreak: boolean; // 오늘 이 선을 뚫었다가 다시 밑으로 내려간 적 있음 - reclaimed/approaching이 둘 다
   // false여도 이 값이 true면 "이전 이력만 있음"(대기 중, VWAP의 hadPriorReclaim과 동일한 목적)
 }

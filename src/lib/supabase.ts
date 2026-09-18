@@ -150,17 +150,28 @@ export async function saveTokenToSupabase(accessToken: string, expiresAtMs: numb
   }
 }
 
+export interface CreditBatchRow {
+  isCredit: boolean;
+  updatedAtMs: number;
+}
+
 /**
  * Supabase DB kis_credits 테이블에서 여러 종목 신용상태 일괄 조회
+ * 🚨 [버그 수정 - 사용자 지적: "두산에너빌리티는 신용 가능한데 왜 자꾸 가능했다가 안됐다고 뜨는거야?
+ * 한번 저장하면 계속 쓰는거 아니었어?"] 원래는 is_credit만 읽어와서 호출부가 "언제 저장된 값인지"를
+ * 전혀 알 수 없었다 - 실측: 두산에너빌리티(034020)가 8/28에 저장된 is_credit:false를 3주 뒤인 오늘도
+ * (KIS 라이브 원본은 이미 Y=가능으로 바뀌었는데도) 그대로 신뢰해서 "불가"로 보여주고 있었다. updated_at을
+ * 같이 읽어와서 호출부(mergeCreditStatusToRanking)가 오래된 행을 "확인됨"이 아니라 "재검증 필요"로
+ * 구분할 수 있게 한다.
  */
-export async function fetchCreditBatchFromSupabase(symbols: string[]): Promise<Record<string, boolean>> {
+export async function fetchCreditBatchFromSupabase(symbols: string[]): Promise<Record<string, CreditBatchRow>> {
   const client = getSupabaseAdmin() || getSupabasePublic();
   if (!client || !symbols || symbols.length === 0) return {};
 
   try {
     const { data, error } = await client
       .from('kis_credits')
-      .select('symbol, is_credit')
+      .select('symbol, is_credit, updated_at')
       .in('symbol', symbols);
 
     if (error) {
@@ -168,11 +179,11 @@ export async function fetchCreditBatchFromSupabase(symbols: string[]): Promise<R
       return {};
     }
 
-    const resultMap: Record<string, boolean> = {};
+    const resultMap: Record<string, CreditBatchRow> = {};
     if (data) {
       data.forEach((row: any) => {
         if (row.symbol) {
-          resultMap[row.symbol] = Boolean(row.is_credit);
+          resultMap[row.symbol] = { isCredit: Boolean(row.is_credit), updatedAtMs: row.updated_at ? new Date(row.updated_at).getTime() : 0 };
         }
       });
     }
@@ -1123,6 +1134,86 @@ export async function upsertWatchSignalState(date: string, symbol: string, parti
     }
   } catch (e: any) {
     console.warn('[Supabase watch_signal_state Upsert Exception]', e?.message || e);
+  }
+}
+
+/**
+ * 🎯 [기능 추가 - 사용자 요청: "테이블기록 만들자", "매수/매도 비율을 너무 빡세게 고정하지 않는 것도
+ * 중요. 과거 데이터를 돌려서 임계값을 찾는 게 낫겠어"] "재돌파 임박" 판정이 매수 우위로 확정되거나
+ * (approaching) 매도 우위로 제외되는(sell_pressure) 순간의 매수/매도 거래량을 기록한다 - 나중에
+ * 실제 다음날/다음 며칠 결과와 대조해서 지금의 "단순 과반" 임계값을 데이터 기반으로 조정할 수 있게
+ * 하는 1단계(수집) 저장이다. rising edge(그 상태로 막 전환된 순간)에만 호출되므로 매 15초 폴링마다
+ * 쌓이지 않는다(호출부인 kisApi.ts에서 이미 전환 감지를 마치고 부른다). fire-and-forget.
+ */
+export async function logReclaimSignalEvent(params: {
+  date: string;
+  symbol: string;
+  levelType: 'vwap' | 'r1' | 'r2';
+  eventType: 'approaching' | 'sell_pressure';
+  price: number;
+  target: number;
+  buyVolume: number;
+  sellVolume: number;
+  // 🎯 [기능 추가 - 사용자 요청: "절대 활성도 게이트는 임의로 숫자 박지 말고, 현재 rate / baseline rate /
+  // 오늘 평균 rate를 전부 로깅해서 데이터 쌓은 뒤 임계값을 정하자"] 판정에는 아직 쓰지 않고 기록만 한다.
+  recentRate: number | null;
+  baselineRate: number | null;
+  todayAvgRate: number | null;
+}): Promise<number | null> {
+  const client = getSupabaseAdmin();
+  if (!client) return null;
+
+  try {
+    // 🎯 [기능 추가 - 사용자 요청: "approaching이 나중에 실제 재돌파 성공으로 이어졌는지 outcome을 기록
+    // 하자"] insert된 행의 id를 돌려줘야 falling edge(approaching이 꺼지는 순간)에 같은 행을 찾아
+    // updateReclaimSignalOutcome으로 결과를 채워 넣을 수 있다 - sell_pressure 이벤트는 outcome 대상이
+    // 아니므로(사용자 요청 범위 밖) 호출부에서 approaching 이벤트일 때만 이 id를 기억해둔다.
+    const { data, error } = await client
+      .from('reclaim_signal_events')
+      .insert({
+        date: params.date,
+        symbol: params.symbol,
+        level_type: params.levelType,
+        event_type: params.eventType,
+        price: params.price,
+        target: params.target,
+        buy_volume: params.buyVolume,
+        sell_volume: params.sellVolume,
+        recent_rate: params.recentRate,
+        baseline_rate: params.baselineRate,
+        today_avg_rate: params.todayAvgRate,
+      })
+      .select('id')
+      .single();
+    if (error) {
+      console.warn('[Supabase reclaim_signal_events Insert Error]', error.message);
+      return null;
+    }
+    return data?.id ?? null;
+  } catch (e: any) {
+    console.warn('[Supabase reclaim_signal_events Insert Exception]', e?.message || e);
+    return null;
+  }
+}
+
+/**
+ * approaching으로 기록됐던 행이 나중에 실제 재돌파 성공(success)으로 이어졌는지, 힘이 빠져 실패
+ * (failed)했는지를 falling edge 시점에 채워 넣는다. 별도 대기시간(매직넘버) 없이, "approaching이
+ * 꺼지는 바로 그 순간 가격이 기준선 위에 있었는가"로만 판정한다(호출부 kisApi.ts 참고) - approaching은
+ * 정의상 가격이 기준선을 넘는 순간(stillBelow=false) 즉시 꺼지므로, 이 판정이 자연스럽게 "그 approaching
+ * 시도가 실제 돌파로 이어졌는지"와 일치한다. fire-and-forget.
+ */
+export async function updateReclaimSignalOutcome(id: number, outcome: 'success' | 'failed'): Promise<void> {
+  const client = getSupabaseAdmin();
+  if (!client) return;
+
+  try {
+    const { error } = await client.from('reclaim_signal_events').update({ outcome }).eq('id', id);
+    if (error) {
+      console.warn('[Supabase reclaim_signal_events Outcome Update Error]', error.message);
+    }
+  } catch (e: any) {
+    console.warn('[Supabase reclaim_signal_events Outcome Update Exception]', e?.message || e);
   }
 }
 

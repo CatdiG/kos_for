@@ -12,8 +12,9 @@ import {
   SurgingMode,
 } from '@/lib/types';
 import { getStockName, registerRuntimeStockName, resolveStockPriceAndChange, updateRuntimeStockPrice, resolveMarketType, getSettledAsOfDateLabel, getKrxEstimateSlotInfo } from '@/lib/mockData';
-import { fetchReclaimWatchSignals, ReclaimWatchSignal } from '@/lib/vwapReclaimClient';
+import { fetchReclaimWatchSignals, ReclaimWatchSignal, computeReclaimFreshnessInfo } from '@/lib/vwapReclaimClient';
 import { VwapReclaimSignal, PivotReclaimSignal } from '@/lib/types';
+import { getSupabaseBrowserClient } from '@/lib/supabaseBrowserClient';
 import RankingStockDetailChart from './RankingStockDetailChart';
 import CreditShieldIcon from './CreditShieldIcon';
 import {
@@ -234,10 +235,103 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
       const d = query.state.data as InvestorRankingResponse | undefined;
       if (d?.isPartial) return 4 * 1000;
       if (activeTab === 'program' && d?.stillWarming) return 50 * 1000;
-      if (activeTab === 'watchlist') return 30 * 1000; // 관심종목은 실시간 현재가라 30초마다 자동 갱신
+      // 🚨 [기능 재설계 - 사용자 지적: "관심종목 웹소캣으로 실시간 된다는거 아니였어? 안되는데"] 원래
+      // "실시간"이라고 주석에 적어놓고 실제로는 30초 REST 폴링만 하고 있었다(제 실수 인정) - 아래
+      // realtime_quotes 구독(useEffect)이 진짜 push를 담당하고, 이 30초는 그 안전망(연결 끊김/재시작/
+      // 41개 초과분 대비)으로만 남긴다.
+      if (activeTab === 'watchlist') return 30 * 1000;
       return false;
     },
   });
+
+  // 🎯 [기능 추가 - 사용자 요청: "장마감 후보들은 언제 업데이트 되는거야? 마지막 업데이트 시점을 각자
+  // 토글 옆에 표시해줘, 기존에 쓰던 기준 표기 있으면 그거 쓰고"] 발굴/전조는 이미 lastBatchTime
+  // ("9/18 14:30 기준" 형식, 수칙 1-5 기준일 표기 관례 그대로) API 응답에 포함돼 있었다 - 지금까지
+  // 화면에 안 보여줬을 뿐이다(새 포맷 함수 안 만듦). 지금 보고 있는 서브탭이 아니어도 토글 옆에 바로
+  // 보이게 하려고, 위 메인 쿼리와 완전히 동일한 요청(discovery/precursor)을 "장마감 후보군" 그룹이
+  // 열려있는 동안 항상 캐시해둔다 - queryKey가 메인 쿼리와 정확히 같아서(react-query가 키로 캐시를
+  // 공유) 그 탭을 실제로 클릭해도 중복 호출되지 않는다. 이 두 엔드포인트는 Supabase 스냅샷을 읽기만
+  // 해서 KIS 호출이 없다(수칙 2-6과 동일 취지 - 가벼운 프리페치만 허용).
+  const { data: discoveryBatchData } = useQuery<InvestorRankingResponse>({
+    queryKey: ['discovery', market],
+    queryFn: async () => {
+      const res = await fetch(`/api/stock/discovery?market=${market}`);
+      if (!res.ok) throw new Error('발굴 장마감 데이터를 가져오는 중 오류가 발생했습니다.');
+      return res.json();
+    },
+    enabled: isPostMarketGroup,
+    staleTime: 30 * 1000,
+  });
+  const { data: precursorBatchData } = useQuery<InvestorRankingResponse>({
+    queryKey: ['precursor', market],
+    queryFn: async () => {
+      const res = await fetch(`/api/stock/precursor?market=${market}`);
+      if (!res.ok) throw new Error('전조 장마감 데이터를 가져오는 중 오류가 발생했습니다.');
+      return res.json();
+    },
+    enabled: isPostMarketGroup,
+    staleTime: 30 * 1000,
+  });
+  // "급등"(postmarket)은 KIS 라이브 호출이라 위 둘과 달리 미리 당겨오지 않는다(수칙 1-3 - 안 쓸 수도
+  // 있는 호출을 미리 만들지 않음) - 실제로 그 토글을 눌러 메인 쿼리가 이 탭을 가져온 뒤에만 라벨이
+  // 뜬다(정직하게 "아직 조회 안 함"과 "언제 조회했음"을 구분). live 계산이라 lastBatchTime이 없을 수
+  // 있어 updatedAt(조회 시각)을 폴백으로 쓴다.
+  const postmarketBatchData = activeTab === 'postmarket' ? data : (queryClient.getQueryData(['surging', 'postmarket', market, null]) as InvestorRankingResponse | undefined);
+  const formatBatchLabel = (res: InvestorRankingResponse | undefined): string | null => {
+    if (!res) return null;
+    if (res.lastBatchTime) return res.lastBatchTime;
+    if (res.updatedAt) {
+      const kst = new Date(new Date(res.updatedAt).getTime() + 9 * 60 * 60000);
+      const hh = String(kst.getUTCHours()).padStart(2, '0');
+      const mm = String(kst.getUTCMinutes()).padStart(2, '0');
+      return `${hh}:${mm} 기준`;
+    }
+    return null;
+  };
+
+  // 🎯 [기능 추가 - 사용자 요청: "그거 실행하자"] Supabase Realtime으로 realtime_quotes 테이블 변경을
+  // 직접 구독한다 - 오라클 클라우드의 ws-bridge가 KIS 웹소켓 틱마다 이 표에 upsert하면(2초 주기,
+  // ws-bridge/index.mjs 참고) Postgres 변경 스트림이 새 웹소켓 서버 없이 브라우저로 바로 push된다.
+  // react-query 캐시를 직접 patch해서 다음 30초 안전망 폴링을 기다리지 않고 화면에 즉시 반영한다.
+  useEffect(() => {
+    if (activeTab !== 'watchlist') return;
+    const client = getSupabaseBrowserClient();
+    if (!client) return;
+
+    const queryKey = ['surging', 'watchlist', market, surgingMode === 'overlap' ? overlapMinCount : null];
+    const channel = client
+      .channel('watchlist-realtime-quotes')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'realtime_quotes' },
+        (payload) => {
+          const row = payload.new as { symbol?: string; price?: number; change?: number; change_rate?: number; volume?: number } | null;
+          if (!row?.symbol) return;
+          queryClient.setQueryData(queryKey, (old: InvestorRankingResponse | undefined) => {
+            if (!old?.list) return old;
+            let changed = false;
+            const list = old.list.map((item) => {
+              if (item.symbol !== row.symbol) return item;
+              changed = true;
+              return {
+                ...item,
+                currentPrice: row.price ?? item.currentPrice,
+                change: row.change ?? item.change,
+                changeRate: row.change_rate ?? item.changeRate,
+                volume: row.volume ?? item.volume,
+              };
+            });
+            if (!changed) return old;
+            return { ...old, list };
+          });
+        }
+      )
+      .subscribe();
+
+    return () => {
+      client.removeChannel(channel);
+    };
+  }, [activeTab, market, surgingMode, overlapMinCount, queryClient]);
 
   // 🎯 [재설계] 지금 화면에 뜬 후보 전체를 15초 주기로 계속 갱신 - queryKey에 탭/서브모드/시장 등 화면을
   // 결정짓는 값이 전부 들어있어서, 조회 도중 탭이 바뀌면 react-query가 그 시점 이후로는 이전 queryKey의
@@ -265,6 +359,11 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
   // 🚨 [기능 추가 - 사용자 요청: "장마감 후보군 탭에도 VWAP 실시간 감시, 피봇 재돌파 감시 넣어줘"]
   // 예전엔 "장마감 후보군 등 다른 탭엔 안 새어나간다"고 의도적으로 막아뒀는데, 이번 요청으로 그 제한을 푼다.
   const watchTogglesVisible = activeTab === 'surging' || isPostMarketGroup || (activeTab === 'overlap' && !showDropouts);
+  // 🚨 [버그 수정 - 사용자 지적: "급등주 다른 토글은 실시간 감시 되는데 급등주 교집합은 안되잖냐.. 다
+  // 되게 해줘야지"] 직전에 급등주 교집합을 감시 대상에서 통째로 뺐었는데, 실제로는 등락률/거래량/
+  // 거래대금과 똑같이 감시가 적용돼야 했다 - 예전 요청("급등주 교집합 옆에 실시간 감시 토글을 또
+  // 만들라고")은 버튼 배치(교집합 pill 옆에 병합 토글을 둔다)에 대한 것이었지, 교집합 목록을 감시에서
+  // 제외하라는 뜻이 아니었다. 제외 로직을 걷어내고 다른 서브모드와 동일하게 취급한다.
   const reclaimWatchEnabled = watchTogglesVisible && (vwapWatchEnabled || pivotWatchEnabled);
   const { data: reclaimWatchMap, isFetching: reclaimWatchFetching } = useQuery<Map<string, ReclaimWatchSignal>>({
     queryKey: ['reclaim-watch', activeTab, surgingMode, market, direction, period, overlapMode, overlapLimit, quietAccumFilter, vwapWatchSymbolsKey],
@@ -679,42 +778,51 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
   // 켜면 OR로 합쳐서 보여준다 - 둘 중 하나라도 걸리면 노출.
   const vwapWatchActive = watchTogglesVisible && vwapWatchEnabled && !!vwapReclaimMap;
   const pivotWatchActive = watchTogglesVisible && pivotWatchEnabled && !!pivotReclaimMap;
-  // 🎯 [기능 추가 - 사용자 요청: "남겨두자. 그리고 그걸 순위 밑으로두자. 진입가능한건 맨위의 순위로
-  // 뜨게 하고"] 예전엔 approaching/reclaimed가 아니면 통째로 필터링해서, "오늘 한 번 뚫었다가 지금은
-  // 다시 아래"인 종목(hadPriorReclaim/hadPriorBreak)이 화면에서 완전히 사라졌다(= "떴다 사라진다"는
-  // 불만의 원인). 5단계 우선순위 점수 하나로 환산해서, 액션 가능한 순서대로 위에서 아래로 정렬한다:
-  // 4=임박(지금이 진입 타이밍, 왔다갔다 적음) > 3=완료(이미 뚫림, 참고용, 왔다갔다 적음) >
-  // 2=잦은 등락(오늘 4회 이상 왔다갔다 - VWAP 근처 노이즈성이라 신뢰도 낮지만 지금 활동 중이긴 함) >
-  // 1=이전 이력만(지금은 완전히 잠잠함, 대기 중) > 0=오늘 신호 이력 전혀 없음(제외).
-  // VWAP·피봇 둘 다 켜져 있으면 더 강한 신호 쪽 점수를 취한다.
-  // 🚨 [기능 추가 - 사용자 지적: "성호전자도 계속 재돌파했다가 재돌파임박 했다가... 꾸준하게 있다가
-  // 재돌파하는 종목들을 보고싶은데"] 실측(Supabase watch_signal_state): 성호전자 오늘 VWAP crossCount
-  // 12회 - 진짜 방향성 돌파가 아니라 VWAP 선 근처에서 계속 왕복하는 노이즈였다. crossCount 분포를
-  // 실측(197개 종목)한 결과 90 백분위수가 정확히 4회라서, 상위 10%에 해당하는 "유별나게 왔다갔다하는"
-  // 종목만 4회 기준으로 걸러낸다(사용자 확인). 피봇(R1/R2)은 아직 crossCount를 추적하지 않아
-  // (DB 스키마 추가 필요) 이 등급이 적용되지 않는다.
-  const FREQUENT_FLIP_CROSS_COUNT = 4;
-  // 🚨 [기능 추가 - 사용자 지적: "2번은 횟수에 따라서 정렬시켜"] 잦은 등락(우선순위 2) 묶음 안에서도
-  // 4회짜리와 18회짜리가 뒤섞여 있었다 - crossCount를 2차 정렬 키로 써서 같은 우선순위 안에서는
-  // 왔다갔다 적은(더 믿을만한) 종목이 위로 오게 한다.
-  const getWatchPriority = (item: RankingItem): { priority: number; crossCount: number } => {
-    const v = vwapWatchActive ? vwapReclaimMap!.get(item.symbol) : undefined;
-    const vActive = !!(v?.approaching || v?.reclaimed);
-    const vCrossCount = v?.crossCount ?? 0;
-    const vFrequentFlip = vActive && vCrossCount >= FREQUENT_FLIP_CROSS_COUNT;
-    const vPriority = vFrequentFlip ? 2 : v?.approaching ? 4 : v?.reclaimed ? 3 : v?.hadPriorReclaim ? 1 : 0;
+  // 🎯 [기능 재설계 - 사용자 요청: "재돌파 임박 → 재돌파 확인(방금 발생) → 돌파 완료(유지 중) → 완료 후
+  // 5분 경과(오래된 이벤트) 순으로 정렬하고, 이런 신호의 신선도를 넣어"] 예전엔 approaching/reclaimed가
+  // 아니면 통째로 필터링해서 hadPriorReclaim/hadPriorBreak만 있는 종목이 화면에서 완전히 사라졌다(=
+  // "떴다 사라진다"는 불만의 원인) - 신선도 기반 우선순위 점수 하나로 환산해서, 더 최근/액션 가능한
+  // 순서대로 위에서 아래로 정렬한다: 5=임박 > 4=방금 재돌파 확인(30초 미만) > 3=돌파 완료(유지 중,
+  // 30초~5분) > 2=완료(5분+ 경과, 오래된 이벤트) > 1.5=잦은 등락(4회+, 아직 신선함) > 1=이전 이력만
+  // (지금은 잠잠함, 대기 중) > 0=오늘 신호 이력 전혀 없음(제외). VWAP·피봇 둘 다 켜져 있으면 더 강한
+  // 신호 쪽 점수를 취한다. computeReclaimFreshnessInfo는 desktop/mobile 공용 함수(수칙 1-6).
+  // 🚨 [기능 재설계 - 사용자 지적: "번개로고가 vwap인거 아니야? 그게 나오지 말고 피봇에 녹아들어서
+  // 점수를 내야하는거라고" - "R1/R2 = 주된 돌파 레벨, VWAP = 보조 지표, R1/R2 재돌파 + 거래량 증가 +
+  // 유지를 메인으로 보고 VWAP도 같이 회복하고 있으면 가산점 정도로 처리하자"] 예전엔 `vPriority >=
+  // pPriority`로 VWAP 혼자 튀어도 R1/R2보다 우선순위가 높아질 수 있었다(대우건설이 이 경로로 떴을
+  // 가능성이 높다 - 사용자 실측: "저거보고 대우건설 샀다가 떡락중이다"). 이제 정렬 우선순위(priority)는
+  // R1/R2만으로 정하고, VWAP는 그 안에서 완전히 동점(같은 priority, 같은 elapsedMs)일 때만 순서를
+  // 살짝 미는 타이브레이커로 쓴다 - 화면에 별도 배지/숫자로 드러나지 않는다(사용자 확정: "그게 나오지
+  // 말고 피봇에 녹아들어서").
+  const getWatchPriority = (item: RankingItem): { priority: number; elapsedMs: number; vwapBonus: boolean } => {
     const p = pivotWatchActive ? pivotReclaimMap!.get(item.symbol) : undefined;
-    const pLevel = p && (p.r2.approaching || p.r2.reclaimed || p.r2.hadPriorBreak) ? p.r2 : p?.r1;
-    const pPriority = pLevel?.approaching ? 4 : pLevel?.reclaimed ? 3 : pLevel?.hadPriorBreak ? 1 : 0;
-    return vPriority >= pPriority
-      ? { priority: vPriority, crossCount: vCrossCount }
-      : { priority: pPriority, crossCount: 0 }; // 피봇은 아직 crossCount 미추적
+    // 🚨 [버그 수정 - 사용자 지적: "성호전자 왜 r2 뚫엇는데 r1완료라고만 뜸?"] holding(처음 뚫은 뒤 한
+    // 번도 안 내려가고 계속 위)도 레벨 선택에 포함시킨다 - 예전엔 hadPriorBreak(재돌파 이력)만 봐서,
+    // 처음 뚫고 계속 유지 중인 R2가 있어도 못 보고 더 낮은 R1을 대신 골랐다.
+    const pLevel = p && (p.r2.approaching || p.r2.reclaimed || p.r2.holding || p.r2.hadPriorBreak) ? p.r2 : p?.r1;
+    let pPriority = 0;
+    let pElapsed = 0;
+    if (pLevel?.approaching) {
+      pPriority = 5;
+    } else if ((pLevel?.reclaimed || pLevel?.holding) && pLevel.elapsedMs != null) {
+      // 피봇(R1/R2)은 아직 crossCount를 추적하지 않아(DB 스키마 추가 필요) 잦은 등락 등급은 적용되지 않는다.
+      const info = computeReclaimFreshnessInfo(pLevel.elapsedMs, 0);
+      pPriority = info.priority;
+      pElapsed = pLevel.elapsedMs;
+    } else if (pLevel?.hadPriorBreak) {
+      pPriority = 1;
+    }
+
+    const v = vwapWatchActive ? vwapReclaimMap!.get(item.symbol) : undefined;
+    const vwapBonus = !!(v?.reclaimed || v?.approaching); // "VWAP도 같이 회복 중" - 가산점(동점 타이브레이커)만, priority 자체엔 안 섞는다.
+
+    return { priority: pPriority, elapsedMs: pElapsed, vwapBonus };
   };
-  if (vwapWatchActive || pivotWatchActive) {
+  if (pivotWatchActive) {
     displayList = displayList
       .map((item) => ({ item, ...getWatchPriority(item) }))
       .filter(({ priority }) => priority > 0)
-      .sort((a, b) => b.priority - a.priority || a.crossCount - b.crossCount || a.item.rank - b.item.rank)
+      .sort((a, b) => b.priority - a.priority || (Number(b.vwapBonus) - Number(a.vwapBonus)) || a.elapsedMs - b.elapsedMs || a.item.rank - b.item.rank)
       .map(({ item }, idx) => ({
         ...item,
         vwapOriginalRank: item.rank,
@@ -757,6 +865,16 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
         setSortAsc(false);
       }
     }
+  };
+
+  // 🎯 [기능 추가 - 사용자 요청: "토글들 계속 껏다켰다 하기 너무 힘든데"] VWAP 실시간 감시·피봇 재돌파
+  // 감시 - 예전엔 버튼 2개를 따로 켜야 했는데 항상 같이 쓰는 패턴이라 하나로 합쳤다. 지금 보고 있는
+  // 서브모드가 무엇이든(급등주 교집합 포함) 그대로 적용된다(사용자 확정: "급등주 다른 토글은 실시간
+  // 감시 되는데 급등주 교집합은 안되잖냐.. 다 되게 해줘야지").
+  const handleRealtimeWatchToggle = () => {
+    const turningOn = !vwapWatchEnabled; // vwapWatchEnabled/pivotWatchEnabled는 이 핸들러로만 바뀌므로 항상 서로 동기화되어 있다.
+    setVwapWatchEnabled(turningOn);
+    setPivotWatchEnabled(turningOn);
   };
 
   const handleSurgingModeChange = (mode: SurgingMode) => {
@@ -1165,6 +1283,24 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
                   <Flame className="w-3 h-3 text-amber-300 shrink-0" />
                   급등주 교집합 ({overlapMinCount}개+)
                 </button>
+                {/* 🎯 [기능 추가 - 사용자 요청: "급등주 다른 토글은 실시간 감시 되는데 급등주 교집합은
+                    안되잖냐.. 다 되게 해줘야지", "토글들 계속 껏다켰다 하기 너무 힘든데"] VWAP·피봇 감시
+                    버튼 2개를 하나로 합쳐 같은 줄(교집합 바로 옆)에 둔다 - 급등주 교집합을 포함한 모든
+                    서브모드에 동일하게 적용된다. */}
+                <button
+                  type="button"
+                  onClick={handleRealtimeWatchToggle}
+                  className={`px-2.5 py-1 rounded-lg transition whitespace-nowrap cursor-pointer text-xs font-bold flex items-center gap-1 shrink-0 ${
+                    vwapWatchEnabled
+                      ? 'bg-gradient-to-r from-sky-600 to-violet-600 text-white shadow-xs font-black'
+                      : 'text-red-700 dark:text-red-300 hover:text-red-900'
+                  }`}
+                  title="켜면 VWAP 재돌파·피봇(R1·R2) 재돌파를 15초 주기로 함께 실시간 감시합니다(지금 보고 있는 서브모드 전체에 적용)"
+                >
+                  <Zap className="w-3 h-3 shrink-0" />
+                  실시간 감시
+                  {vwapWatchEnabled && (vwapWatchFetching || pivotWatchFetching) && <RefreshCw className="w-3 h-3 animate-spin" />}
+                </button>
               </div>
               {/* 🎯 [기능 추가 - 사용자 요청: "탭을 왔다갔다 하면서 보는게 너무 귀찮은데... 셀렉터까지
                   원해. 처음 급등주교집합이 열릴때는 기존상태를 유지해서 열리게"] 등락률·거래량·거래대금
@@ -1189,38 +1325,6 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
                   ))}
                 </div>
               )}
-              <button
-                type="button"
-                onClick={() => setVwapWatchEnabled((v) => !v)}
-                className={`px-2.5 py-1 rounded-xl text-xs font-bold transition flex items-center gap-1 whitespace-nowrap cursor-pointer border shrink-0 ${
-                  vwapWatchEnabled
-                    ? 'bg-gradient-to-r from-sky-600 to-cyan-600 text-white border-transparent shadow-xs font-black'
-                    : 'bg-slate-100 dark:bg-[#1e222d] text-slate-600 dark:text-gray-400 border-slate-200/60 dark:border-[#2a2e39] hover:border-slate-300 dark:hover:border-slate-700'
-                }`}
-                title="켜면 지금 보이는 후보 전체를 15초 주기로 계속 갱신해서, 재돌파 임박(아직 미돌파+간격 좁혀짐+거래량 선행) 또는 재돌파 완료 종목을 실시간으로 표시합니다"
-              >
-                <Zap className={`w-3.5 h-3.5 ${vwapWatchEnabled ? 'text-sky-200' : 'text-sky-600'}`} />
-                <span>{vwapWatchEnabled ? 'VWAP 실시간 감시 중' : 'VWAP 실시간 감시'}</span>
-                {/* 🚨 [버그 수정 - 사용자 지적: "감시중인거 로딩중이면 로딩인거 알수있게 옆에 둔 도형이라도
-                    활용해봐"] 아이콘 자체를 pulse시키는 것만으로는 15초 주기로 다시 조회 중인 순간이 잘
-                    안 보였다 - 기존 새로고침 버튼(RefreshCw + animate-spin, 수칙 1-6 재사용)과 동일한
-                    패턴으로, isFetching일 때만 옆에 작은 회전 아이콘을 별도로 띄운다. */}
-                {vwapWatchEnabled && vwapWatchFetching && <RefreshCw className="w-3 h-3 animate-spin text-sky-100" />}
-              </button>
-              <button
-                type="button"
-                onClick={() => setPivotWatchEnabled((v) => !v)}
-                className={`px-2.5 py-1 rounded-xl text-xs font-bold transition flex items-center gap-1 whitespace-nowrap cursor-pointer border shrink-0 ${
-                  pivotWatchEnabled
-                    ? 'bg-gradient-to-r from-violet-600 to-purple-600 text-white border-transparent shadow-xs font-black'
-                    : 'bg-slate-100 dark:bg-[#1e222d] text-slate-600 dark:text-gray-400 border-slate-200/60 dark:border-[#2a2e39] hover:border-slate-300 dark:hover:border-slate-700'
-                }`}
-                title="켜면 전일 확정 피봇 저항선(R1·R2)을 뚫었다가 눌린 뒤 다시 그 선을 향해 올라오는 종목을 15초 주기로 계속 갱신해서 실시간으로 표시합니다"
-              >
-                <Target className={`w-3.5 h-3.5 ${pivotWatchEnabled ? 'text-violet-200' : 'text-violet-600'}`} />
-                <span>{pivotWatchEnabled ? '피봇 재돌파 감시 중' : '피봇 재돌파 감시'}</span>
-                {pivotWatchEnabled && pivotWatchFetching && <RefreshCw className="w-3 h-3 animate-spin text-violet-100" />}
-              </button>
             </div>
           )}
 
@@ -1267,33 +1371,30 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
                   전조
                 </button>
               </div>
+              {/* 🎯 [기능 추가 - 사용자 요청: "장마감 후보들은 언제 업데이트 되는거야? 마지막 업데이트
+                  시점이 언제인지 알려줘야 안헷갈릴거 같아 - 각자 토글 옆에"] 위 lastBatchTime/updatedAt을
+                  그대로 노출한다 - 발굴/전조는 미리 당겨둔 데이터라 토글을 누르기 전에도 바로 보이고,
+                  급등은 실제로 눌러서 조회한 뒤에만 뜬다(수칙 1-3, 안 물어본 값을 지어내지 않음). */}
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[9px] text-slate-400 dark:text-slate-500 font-sans font-normal whitespace-nowrap">
+                {formatBatchLabel(postmarketBatchData) && <span>급등 {formatBatchLabel(postmarketBatchData)}</span>}
+                {formatBatchLabel(discoveryBatchData) && <span>발굴 {formatBatchLabel(discoveryBatchData)}</span>}
+                {formatBatchLabel(precursorBatchData) && <span>전조 {formatBatchLabel(precursorBatchData)}</span>}
+              </div>
+              {/* 🎯 [기능 추가 - 사용자 요청: "토글들 계속 껏다켰다 하기 너무 힘든데"] VWAP·피봇 감시 버튼
+                  2개를 하나로 합쳤다(수칙 1-6, 급등주 탭과 동일한 핸들러 재사용). */}
               <button
                 type="button"
-                onClick={() => setVwapWatchEnabled((v) => !v)}
+                onClick={handleRealtimeWatchToggle}
                 className={`px-2.5 py-1 rounded-xl text-xs font-bold transition flex items-center gap-1 whitespace-nowrap cursor-pointer border shrink-0 ${
                   vwapWatchEnabled
-                    ? 'bg-gradient-to-r from-sky-600 to-cyan-600 text-white border-transparent shadow-xs font-black'
+                    ? 'bg-gradient-to-r from-sky-600 to-violet-600 text-white border-transparent shadow-xs font-black'
                     : 'bg-slate-100 dark:bg-[#1e222d] text-slate-600 dark:text-gray-400 border-slate-200/60 dark:border-[#2a2e39] hover:border-slate-300 dark:hover:border-slate-700'
                 }`}
-                title="켜면 지금 보이는 후보 전체를 15초 주기로 계속 갱신해서, 재돌파 임박(아직 미돌파+간격 좁혀짐+거래량 선행) 또는 재돌파 완료 종목을 실시간으로 표시합니다"
+                title="켜면 VWAP 재돌파·피봇(R1·R2) 재돌파를 15초 주기로 함께 실시간 감시합니다"
               >
                 <Zap className={`w-3.5 h-3.5 ${vwapWatchEnabled ? 'text-sky-200' : 'text-sky-600'}`} />
-                <span>{vwapWatchEnabled ? 'VWAP 실시간 감시 중' : 'VWAP 실시간 감시'}</span>
-                {vwapWatchEnabled && vwapWatchFetching && <RefreshCw className="w-3 h-3 animate-spin text-sky-100" />}
-              </button>
-              <button
-                type="button"
-                onClick={() => setPivotWatchEnabled((v) => !v)}
-                className={`px-2.5 py-1 rounded-xl text-xs font-bold transition flex items-center gap-1 whitespace-nowrap cursor-pointer border shrink-0 ${
-                  pivotWatchEnabled
-                    ? 'bg-gradient-to-r from-violet-600 to-purple-600 text-white border-transparent shadow-xs font-black'
-                    : 'bg-slate-100 dark:bg-[#1e222d] text-slate-600 dark:text-gray-400 border-slate-200/60 dark:border-[#2a2e39] hover:border-slate-300 dark:hover:border-slate-700'
-                }`}
-                title="켜면 전일 확정 피봇 저항선(R1·R2)을 뚫었다가 눌린 뒤 다시 그 선을 향해 올라오는 종목을 15초 주기로 계속 갱신해서 실시간으로 표시합니다"
-              >
-                <Target className={`w-3.5 h-3.5 ${pivotWatchEnabled ? 'text-violet-200' : 'text-violet-600'}`} />
-                <span>{pivotWatchEnabled ? '피봇 재돌파 감시 중' : '피봇 재돌파 감시'}</span>
-                {pivotWatchEnabled && pivotWatchFetching && <RefreshCw className="w-3 h-3 animate-spin text-violet-100" />}
+                <span>{vwapWatchEnabled ? '실시간 감시 중' : '실시간 감시'}</span>
+                {vwapWatchEnabled && (vwapWatchFetching || pivotWatchFetching) && <RefreshCw className="w-3 h-3 animate-spin text-sky-100" />}
               </button>
             </div>
           )}
@@ -1625,36 +1726,22 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
                   <span>장마감 후보만</span>
                 </button>
               )}
+              {/* 🎯 [기능 추가 - 사용자 요청: "토글들 계속 껏다켰다 하기 너무 힘든데"] VWAP·피봇 감시 버튼
+                  2개를 하나로 합쳤다(수칙 1-6, 급등주 탭과 동일한 핸들러 재사용). */}
               {!showDropouts && (
                 <button
                   type="button"
-                  onClick={() => setVwapWatchEnabled((v) => !v)}
+                  onClick={handleRealtimeWatchToggle}
                   className={`px-2.5 py-1 rounded-xl text-xs font-bold transition flex items-center gap-1 whitespace-nowrap cursor-pointer border shrink-0 ${
                     vwapWatchEnabled
-                      ? 'bg-gradient-to-r from-sky-600 to-cyan-600 text-white border-transparent shadow-xs font-black'
+                      ? 'bg-gradient-to-r from-sky-600 to-violet-600 text-white border-transparent shadow-xs font-black'
                       : 'bg-slate-100 dark:bg-[#1e222d] text-slate-600 dark:text-gray-400 border-slate-200/60 dark:border-[#2a2e39] hover:border-slate-300 dark:hover:border-slate-700'
                   }`}
-                  title="켜면 지금 보이는 후보 전체를 15초 주기로 계속 갱신해서, 재돌파 임박(아직 미돌파+간격 좁혀짐+거래량 선행) 또는 재돌파 완료 종목을 실시간으로 표시합니다"
+                  title="켜면 VWAP 재돌파·피봇(R1·R2) 재돌파를 15초 주기로 함께 실시간 감시합니다"
                 >
                   <Zap className={`w-3.5 h-3.5 ${vwapWatchEnabled ? 'text-sky-200' : 'text-sky-600'}`} />
-                  <span>{vwapWatchEnabled ? 'VWAP 실시간 감시 중' : 'VWAP 실시간 감시'}</span>
-                  {vwapWatchEnabled && vwapWatchFetching && <RefreshCw className="w-3 h-3 animate-spin text-sky-100" />}
-                </button>
-              )}
-              {!showDropouts && (
-                <button
-                  type="button"
-                  onClick={() => setPivotWatchEnabled((v) => !v)}
-                  className={`px-2.5 py-1 rounded-xl text-xs font-bold transition flex items-center gap-1 whitespace-nowrap cursor-pointer border shrink-0 ${
-                    pivotWatchEnabled
-                      ? 'bg-gradient-to-r from-violet-600 to-purple-600 text-white border-transparent shadow-xs font-black'
-                      : 'bg-slate-100 dark:bg-[#1e222d] text-slate-600 dark:text-gray-400 border-slate-200/60 dark:border-[#2a2e39] hover:border-slate-300 dark:hover:border-slate-700'
-                  }`}
-                  title="켜면 전일 확정 피봇 저항선(R1·R2)을 뚫었다가 눌린 뒤 다시 그 선을 향해 올라오는 종목을 15초 주기로 계속 갱신해서 실시간으로 표시합니다"
-                >
-                  <Target className={`w-3.5 h-3.5 ${pivotWatchEnabled ? 'text-violet-200' : 'text-violet-600'}`} />
-                  <span>{pivotWatchEnabled ? '피봇 재돌파 감시 중' : '피봇 재돌파 감시'}</span>
-                  {pivotWatchEnabled && pivotWatchFetching && <RefreshCw className="w-3 h-3 animate-spin text-violet-100" />}
+                  <span>{vwapWatchEnabled ? '실시간 감시 중' : '실시간 감시'}</span>
+                  {vwapWatchEnabled && (vwapWatchFetching || pivotWatchFetching) && <RefreshCw className="w-3 h-3 animate-spin text-sky-100" />}
                 </button>
               )}
             </div>
@@ -2143,8 +2230,11 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
                               </span>
                             )}
                             {/* 🚨 [UI 통일 - 사용자 요청] "신용가능만" 필터의 (전체 N위) 표기와 동일한
-                                자리·스타일로 통일한다 - VWAP 재돌파 배지 안에 따로 표기하지 않는다. */}
-                            {(vwapWatchActive || pivotWatchActive) && (item as any).vwapOriginalRank !== undefined && (
+                                자리·스타일로 통일한다 - R1/R2 재돌파 배지 안에 따로 표기하지 않는다.
+                                🚨 [기능 재설계 - 사용자 지적: "그게 나오지 말고 피봇에 녹아들어서"] 정렬
+                                자체가 이제 pivotWatchActive(R1/R2)로만 일어나므로(vwapOriginalRank도 그
+                                때만 채워짐) 게이트를 pivotWatchActive 하나로 맞춘다. */}
+                            {pivotWatchActive && (item as any).vwapOriginalRank !== undefined && (
                               <span className="text-[9px] text-slate-400 dark:text-slate-500 font-sans font-normal whitespace-nowrap shrink-0">
                                 (전체 {(item as any).vwapOriginalRank}위)
                               </span>
@@ -2186,17 +2276,18 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
                               <Star className="w-3.5 h-3.5" fill={wsWatchlistSet.has(item.symbol) ? 'currentColor' : 'none'} />
                             </button>
                             {/* 🎯 [기능 추가 - 사용자 요청: "피봇, vwap 둘다 옆에 신용 가능한지... 로고 붙여줘.
-                                얘네는 종목이 별로 없어서 따로 신용가능 토글을 쓰기가 애매해"] VWAP/피봇 재돌파
-                                배지가 실제로 뜬 행에만(전체 목록 대상 별도 필터 토글 없이) 기존 3-상태 아이콘을
-                                그대로 붙인다(수칙 1-6, 새 로직 아님 - MobileStockDetailChart.tsx가 쓰던 매핑
-                                재사용). */}
+                                얘네는 종목이 별로 없어서 따로 신용가능 토글을 쓰기가 애매해"] 재돌파 배지가
+                                실제로 뜬 행에만(전체 목록 대상 별도 필터 토글 없이) 기존 3-상태 아이콘을 그대로
+                                붙인다(수칙 1-6, 새 로직 아님 - MobileStockDetailChart.tsx가 쓰던 매핑 재사용).
+                                🚨 [기능 재설계 - 사용자 지적: "번개로고가 vwap인거 아니야? 그게 나오지 말고
+                                피봇에 녹아들어서 점수를 내야하는거라고"] VWAP는 더 이상 화면에 독립 배지로
+                                뜨지 않으므로(R1/R2 정렬 우선순위에만 타이브레이커로 녹아든다, 아래 getWatchPriority
+                                참고) 이 게이트도 R1/R2 조건만 남긴다. */}
                             {(() => {
-                              const v = vwapWatchEnabled ? vwapReclaimMap?.get(item.symbol) : undefined;
                               const p = pivotWatchEnabled ? pivotReclaimMap?.get(item.symbol) : undefined;
                               const hasWatchBadge = !!(
-                                v?.approaching || v?.reclaimed || v?.hadPriorReclaim ||
-                                p?.r1.approaching || p?.r1.reclaimed || p?.r1.hadPriorBreak ||
-                                p?.r2.approaching || p?.r2.reclaimed || p?.r2.hadPriorBreak
+                                p?.r1.approaching || p?.r1.reclaimed || p?.r1.hadPriorBreak || p?.r1.holding || p?.r1.sellPressureWarning ||
+                                p?.r2.approaching || p?.r2.reclaimed || p?.r2.hadPriorBreak || p?.r2.holding || p?.r2.sellPressureWarning
                               );
                               if (!hasWatchBadge) return null;
                               return <CreditShieldIcon isCreditAvailable={item.isCreditAvailable} />;
@@ -2224,82 +2315,42 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
                             섞여 있으면 어느 배지가 종목 정보고 어느 게 감시 신호인지 헷갈린다는 지적을
                             반영해 분리했다. */}
                         {reclaimWatchEnabled && (
-                          <td className="p-2.5 font-sans min-w-[140px]">
+                          <td className="p-2.5 font-sans min-w-[140px] max-w-[220px]">
                             <div className="flex items-center gap-1.5 flex-wrap">
+                              {/* 🚨 [기능 재설계 - 사용자 지적: "번개로고가 vwap인거 아니야? 그게 나오지 말고
+                                  피봇에 녹아들어서 점수를 내야하는거라고" - "지금 로고별로 나오잖아"] VWAP
+                                  독립 배지(번개 아이콘, 재돌파 임박/매도 압박/돌파 완료/잦은 등락/이전이력)를
+                                  전부 제거했다. 대우건설처럼 VWAP만 보고 "임박"이 떴다 안 떴다 하는 문제의
+                                  근본 원인 - VWAP은 매 체결마다 자기 자신(누적거래대금/누적거래량)도 같이
+                                  움직이는 값이라 가격-VWAP 간격이 가격뿐 아니라 VWAP 자체의 흔들림으로도
+                                  좁혀졌다 넓혀졌다 한다. R1/R2는 전일 데이터로 하루 종일 고정이라 훨씬
+                                  안정적이다(사용자 확정: "R1/R2 = 주된 돌파 레벨, VWAP = 보조 지표"). VWAP
+                                  계산·로깅(reclaim_signal_events, outcome) 자체는 백엔드에서 계속 돌되,
+                                  화면엔 R1/R2 정렬 우선순위의 동점 타이브레이커로만 녹아든다(getWatchPriority
+                                  참고) - 화면에 별도 아이콘/태그로 다시 드러나지 않는다. */}
                               {/* 🚨 [기능 보강 - 사용자 지적: "이미 재돌파 하고나면 내가 또 못사잖아"] 아직
                                   안 뚫었지만 곧 뚫을 것 같은 "임박"(선행, 액션 가능)과 이미 다 끝난 "완료"
                                   (후행, 참고용)를 색으로 구분한다 - 임박이 실제로 사려는 시점에 더 유용하다. */}
-                              {/* 🚨 [기능 추가 - 사용자 지적: "성호전자도 계속 재돌파했다가 재돌파임박
-                                  했다가... 꾸준하게 있다가 재돌파하는 종목들을 보고싶은데"] crossCount가
-                                  기준(4회, 실측 90 백분위수) 이상이면 임박/완료 대신 "잦은 등락"으로 표시해
-                                  VWAP 근처 노이즈성 왕복과 진짜 방향성 돌파를 구분한다. */}
-                              {(() => {
-                                const v = vwapWatchEnabled ? vwapReclaimMap?.get(item.symbol) : undefined;
-                                if (!v) return null;
-                                const isFrequentFlip = (v.approaching || v.reclaimed) && v.crossCount >= FREQUENT_FLIP_CROSS_COUNT;
-                                if (isFrequentFlip) {
-                                  return (
-                                    <span
-                                      className="text-[9px] px-1 py-0.2 rounded font-sans font-bold shrink-0 border bg-orange-50 dark:bg-orange-950/40 text-orange-500 dark:text-orange-400 border-orange-200 dark:border-orange-800/50 flex items-center gap-0.5"
-                                      title={`오늘 VWAP를 ${v.crossCount}번 넘나들었습니다 - 방향성 돌파가 아니라 VWAP 근처에서 계속 왕복하는 노이즈성 신호일 가능성이 높습니다(참고용, 신뢰도 낮음)`}
-                                    >
-                                      <Zap className="w-2.5 h-2.5" />
-                                      VWAP 잦은 등락({v.crossCount}회)
-                                    </span>
-                                  );
-                                }
-                                if (v.approaching) {
-                                  return (
-                                    <span
-                                      className="text-[9px] px-1 py-0.2 rounded font-sans font-bold shrink-0 border bg-amber-50 dark:bg-amber-950/60 text-amber-600 dark:text-amber-400 border-amber-200 dark:border-amber-800/60 flex items-center gap-0.5 animate-pulse"
-                                      title={
-                                        v.hadPriorReclaim
-                                          ? '오늘 이미 한 번 재돌파에 성공했다가 다시 눌린 뒤, 재차 VWAP에 근접하고 있습니다'
-                                          : '아직 VWAP를 뚫진 않았지만 간격이 좁혀지고 거래량이 먼저 붙기 시작했습니다'
-                                      }
-                                    >
-                                      <Zap className="w-2.5 h-2.5" />
-                                      재돌파 임박{v.hadPriorReclaim ? '(2차 시도)' : ''}
-                                    </span>
-                                  );
-                                }
-                                if (v.reclaimed) {
-                                  return (
-                                    <span
-                                      className="text-[9px] px-1 py-0.2 rounded font-sans font-bold shrink-0 border bg-sky-50 dark:bg-sky-950/60 text-sky-600 dark:text-sky-400 border-sky-200 dark:border-sky-800/60 flex items-center gap-0.5"
-                                      title={
-                                        v.volSurge
-                                          ? 'VWAP 재돌파 + 거래량 재증가가 이미 확인됐습니다(참고용, 진입 시점은 이미 지났을 수 있음)'
-                                          : 'VWAP 재돌파는 확인됐지만, 돌파 시점 거래량 증가는 확인되지 않았습니다(참고용)'
-                                      }
-                                    >
-                                      <Zap className="w-2.5 h-2.5" />
-                                      VWAP재돌파(완료){v.volSurge ? '' : '·거래량 미확인'}
-                                    </span>
-                                  );
-                                }
-                                return null;
-                              })()}
-                              {/* 🎯 [기능 추가 - 사용자 요청: "남겨두자. 그리고 그걸 순위 밑으로두자"] 지금은
-                                  임박도 완료도 아니지만(다시 VWAP 아래로 내려감) 오늘 한 번은 뚫었던 이력-
-                                  흐린 참고용 배지로만 남기고 정렬 순위는 맨 아래로 내려간다. */}
-                              {vwapWatchEnabled && !vwapReclaimMap?.get(item.symbol)?.approaching && !vwapReclaimMap?.get(item.symbol)?.reclaimed && vwapReclaimMap?.get(item.symbol)?.hadPriorReclaim && (
-                                <span
-                                  className="text-[9px] px-1 py-0.2 rounded font-sans font-bold shrink-0 border bg-slate-50 dark:bg-slate-900/60 text-slate-400 dark:text-slate-500 border-slate-200 dark:border-slate-700/60 flex items-center gap-0.5 opacity-70"
-                                  title="오늘 이미 한 번 VWAP를 뚫었다가 다시 아래로 내려간 이력이 있습니다(현재는 재접근 신호 없음, 대기 중)"
-                                >
-                                  <Zap className="w-2.5 h-2.5" />
-                                  VWAP 이전이력(대기)
-                                </span>
-                              )}
+                              {/* 🎯 [기능 재설계 - 사용자 지적: "뭔 다 확인 불가라고 떠?", "현재가랑 겹치잖아
+                                  뱃지가", "대우건설이 무슨 잦은등락이야, 지금 계속 고가 뚫고 가는구만" -
+                                  "재돌파 임박 → 재돌파 확인 → 돌파 완료 → 완료 후 5분 경과 순으로 정렬하고
+                                  신선도를 넣어"] "타이밍 확인불가"라는 긴 배지를 없애고(elapsedMs가 항상
+                                  채워지므로 더 이상 그 상태가 없음), 경과시간 기반 3단계 배지로 교체했다.
+                                  짧은 문구로 바꿔서 "감시 신호" 칸이 옆 "현재가" 칸과 겹치던 문제도 함께
+                                  해결한다(td에 max-w까지 둬서 재발도 방지). "잦은 등락"도 elapsedMs가
+                                  5분 이상(최근에 안정적으로 유지 중)이면 더 이상 붙지 않는다. */}
                               {/* 🎯 [기능 추가 - 사용자 요청: "R2까지 안가고 R1까지 뚫었어도... 다시 올라올거
                                   같은 반등"] R2가 걸려있으면 R2를(더 강한 신호), 아니면 R1을 표시한다. */}
                               {pivotWatchEnabled && (() => {
                                 const p = pivotReclaimMap?.get(item.symbol);
                                 if (!p) return null;
+                                // 🚨 [버그 수정 - 사용자 지적: "성호전자 왜 r2 뚫엇는데 r1완료라고만 뜸?"]
+                                // holding(처음 뚫은 뒤 한 번도 안 내려가고 계속 위)도 레벨 선택에 포함.
                                 const level: 'R2' | 'R1' | null =
-                                  p.r2.approaching || p.r2.reclaimed ? 'R2'
-                                  : p.r1.approaching || p.r1.reclaimed ? 'R1'
+                                  p.r2.approaching || p.r2.reclaimed || p.r2.holding ? 'R2'
+                                  : p.r1.approaching || p.r1.reclaimed || p.r1.holding ? 'R1'
+                                  : p.r2.sellPressureWarning ? 'R2'
+                                  : p.r1.sellPressureWarning ? 'R1'
                                   : p.r2.hadPriorBreak ? 'R2'
                                   : p.r1.hadPriorBreak ? 'R1' : null;
                                 if (!level) return null;
@@ -2307,7 +2358,7 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
                                 if (sig.approaching) {
                                   return (
                                     <span
-                                      className="text-[9px] px-1 py-0.2 rounded font-sans font-bold shrink-0 border bg-violet-50 dark:bg-violet-950/60 text-violet-600 dark:text-violet-400 border-violet-200 dark:border-violet-800/60 flex items-center gap-0.5 animate-pulse"
+                                      className="text-[9px] px-1 py-0.2 rounded font-sans font-bold shrink-0 border bg-red-50 dark:bg-red-950/40 text-red-600 dark:text-red-400 border-red-200 dark:border-red-800/40 flex items-center gap-0.5 animate-pulse"
                                       title={`${level}을(를) 뚫었다가 눌린 뒤, 다시 ${level}을(를) 향해 간격이 좁혀지고 거래량이 붙기 시작했습니다`}
                                     >
                                       <Target className="w-2.5 h-2.5" />
@@ -2315,14 +2366,59 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
                                     </span>
                                   );
                                 }
-                                if (sig.reclaimed) {
+                                {/* 🎯 [기능 추가 - VWAP과 동일(수칙 1-6)] 거래량은 늘었지만 매도 우위라 임박에서 제외됨. */}
+                                if (sig.sellPressureWarning) {
                                   return (
                                     <span
-                                      className="text-[9px] px-1 py-0.2 rounded font-sans font-bold shrink-0 border bg-purple-50 dark:bg-purple-950/60 text-purple-600 dark:text-purple-400 border-purple-200 dark:border-purple-800/60 flex items-center gap-0.5"
-                                      title={`${level}을(를) 뚫었다가 눌린 뒤 다시 위로 올라왔습니다(참고용)${sig.volSurge ? '' : ' - 거래량 증가는 확인되지 않았습니다'}`}
+                                      className="text-[9px] px-1 py-0.2 rounded font-sans font-bold shrink-0 border bg-rose-50 dark:bg-rose-950/40 text-rose-500 dark:text-rose-400 border-rose-200 dark:border-rose-800/50 flex items-center gap-0.5"
+                                      title={`${level} 간격이 좁혀지고 거래량도 늘었지만, 그 거래량이 매도 우위입니다 - 재돌파 임박으로 보지 않습니다(참고용)`}
                                     >
                                       <Target className="w-2.5 h-2.5" />
-                                      {level}재돌파(완료){sig.volSurge ? '' : '·거래량 미확인'}
+                                      {level} 매도 압박
+                                    </span>
+                                  );
+                                }
+                                {/* 🎯 [기능 추가 - 사용자 지적: "성호전자 왜 r2 뚫엇는데 r1완료라고만 뜸?"]
+                                    처음 뚫은 뒤 한 번도 안 내려가고 계속 유지 중(재돌파 이력은 아직 없음) -
+                                    reclaimed(재돌파)보다는 약하지만 hadPriorBreak(이전이력만)보다는 강한
+                                    신호라 별도 색으로 구분한다. */}
+                                if (sig.holding && sig.elapsedMs != null) {
+                                  const info = computeReclaimFreshnessInfo(sig.elapsedMs, 0);
+                                  return (
+                                    <span
+                                      className="text-[9px] px-1 py-0.2 rounded font-sans font-bold shrink-0 border bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 border-indigo-200 dark:border-indigo-800/60 flex items-center gap-0.5"
+                                      title={`${level}을(를) 뚫은 뒤 한 번도 내려오지 않고 ${info.elapsedLabel}째 유지 중입니다(아직 눌림 후 재돌파 이력은 없음)${sig.volSurge ? ' - 거래량 속도도 여전히 높습니다' : ''}`}
+                                    >
+                                      <Target className="w-2.5 h-2.5" />
+                                      {level} 돌파유지({info.elapsedLabel}){sig.volSurge ? '·거래량↑' : ''}
+                                    </span>
+                                  );
+                                }
+                                if (sig.reclaimed && sig.elapsedMs != null) {
+                                  // VWAP과 동일한 신선도 재설계(수칙 1-6) - reclaimed(가격만, 즉시)는
+                                  // 그대로 보여주고, elapsedMs로 방금 확인/유지 중/오래된 완료를 구분한다.
+                                  const info = computeReclaimFreshnessInfo(sig.elapsedMs, 0); // 피봇은 crossCount 미추적
+                                  if (info.tier === 'justConfirmed') {
+                                    return (
+                                      <span
+                                        className="text-[9px] px-1 py-0.2 rounded font-sans font-bold shrink-0 border bg-purple-50/60 dark:bg-purple-950/30 text-purple-400 dark:text-purple-500 border-purple-100 dark:border-purple-900/60 flex items-center gap-0.5"
+                                        title={`방금(${info.elapsedLabel} 전) ${level}을(를) 재돌파했습니다 - 순간적으로 삐죽 올라간 것인지 아직 힘을 확인하는 중입니다(신뢰도 낮음)`}
+                                      >
+                                        <Target className="w-2.5 h-2.5" />
+                                        {level} 재돌파 확인
+                                      </span>
+                                    );
+                                  }
+                                  const staleClass = info.tier === 'established'
+                                    ? 'bg-slate-50 dark:bg-slate-900/60 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-slate-700/60'
+                                    : 'bg-purple-50 dark:bg-purple-950/60 text-purple-600 dark:text-purple-400 border-purple-200 dark:border-purple-800/60';
+                                  return (
+                                    <span
+                                      className={`text-[9px] px-1 py-0.2 rounded font-sans font-bold shrink-0 border flex items-center gap-0.5 ${staleClass}`}
+                                      title={`${info.elapsedLabel} 전 ${level}을(를) 재돌파해 계속 유지 중입니다${sig.volSurge ? ' - 거래량 속도도 여전히 높습니다' : ''}(참고용${info.tier === 'established' ? ', 진입 시점은 이미 지났을 수 있음' : ''})`}
+                                    >
+                                      <Target className="w-2.5 h-2.5" />
+                                      {level} 완료({info.elapsedLabel}){sig.volSurge ? '·거래량↑' : ''}
                                     </span>
                                   );
                                 }

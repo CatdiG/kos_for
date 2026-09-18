@@ -20,7 +20,7 @@
 //      맞춰 이모지로 단순화).
 
 import React, { useEffect, useState, useMemo } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   InvestorRankingResponse,
   MarketType,
@@ -33,7 +33,7 @@ import {
 import { Rocket, Trophy, Globe2, Landmark, Cpu, Flame, ShieldCheck, ArrowUpDown, TrendingDown, RotateCcw, TrendingUp, Coins, Filter, ChevronDown, ChevronUp, Target, Zap, RefreshCw, Compass, Radar } from 'lucide-react';
 import MobileStockDetailPanel from './MobileStockDetailPanel';
 import MobileLoadingSpinner from './MobileLoadingSpinner';
-import { fetchReclaimWatchSignals, ReclaimWatchSignal } from '@/lib/vwapReclaimClient';
+import { fetchReclaimWatchSignals, ReclaimWatchSignal, computeReclaimFreshnessInfo } from '@/lib/vwapReclaimClient';
 import { VwapReclaimSignal, PivotReclaimSignal } from '@/lib/types';
 
 // 🚨 [기능 추가 - 사용자 요청: "모바일에는 장마감 후보군 업데이트한거 안뜨던데"] 데스크톱 InvestorRankingTable.tsx
@@ -185,7 +185,7 @@ function buildOverlapSubLine(item: RankingItem, overlapMode: OverlapMode, quietA
   return parts.join(' · ') || item.investorBadge || '-';
 }
 
-function RankingCard({ item, activeTab, overlapMode, quietAccumFilter, vwapApproaching, vwapHadPriorReclaim, vwapReclaimed, vwapSignal, pivotSignal, isExpanded, onClick }: { item: RankingItem; activeTab: RankingType; overlapMode: OverlapMode; quietAccumFilter: boolean; vwapApproaching?: boolean; vwapHadPriorReclaim?: boolean; vwapReclaimed?: boolean; vwapSignal?: boolean; pivotSignal?: PivotReclaimSignal; isExpanded: boolean; onClick?: () => void }) {
+function RankingCard({ item, activeTab, overlapMode, quietAccumFilter, pivotSignal, pivotWatchActive, isExpanded, onClick }: { item: RankingItem; activeTab: RankingType; overlapMode: OverlapMode; quietAccumFilter: boolean; pivotSignal?: PivotReclaimSignal; pivotWatchActive: boolean; isExpanded: boolean; onClick?: () => void }) {
   const isUp = item.change >= 0;
   return (
     <div
@@ -207,42 +207,31 @@ function RankingCard({ item, activeTab, overlapMode, quietAccumFilter, vwapAppro
           <span className="text-sm font-bold text-slate-900 dark:text-white truncate">{item.name}</span>
           <span className="text-[10px] font-mono text-slate-400 shrink-0">{item.symbol}</span>
           {item.isCreditAvailable && <ShieldCheck className="w-3 h-3 text-emerald-500 shrink-0" />}
-          {/* 🚨 [기능 보강 - 사용자 지적: "이미 재돌파 하고나면 내가 또 못사잖아"] 임박(선행, 액션 가능)과
-              완료(후행, 참고용)를 색으로 구분 - 데스크톱과 동일(수칙 1-6). */}
-          {vwapApproaching && (
-            <span
-              className="text-[9px] px-1 py-0.2 rounded font-bold shrink-0 border bg-amber-50 dark:bg-amber-950/60 text-amber-600 dark:text-amber-400 border-amber-200 dark:border-amber-800/60 flex items-center gap-0.5 animate-pulse"
-              title={vwapHadPriorReclaim ? '오늘 이미 한 번 재돌파에 성공했다가 다시 눌린 뒤, 재차 근접 중입니다' : '아직 VWAP를 뚫진 않았지만 간격이 좁혀지고 거래량이 먼저 붙기 시작했습니다'}
-            >
-              <Zap className="w-2.5 h-2.5" />
-              임박{vwapHadPriorReclaim ? '(2차)' : ''}
-              {(item as any).vwapOriginalRank !== undefined && (
-                <span className="opacity-80">(원래 {(item as any).vwapOriginalRank}위)</span>
-              )}
-            </span>
-          )}
-          {!vwapApproaching && vwapReclaimed && (
-            <span
-              className="text-[9px] px-1 py-0.2 rounded font-bold shrink-0 border bg-sky-50 dark:bg-sky-950/60 text-sky-600 dark:text-sky-400 border-sky-200 dark:border-sky-800/60 flex items-center gap-0.5"
-              title={vwapSignal ? 'VWAP 재돌파 + 거래량 재증가가 이미 확인됐습니다(참고용)' : 'VWAP 재돌파는 확인됐지만 거래량 증가는 확인되지 않았습니다(참고용)'}
-            >
-              <Zap className="w-2.5 h-2.5" />
-              완료{vwapSignal ? '' : '·거래량 미확인'}
-              {(item as any).vwapOriginalRank !== undefined && (
-                <span className="opacity-80">(원래 {(item as any).vwapOriginalRank}위)</span>
-              )}
+          {/* 🚨 [기능 재설계 - 데스크톱과 동일(수칙 1-6), 사용자 지적: "번개로고가 vwap인거 아니야? 그게
+              나오지 말고 피봇에 녹아들어서 점수를 내야하는거라고" - "지금 로고별로 나오잖아"] VWAP 독립
+              배지(번개 아이콘)를 전부 제거했다. VWAP는 R1/R2 정렬 우선순위의 동점 타이브레이커로만
+              녹아든다(getMobileWatchPriority 참고) - 화면엔 별도 아이콘으로 다시 드러나지 않는다. */}
+          {pivotWatchActive && (item as any).vwapOriginalRank !== undefined && (
+            <span className="text-[9px] text-slate-400 dark:text-slate-500 font-normal whitespace-nowrap shrink-0">
+              (원래 {(item as any).vwapOriginalRank}위)
             </span>
           )}
           {/* 🎯 [기능 추가 - 데스크톱과 동일] R2가 걸려있으면 R2를(더 강한 신호), 아니면 R1을 표시. */}
           {pivotSignal && (() => {
+            // 🚨 [버그 수정 - 사용자 지적: "성호전자 왜 r2 뚫엇는데 r1완료라고만 뜸?"] holding도 포함.
             const level: 'R2' | 'R1' | null =
-              pivotSignal.r2.approaching || pivotSignal.r2.reclaimed ? 'R2' : pivotSignal.r1.approaching || pivotSignal.r1.reclaimed ? 'R1' : null;
+              pivotSignal.r2.approaching || pivotSignal.r2.reclaimed || pivotSignal.r2.holding ? 'R2'
+              : pivotSignal.r1.approaching || pivotSignal.r1.reclaimed || pivotSignal.r1.holding ? 'R1'
+              : pivotSignal.r2.sellPressureWarning ? 'R2'
+              : pivotSignal.r1.sellPressureWarning ? 'R1'
+              : pivotSignal.r2.hadPriorBreak ? 'R2'
+              : pivotSignal.r1.hadPriorBreak ? 'R1' : null;
             if (!level) return null;
             const sig = level === 'R2' ? pivotSignal.r2 : pivotSignal.r1;
             if (sig.approaching) {
               return (
                 <span
-                  className="text-[9px] px-1 py-0.2 rounded font-bold shrink-0 border bg-violet-50 dark:bg-violet-950/60 text-violet-600 dark:text-violet-400 border-violet-200 dark:border-violet-800/60 flex items-center gap-0.5 animate-pulse"
+                  className="text-[9px] px-1 py-0.2 rounded font-bold shrink-0 border bg-red-50 dark:bg-red-950/40 text-red-600 dark:text-red-400 border-red-200 dark:border-red-800/40 flex items-center gap-0.5 animate-pulse"
                   title={`${level}을(를) 뚫었다가 눌린 뒤 다시 ${level}로 접근 중, 거래량도 붙는 중`}
                 >
                   <Target className="w-2.5 h-2.5" />
@@ -250,14 +239,65 @@ function RankingCard({ item, activeTab, overlapMode, quietAccumFilter, vwapAppro
                 </span>
               );
             }
-            if (sig.reclaimed) {
+            {/* 🎯 [기능 추가 - 데스크톱과 동일(수칙 1-6)] 거래량은 늘었지만 매도 우위라 임박에서 제외됨. */}
+            if (sig.sellPressureWarning) {
               return (
                 <span
-                  className="text-[9px] px-1 py-0.2 rounded font-bold shrink-0 border bg-purple-50 dark:bg-purple-950/60 text-purple-600 dark:text-purple-400 border-purple-200 dark:border-purple-800/60 flex items-center gap-0.5"
-                  title={`${level}을(를) 뚫었다가 눌린 뒤 다시 위로 올라왔습니다(참고용)${sig.volSurge ? '' : ' - 거래량 미확인'}`}
+                  className="text-[9px] px-1 py-0.2 rounded font-bold shrink-0 border bg-rose-50 dark:bg-rose-950/40 text-rose-500 dark:text-rose-400 border-rose-200 dark:border-rose-800/50 flex items-center gap-0.5"
+                  title={`${level} 간격이 좁혀지고 거래량도 늘었지만, 그 거래량이 매도 우위입니다 - 재돌파 임박으로 보지 않습니다(참고용)`}
                 >
                   <Target className="w-2.5 h-2.5" />
-                  {level}완료{sig.volSurge ? '' : '·거래량 미확인'}
+                  {level} 매도 압박
+                </span>
+              );
+            }
+            {/* 🎯 [기능 추가 - 데스크톱과 동일(수칙 1-6)] 처음 뚫은 뒤 한 번도 안 내려가고 계속 유지 중. */}
+            if (sig.holding && sig.elapsedMs != null) {
+              const info = computeReclaimFreshnessInfo(sig.elapsedMs, 0);
+              return (
+                <span
+                  className="text-[9px] px-1 py-0.2 rounded font-bold shrink-0 border bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 border-indigo-200 dark:border-indigo-800/60 flex items-center gap-0.5"
+                  title={`${level}을(를) 뚫은 뒤 한 번도 내려오지 않고 ${info.elapsedLabel}째 유지 중입니다(아직 눌림 후 재돌파 이력은 없음)${sig.volSurge ? ' - 거래량 속도도 여전히 높습니다' : ''}`}
+                >
+                  <Target className="w-2.5 h-2.5" />
+                  {level} 돌파유지({info.elapsedLabel}){sig.volSurge ? '·거래량↑' : ''}
+                </span>
+              );
+            }
+            if (sig.reclaimed && sig.elapsedMs != null) {
+              const info = computeReclaimFreshnessInfo(sig.elapsedMs, 0); // 피봇은 crossCount 미추적
+              if (info.tier === 'justConfirmed') {
+                return (
+                  <span
+                    className="text-[9px] px-1 py-0.2 rounded font-bold shrink-0 border bg-purple-50/60 dark:bg-purple-950/30 text-purple-400 dark:text-purple-500 border-purple-100 dark:border-purple-900/60 flex items-center gap-0.5"
+                    title={`방금(${info.elapsedLabel} 전) ${level}을(를) 재돌파했습니다 - 아직 힘을 확인하는 중입니다(신뢰도 낮음)`}
+                  >
+                    <Target className="w-2.5 h-2.5" />
+                    {level} 재돌파 확인
+                  </span>
+                );
+              }
+              const staleClass = info.tier === 'established'
+                ? 'bg-slate-50 dark:bg-slate-900/60 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-slate-700/60'
+                : 'bg-purple-50 dark:bg-purple-950/60 text-purple-600 dark:text-purple-400 border-purple-200 dark:border-purple-800/60';
+              return (
+                <span
+                  className={`text-[9px] px-1 py-0.2 rounded font-bold shrink-0 border flex items-center gap-0.5 ${staleClass}`}
+                  title={`${info.elapsedLabel} 전 ${level}을(를) 재돌파해 계속 유지 중입니다${sig.volSurge ? ' - 거래량 속도도 여전히 높습니다' : ''}(참고용)`}
+                >
+                  <Target className="w-2.5 h-2.5" />
+                  {level} 완료({info.elapsedLabel}){sig.volSurge ? '·거래량↑' : ''}
+                </span>
+              );
+            }
+            if (sig.hadPriorBreak) {
+              return (
+                <span
+                  className="text-[9px] px-1 py-0.2 rounded font-bold shrink-0 border bg-slate-50 dark:bg-slate-900/60 text-slate-400 dark:text-slate-500 border-slate-200 dark:border-slate-700/60 flex items-center gap-0.5 opacity-70"
+                  title={`오늘 이미 ${level}을(를) 뚫었다가 다시 아래로 내려간 이력이 있습니다(현재는 재접근 신호 없음, 대기 중)`}
+                >
+                  <Target className="w-2.5 h-2.5" />
+                  {level} 이전이력(대기)
                 </span>
               );
             }
@@ -344,6 +384,7 @@ export default function MobileRankingList() {
   // 4번째 버튼("수급 장마감 후보군")이었던 걸 당일/2일연속/3일연속 어디서나 켤 수 있는 독립 토글로 분리.
   const [quietAccumFilter, setQuietAccumFilter] = useState(false);
   const [market, setMarket] = useState<MarketType>('ALL');
+  const queryClient = useQueryClient();
   const [creditOnly, setCreditOnly] = useState(false);
   const [entryReadyOnly, setEntryReadyOnly] = useState(false);
   const [weights, setWeights] = useState<Weights>(DEFAULT_WEIGHTS);
@@ -358,6 +399,14 @@ export default function MobileRankingList() {
   const [vwapWatchEnabled, setVwapWatchEnabled] = useState(false);
   // 🎯 [기능 추가 - 데스크톱과 동일] R1/R2 재돌파 감시 - VWAP와 별개 토글, 둘 다 켜면 같이 보임.
   const [pivotWatchEnabled, setPivotWatchEnabled] = useState(false);
+  // 🎯 [기능 추가 - 데스크톱과 동일(수칙 1-6), 사용자 요청: "토글들 계속 껏다켰다 하기 너무 힘든데",
+  // "급등주 다른 토글은 실시간 감시 되는데 급등주 교집합은 안되잖냐.. 다 되게 해줘야지"] VWAP·피봇
+  // 감시를 하나의 버튼으로 합친다. 급등주 교집합을 포함한 모든 서브모드에 동일하게 적용된다.
+  const handleRealtimeWatchToggle = () => {
+    const turningOn = !vwapWatchEnabled;
+    setVwapWatchEnabled(turningOn);
+    setPivotWatchEnabled(turningOn);
+  };
 
   // 🚨 [기능 추가 - "모바일에는 장마감 후보군 안뜨던데"] 데스크톱 InvestorRankingTable.tsx 84번 줄과 동일 -
   // postmarket도 surgingMode 서브탭과 무관하게 항상 고정된 모드(postmarket)로 fetchSurging을 재사용한다.
@@ -413,6 +462,44 @@ export default function MobileRankingList() {
       return false;
     },
   });
+
+  // 🎯 [기능 추가 - 데스크톱과 동일(수칙 1-6), 사용자 요청: "장마감 후보들은 언제 업데이트 되는거야? 각자
+  // 토글 옆에 표시해줘"] 발굴/전조는 lastBatchTime을 이미 갖고 있다(수칙 1-5 기준일 표기 관례) - 지금
+  // 보고 있는 서브탭이 아니어도 토글 옆에 바로 뜨도록 메인 쿼리와 동일한 키로 항상 캐시해둔다(KIS 호출
+  // 없는 Supabase 스냅샷 읽기라 가볍다). "급등"(postmarket)은 KIS 라이브 호출이라 미리 안 당겨온다 -
+  // 실제로 눌러서 조회된 뒤에만 라벨이 뜬다.
+  const { data: discoveryBatchData } = useQuery<InvestorRankingResponse>({
+    queryKey: ['m-discovery', market],
+    queryFn: async () => {
+      const res = await fetch(`/api/stock/discovery?market=${market}`);
+      if (!res.ok) throw new Error('발굴 장마감 데이터를 가져오는 중 오류가 발생했습니다.');
+      return res.json();
+    },
+    enabled: isPostMarketGroup,
+    staleTime: 30 * 1000,
+  });
+  const { data: precursorBatchData } = useQuery<InvestorRankingResponse>({
+    queryKey: ['m-precursor', market],
+    queryFn: async () => {
+      const res = await fetch(`/api/stock/precursor?market=${market}`);
+      if (!res.ok) throw new Error('전조 장마감 데이터를 가져오는 중 오류가 발생했습니다.');
+      return res.json();
+    },
+    enabled: isPostMarketGroup,
+    staleTime: 30 * 1000,
+  });
+  const postmarketBatchData = activeTab === 'postmarket' ? data : (queryClient.getQueryData(['m-surging', 'postmarket', market]) as InvestorRankingResponse | undefined);
+  const formatBatchLabel = (res: InvestorRankingResponse | undefined): string | null => {
+    if (!res) return null;
+    if (res.lastBatchTime) return res.lastBatchTime;
+    if (res.updatedAt) {
+      const kst = new Date(new Date(res.updatedAt).getTime() + 9 * 60 * 60000);
+      const hh = String(kst.getUTCHours()).padStart(2, '0');
+      const mm = String(kst.getUTCMinutes()).padStart(2, '0');
+      return `${hh}:${mm} 기준`;
+    }
+    return null;
+  };
 
   // 🎯 [재설계 - 데스크톱과 동일] queryKey에 탭/서브모드/시장이 들어있어 탭이 바뀌면 감시 대상도 자동
   // 전환된다(수동 리셋/토큰 관리 불필요).
@@ -491,18 +578,43 @@ export default function MobileRankingList() {
   // !showDropouts일 때만 렌더링되는데, 이 필터는 activeTab과 무관하게 적용되고 있었다.
   // 🚨 [기능 추가 - 사용자 요청: "장마감 후보군 탭에도 VWAP 실시간 감시, 피봇 재돌파 감시 넣어줘"]
   const watchTogglesVisible = (activeTab === 'surging' || activeTab === 'overlap' || isPostMarketGroup) && !showDropouts;
+  // 🚨 [버그 수정 - 데스크톱과 동일(수칙 1-6), 사용자 지적: "급등주 다른 토글은 실시간 감시 되는데
+  // 급등주 교집합은 안되잖냐.. 다 되게 해줘야지"] 급등주 교집합도 다른 서브모드와 동일하게 감시 대상이다.
   const vwapWatchActive = watchTogglesVisible && vwapWatchEnabled && !!vwapReclaimMap;
   const pivotWatchActive = watchTogglesVisible && pivotWatchEnabled && !!pivotReclaimMap;
-  if (vwapWatchActive || pivotWatchActive) {
+  // 🎯 [기능 재설계 - 사용자 요청: "재돌파 임박 → 재돌파 확인 → 돌파 완료 → 완료 후 5분 경과 순으로
+  // 정렬"] 데스크톱(InvestorRankingTable.tsx)의 getWatchPriority와 동일한 신선도 기반 우선순위(수칙
+  // 1-6) - 예전엔 필터만 하고 정렬은 안 해서 화면 순서가 신선도와 무관했다.
+  // 🚨 [기능 재설계 - 데스크톱과 동일(수칙 1-6), 사용자 지적: "번개로고가 vwap인거 아니야? 그게 나오지
+  // 말고 피봇에 녹아들어서 점수를 내야하는거라고" - "R1/R2 = 주된 돌파 레벨, VWAP = 보조 지표"] 정렬
+  // 우선순위는 R1/R2만으로 정하고, VWAP는 완전히 동점일 때만 순서를 살짝 미는 타이브레이커로만 쓴다.
+  const getMobileWatchPriority = (item: RankingItem): { priority: number; elapsedMs: number; vwapBonus: boolean } => {
+    const p = pivotWatchActive ? pivotReclaimMap!.get(item.symbol) : undefined;
+    // 🚨 [버그 수정 - 데스크톱과 동일(수칙 1-6), 사용자 지적: "성호전자 왜 r2 뚫엇는데 r1완료라고만 뜸?"]
+    const pLevel = p && (p.r2.approaching || p.r2.reclaimed || p.r2.holding || p.r2.hadPriorBreak) ? p.r2 : p?.r1;
+    let pPriority = 0;
+    let pElapsed = 0;
+    if (pLevel?.approaching) {
+      pPriority = 5;
+    } else if ((pLevel?.reclaimed || pLevel?.holding) && pLevel.elapsedMs != null) {
+      const info = computeReclaimFreshnessInfo(pLevel.elapsedMs, 0); // 피봇은 crossCount 미추적
+      pPriority = info.priority;
+      pElapsed = pLevel.elapsedMs;
+    } else if (pLevel?.hadPriorBreak) {
+      pPriority = 1;
+    }
+
+    const v = vwapWatchActive ? vwapReclaimMap!.get(item.symbol) : undefined;
+    const vwapBonus = !!(v?.reclaimed || v?.approaching); // "VWAP도 같이 회복 중" - 가산점(동점 타이브레이커)만.
+
+    return { priority: pPriority, elapsedMs: pElapsed, vwapBonus };
+  };
+  if (pivotWatchActive) {
     list = list
-      .filter((item) => {
-        const v = vwapWatchActive ? vwapReclaimMap!.get(item.symbol) : undefined;
-        const vMatch = v?.approaching === true || v?.reclaimed === true;
-        const p = pivotWatchActive ? pivotReclaimMap!.get(item.symbol) : undefined;
-        const pMatch = !!p && (p.r1.approaching || p.r1.reclaimed || p.r2.approaching || p.r2.reclaimed);
-        return vMatch || pMatch;
-      })
-      .map((item, idx) => ({ ...item, vwapOriginalRank: item.rank, rank: idx + 1 }));
+      .map((item) => ({ item, ...getMobileWatchPriority(item) }))
+      .filter(({ priority }) => priority > 0)
+      .sort((a, b) => b.priority - a.priority || (Number(b.vwapBonus) - Number(a.vwapBonus)) || a.elapsedMs - b.elapsedMs || a.item.rank - b.item.rank)
+      .map(({ item }, idx) => ({ ...item, vwapOriginalRank: item.rank, rank: idx + 1 }));
   }
 
   return (
@@ -554,34 +666,56 @@ export default function MobileRankingList() {
               </button>
             );
           })}
+          {/* 🎯 [기능 추가 - 데스크톱과 동일(수칙 1-6), 사용자 요청: "급등주 다른 토글은 실시간 감시
+              되는데 급등주 교집합은 안되잖냐.. 다 되게 해줘야지"] 급등주 교집합 바로 옆에 둔다 - 급등주
+              교집합을 포함한 모든 서브모드에 동일하게 적용된다. */}
+          <button
+            onClick={handleRealtimeWatchToggle}
+            title="켜면 VWAP 재돌파·피봇(R1·R2) 재돌파를 15초 주기로 함께 실시간 감시합니다(지금 보고 있는 서브모드 전체에 적용)"
+            className={`flex items-center gap-1 shrink-0 px-2.5 py-1 rounded-lg text-[11px] font-bold border transition ${
+              vwapWatchEnabled
+                ? 'bg-gradient-to-r from-sky-600 to-violet-600 text-white border-transparent'
+                : 'bg-white dark:bg-[#131722] text-slate-500 dark:text-slate-400 border-slate-200 dark:border-[#2a2e39]'
+            }`}
+          >
+            <Zap className="w-3 h-3" />
+            실시간 감시
+            {vwapWatchEnabled && (vwapWatchFetching || pivotWatchFetching) && <RefreshCw className="w-3 h-3 animate-spin" />}
+          </button>
         </div>
       )}
 
       {/* 🚨 [기능 통합 - 사용자 요청: "장마감 탭들을 장마감 후보군 탭으로 합쳐서 각자 토글로"] 급등/발굴/전조 서브탭 */}
       {isPostMarketGroup && (
-        <div className="flex gap-1.5 overflow-x-auto pb-1 -mx-1 px-1">
-          {([
-            { id: 'postmarket' as const, label: '급등', icon: Target },
-            { id: 'discovery' as const, label: '발굴', icon: Compass },
-            { id: 'precursor' as const, label: '전조', icon: Radar },
-          ]).map((m) => {
-            const Icon = m.icon;
-            const isActive = activeTab === m.id;
-            return (
-              <button
-                key={m.id}
-                onClick={() => setActiveTab(m.id)}
-                className={`flex items-center gap-1 shrink-0 px-2.5 py-1 rounded-lg text-[11px] font-bold border transition ${
-                  isActive
-                    ? 'bg-amber-600 text-white border-transparent'
-                    : 'bg-white dark:bg-[#131722] text-slate-500 dark:text-slate-400 border-slate-200 dark:border-[#2a2e39]'
-                }`}
-              >
-                <Icon className="w-3 h-3" />
-                {m.label}
-              </button>
-            );
-          })}
+        <div className="flex flex-col gap-1">
+          <div className="flex gap-1.5 overflow-x-auto pb-1 -mx-1 px-1">
+            {([
+              { id: 'postmarket' as const, label: '급등', icon: Target, batch: postmarketBatchData },
+              { id: 'discovery' as const, label: '발굴', icon: Compass, batch: discoveryBatchData },
+              { id: 'precursor' as const, label: '전조', icon: Radar, batch: precursorBatchData },
+            ]).map((m) => {
+              const Icon = m.icon;
+              const isActive = activeTab === m.id;
+              const batchLabel = formatBatchLabel(m.batch);
+              return (
+                <button
+                  key={m.id}
+                  onClick={() => setActiveTab(m.id)}
+                  className={`flex items-center gap-1 shrink-0 px-2.5 py-1 rounded-lg text-[11px] font-bold border transition ${
+                    isActive
+                      ? 'bg-amber-600 text-white border-transparent'
+                      : 'bg-white dark:bg-[#131722] text-slate-500 dark:text-slate-400 border-slate-200 dark:border-[#2a2e39]'
+                  }`}
+                >
+                  <Icon className="w-3 h-3" />
+                  {m.label}
+                  {/* 🎯 [기능 추가 - 사용자 요청: "마지막 업데이트 시점이 언제인지 알려줘야 안헷갈릴거
+                      같아 - 각자 토글 옆에"] */}
+                  {batchLabel && <span className="opacity-70 font-normal">{batchLabel}</span>}
+                </button>
+              );
+            })}
+          </div>
         </div>
       )}
 
@@ -662,36 +796,23 @@ export default function MobileRankingList() {
             장마감 후보만
           </button>
         )}
-        {/* 🎯 [재설계 - 데스크톱과 동일] 실시간 감시 토글 - 켜면 화면에 뜬 후보 전체를 15초 주기로 계속 갱신.
-            🚨 [기능 추가 - 사용자 요청: "장마감 후보군 탭에도 VWAP 실시간 감시, 피봇 재돌파 감시 넣어줘"] */}
-        {(activeTab === 'surging' || activeTab === 'overlap' || isPostMarketGroup) && !showDropouts && (
+        {/* 🎯 [재설계 - 데스크톱과 동일(수칙 1-6)] 실시간 감시 토글 - VWAP·피봇 감시를 하나로 합쳤다
+            (사용자 요청: "토글들 계속 껏다켰다 하기 너무 힘든데"). 급등주 탭에서는 이 버튼 대신 서브탭
+            줄(급등주 교집합 옆)에 이미 있으므로 여기서는 중복 표시하지 않는다. */}
+        {(activeTab === 'overlap' || isPostMarketGroup) && !showDropouts && (
           <button
-            onClick={() => setVwapWatchEnabled((v) => !v)}
-            title="켜면 지금 보이는 후보 전체를 15초 주기로 계속 갱신해서 재돌파 임박 또는 완료 종목을 실시간으로 표시합니다"
+            onClick={handleRealtimeWatchToggle}
+            title="켜면 VWAP 재돌파·피봇(R1·R2) 재돌파를 15초 주기로 함께 실시간 감시합니다"
             className={`flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-bold border transition ${
-              vwapWatchEnabled ? 'bg-gradient-to-r from-sky-600 to-cyan-600 text-white border-transparent' : 'bg-slate-50 dark:bg-[#131722] text-slate-400 border-slate-200 dark:border-[#2a2e39]'
+              vwapWatchEnabled ? 'bg-gradient-to-r from-sky-600 to-violet-600 text-white border-transparent' : 'bg-slate-50 dark:bg-[#131722] text-slate-400 border-slate-200 dark:border-[#2a2e39]'
             }`}
           >
             <Zap className="w-3 h-3" />
-            {vwapWatchEnabled ? 'VWAP 감시 중' : 'VWAP 실시간 감시'}
+            {vwapWatchEnabled ? '실시간 감시 중' : '실시간 감시'}
             {/* 🚨 [버그 수정 - 사용자 지적: "감시중인거 로딩중이면 로딩인거 알수있게 옆에 둔 도형이라도
                 활용해봐"] 데스크톱과 동일 - 아이콘 pulse만으론 15초 주기 재조회 순간이 잘 안 보여서,
                 isFetching일 때만 옆에 작은 회전 아이콘을 별도로 띄운다(수칙 1-6). */}
-            {vwapWatchEnabled && vwapWatchFetching && <RefreshCw className="w-3 h-3 animate-spin" />}
-          </button>
-        )}
-        {/* 🎯 [기능 추가 - 데스크톱과 동일] R1/R2 재돌파 감시 - VWAP와 별개 토글. */}
-        {(activeTab === 'surging' || activeTab === 'overlap' || isPostMarketGroup) && !showDropouts && (
-          <button
-            onClick={() => setPivotWatchEnabled((v) => !v)}
-            title="켜면 전일 확정 피봇 저항선(R1·R2)을 뚫었다가 눌린 뒤 다시 그 선을 향해 올라오는 종목을 15초 주기로 계속 갱신해서 실시간으로 표시합니다"
-            className={`flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-bold border transition ${
-              pivotWatchEnabled ? 'bg-gradient-to-r from-violet-600 to-purple-600 text-white border-transparent' : 'bg-slate-50 dark:bg-[#131722] text-slate-400 border-slate-200 dark:border-[#2a2e39]'
-            }`}
-          >
-            <Target className="w-3 h-3" />
-            {pivotWatchEnabled ? '피봇 감시 중' : '피봇 재돌파 감시'}
-            {pivotWatchEnabled && pivotWatchFetching && <RefreshCw className="w-3 h-3 animate-spin" />}
+            {vwapWatchEnabled && (vwapWatchFetching || pivotWatchFetching) && <RefreshCw className="w-3 h-3 animate-spin" />}
           </button>
         )}
       </div>
@@ -843,11 +964,8 @@ export default function MobileRankingList() {
                   activeTab={activeTab}
                   overlapMode={overlapMode}
                   quietAccumFilter={quietAccumFilter}
-                  vwapApproaching={vwapWatchEnabled && vwapReclaimMap?.get(item.symbol)?.approaching}
-                  vwapHadPriorReclaim={vwapWatchEnabled && vwapReclaimMap?.get(item.symbol)?.hadPriorReclaim}
-                  vwapReclaimed={vwapWatchEnabled && vwapReclaimMap?.get(item.symbol)?.reclaimed}
-                  vwapSignal={vwapWatchEnabled && vwapReclaimMap?.get(item.symbol)?.signal}
                   pivotSignal={pivotWatchEnabled ? pivotReclaimMap?.get(item.symbol) : undefined}
+                  pivotWatchActive={pivotWatchActive}
                   isExpanded={isExpanded}
                   onClick={() => setExpandedSymbol((prev) => (prev === item.symbol ? '' : item.symbol))}
                 />
