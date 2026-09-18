@@ -152,6 +152,16 @@ export default function RankingStockDetailChart({
   const [hoverPriceInfo, setHoverPriceInfo] = useState<{ y: number; price: number; label?: string } | null>(null);
   const [hover3mPriceInfo, setHover3mPriceInfo] = useState<{ y: number; price: number } | null>(null);
 
+  // 🎯 [기능 추가 - 사용자 요청: "hts나 mts처럼 확대, 축소 못하나 보기가 너무 불편해"] 3분봉 차트 전용
+  // 확대/축소·드래그 팬 - null이면 하루 전체를 보여주고, 값이 있으면 candles3m의 [start,end) 구간만
+  // 잘라서 보여준다(Y축도 이 구간 기준으로 다시 맞춰진다, 아래 intraday3mPriceAxis 참고). 마우스 휠로
+  // 확대/축소, 드래그로 좌우 이동, 더블클릭으로 전체 보기 복귀 - Recharts 자체엔 이 기능이 없어 새로
+  // 만들었다.
+  const [candle3mZoomRange, setCandle3mZoomRange] = useState<{ start: number; end: number } | null>(null);
+  const chart3mDragRef = React.useRef<{ startX: number; startRange: { start: number; end: number } } | null>(null);
+  const [isDragging3mChart, setIsDragging3mChart] = useState(false);
+  const MIN_VISIBLE_3M_CANDLES = 15;
+
   // Symbol Match Guard: Only use propData if it matches currently selected safeSymbol
   const isPropDataMatching = Boolean(propData && propData.stockInfo?.symbol === safeSymbol);
 
@@ -703,6 +713,76 @@ function findActiveSwingLow(candles: any[]): SwingLowPoint | null {
   const candles3m = intraday3mQuery.data?.candles || [];
   const levels3m = intraday3mQuery.data?.levels;
 
+  // 🎯 [기능 추가 - 확대/축소] 줌 범위가 있으면 그 구간만 잘라서 차트/Y축에 넘긴다 - isR1Flipped·
+  // activeSwingLow·latestVwapValues는 "오늘 하루 전체 사실"이라 줌과 무관하게 candles3m(전체)를 계속 쓴다.
+  const visibleCandles3m = React.useMemo(() => {
+    if (!candle3mZoomRange || candles3m.length === 0) return candles3m;
+    const start = Math.max(0, Math.min(candle3mZoomRange.start, candles3m.length - 1));
+    const end = Math.max(start + 1, Math.min(candle3mZoomRange.end, candles3m.length));
+    return candles3m.slice(start, end);
+  }, [candles3m, candle3mZoomRange]);
+
+  // 🚨 [버그 수정 - 실측: 콘솔에 "Unable to preventDefault inside passive event listener invocation"
+  // 반복 발생] React 17+는 onWheel을 passive 리스너로 등록해서 합성 이벤트 안에서 e.preventDefault()가
+  // 항상 무시되고 에러만 찍힌다(줌 state 갱신 자체는 됐지만, 휠 도는 동안 배경 페이지도 같이 스크롤되는
+  // 부작용은 못 막았다). 아래 useEffect에서 { passive: false } 네이티브 리스너를 직접 붙여야
+  // preventDefault가 실제로 먹는다 - onWheel prop 대신 컨테이너 ref에 이 핸들러를 연결한다.
+  const handle3mWheelZoom = (e: WheelEvent) => {
+    if (candles3m.length <= MIN_VISIBLE_3M_CANDLES) return;
+    e.preventDefault();
+    const current = candle3mZoomRange || { start: 0, end: candles3m.length };
+    const windowSize = current.end - current.start;
+    const zoomFactor = e.deltaY < 0 ? 0.85 : 1 / 0.85; // 휠 위 = 확대(창 축소), 휠 아래 = 축소(창 확대)
+    let newSize = Math.round(windowSize * zoomFactor);
+    newSize = Math.max(MIN_VISIBLE_3M_CANDLES, Math.min(candles3m.length, newSize));
+    const center = current.start + windowSize / 2;
+    let newStart = Math.round(center - newSize / 2);
+    let newEnd = newStart + newSize;
+    if (newStart < 0) { newStart = 0; newEnd = newSize; }
+    if (newEnd > candles3m.length) { newEnd = candles3m.length; newStart = newEnd - newSize; }
+    if (newSize >= candles3m.length) { setCandle3mZoomRange(null); return; }
+    setCandle3mZoomRange({ start: newStart, end: newEnd });
+  };
+
+  const handle3mDragStart = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (candles3m.length <= MIN_VISIBLE_3M_CANDLES) return;
+    chart3mDragRef.current = { startX: e.clientX, startRange: candle3mZoomRange || { start: 0, end: candles3m.length } };
+    setIsDragging3mChart(true);
+  };
+  const handle3mDragMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!chart3mDragRef.current || candles3m.length === 0) return;
+    const { startX, startRange } = chart3mDragRef.current;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const windowSize = startRange.end - startRange.start;
+    const plotWidth = Math.max(1, rect.width - 90); // ComposedChart margin(right:75)+여유 - 대략적인 플롯 영역 폭
+    const deltaCandles = Math.round((-(e.clientX - startX) / plotWidth) * windowSize);
+    let newStart = startRange.start + deltaCandles;
+    let newEnd = newStart + windowSize;
+    if (newStart < 0) { newStart = 0; newEnd = windowSize; }
+    if (newEnd > candles3m.length) { newEnd = candles3m.length; newStart = newEnd - windowSize; }
+    setCandle3mZoomRange({ start: newStart, end: newEnd });
+  };
+  const handle3mDragEnd = () => {
+    chart3mDragRef.current = null;
+    setIsDragging3mChart(false);
+  };
+
+  // 🚨 [버그 수정 - 위 handle3mWheelZoom 주석 참고] onWheel React prop 대신 { passive: false } 네이티브
+  // 리스너를 두 컨테이너(가격 차트·거래량 차트) 모두에 직접 붙인다 - 최신 핸들러 클로저를 쓰도록 관련
+  // 값이 바뀔 때마다 재등록한다.
+  const chart3mPriceContainerRef = React.useRef<HTMLDivElement>(null);
+  const chart3mVolumeContainerRef = React.useRef<HTMLDivElement>(null);
+  React.useEffect(() => {
+    const containers = [chart3mPriceContainerRef.current, chart3mVolumeContainerRef.current].filter(Boolean) as HTMLDivElement[];
+    containers.forEach((el) => el.addEventListener('wheel', handle3mWheelZoom, { passive: false }));
+    return () => {
+      containers.forEach((el) => el.removeEventListener('wheel', handle3mWheelZoom));
+    };
+    // activeTab이 'daily'->'3m'으로 바뀌는 순간에야 두 컨테이너 ref가 처음 DOM에 붙으므로(그 전엔 이
+    // JSX 자체가 렌더링 안 됨) activeTab도 의존성에 넣어야 탭을 눌러 3분봉으로 들어온 뒤에 리스너가
+    // 실제로 등록된다 - 안 넣으면 최초 마운트 시점(ref가 아직 null)에만 실행되고 다신 재실행 안 됐다.
+  }, [candles3m.length, candle3mZoomRange, activeTab]);
+
   // 1. R1 저항 → 지지 전환 판정 (당일 장중 고가/종가가 R1 이상으로 돌파한 이력이 있는지)
   const isR1Flipped = React.useMemo(() => {
     const r1 = levels3m?.pivot?.r1;
@@ -739,12 +819,14 @@ function findActiveSwingLow(candles: any[]): SwingLowPoint | null {
   }, [candles3m]);
 
   const intraday3mPriceAxis = React.useMemo(() => {
-    if (!candles3m || candles3m.length === 0) {
+    // 🎯 [기능 추가 - 확대/축소] 캔들 고가/저가 스캔은 "지금 보이는 구간"만 봐서 Y축이 줌 상태에 맞게
+    // 다시 맞춰지게 한다(HTS처럼) - r1/r2/스윙로우 기준선은 하루 전체 기준으로 그대로 유지(아래 그대로).
+    if (!visibleCandles3m || visibleCandles3m.length === 0) {
       return { minPrice: 0, maxPrice: 100, priceDomain: ['auto', 'auto'] as any, priceTicks: undefined };
     }
     let candleMin = Infinity;
     let candleMax = -Infinity;
-    candles3m.forEach((c: any) => {
+    visibleCandles3m.forEach((c: any) => {
       const o = c.openPrice || c.closePrice;
       const h = c.highPrice || Math.max(o, c.closePrice);
       const l = c.lowPrice || Math.min(o, c.closePrice);
@@ -810,7 +892,7 @@ function findActiveSwingLow(candles: any[]): SwingLowPoint | null {
       priceTicks: ticks.length >= 2 ? ticks : undefined,
       showR2,
     };
-  }, [candles3m, levels3m]);
+  }, [visibleCandles3m, levels3m, activeSwingLow]);
 
   // 3분봉 매물대(가격대별 누적 거래량) - 일간 차트와 동일한 방식(대표가에 해당 봉 실거래량 배정)을
   // 3분봉 단위로 그대로 적용한다 (가짜 데이터 없이 실 3분봉 OHLCV만 사용).
@@ -1751,12 +1833,32 @@ function findActiveSwingLow(candles: any[]): SwingLowPoint | null {
                       {intraday3mQuery.data.statusNotice}
                     </span>
                   )}
+                  {/* 🎯 [기능 추가 - 사용자 요청: "hts나 mts처럼 확대, 축소 못하나"] 휠로 확대/축소, 드래그로
+                      이동, 더블클릭으로 초기화 - 줌 중일 때만 안내와 초기화 버튼을 보여준다. */}
+                  {candle3mZoomRange && (
+                    <button
+                      type="button"
+                      onClick={() => setCandle3mZoomRange(null)}
+                      className="text-[10px] font-normal px-2 py-0.5 rounded-md bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20 cursor-pointer hover:bg-amber-500/20"
+                      title="더블클릭해도 초기화됩니다"
+                    >
+                      확대 중 · 전체보기
+                    </button>
+                  )}
                 </div>
-                <span className="text-[10px] text-slate-400 font-mono">단위: 원</span>
+                <span className="text-[10px] text-slate-400 font-mono">단위: 원 · 휠로 확대/축소, 드래그로 이동</span>
               </div>
               <div
-                className="w-full h-[220px] min-h-[220px] shrink-0 relative"
+                ref={chart3mPriceContainerRef}
+                className={`w-full h-[220px] min-h-[220px] shrink-0 relative ${isDragging3mChart ? 'cursor-grabbing' : 'cursor-grab'}`}
+                onMouseDown={handle3mDragStart}
+                onDoubleClick={() => setCandle3mZoomRange(null)}
                 onMouseMove={(e) => {
+                  if (chart3mDragRef.current) {
+                    handle3mDragMove(e);
+                    setHover3mPriceInfo(null);
+                    return;
+                  }
                   const { minPrice: iMin, maxPrice: iMax } = intraday3mPriceAxis;
                   if (iMin <= 0 || iMax <= iMin) return;
                   const rect = e.currentTarget.getBoundingClientRect();
@@ -1774,7 +1876,8 @@ function findActiveSwingLow(candles: any[]): SwingLowPoint | null {
                     setHover3mPriceInfo(null);
                   }
                 }}
-                onMouseLeave={() => setHover3mPriceInfo(null)}
+                onMouseUp={handle3mDragEnd}
+                onMouseLeave={() => { setHover3mPriceInfo(null); handle3mDragEnd(); }}
               >
                 {intraday3mQuery.isLoading ? (
                   <div className="w-full h-full flex items-center justify-center text-xs text-slate-400">
@@ -1783,7 +1886,7 @@ function findActiveSwingLow(candles: any[]): SwingLowPoint | null {
                   </div>
                 ) : (
                   <ResponsiveContainer width="100%" height={220}>
-                    <ComposedChart data={candles3m} margin={{ top: 10, right: 75, left: -10, bottom: 0 }}>
+                    <ComposedChart data={visibleCandles3m} margin={{ top: 10, right: 75, left: -10, bottom: 0 }}>
                       <CartesianGrid strokeDasharray="3 3" stroke={gridColor} opacity={0.7} />
                       <XAxis dataKey="time" height={24} stroke={axisColor} tick={{ fontSize: 9 }} interval="preserveStartEnd" />
                       <YAxis stroke={axisColor} tickFormatter={formatYPrice} tick={{ fontSize: 10 }} width={72} domain={intraday3mPriceAxis.priceDomain} allowDataOverflow={true} />
@@ -2005,9 +2108,20 @@ function findActiveSwingLow(candles: any[]): SwingLowPoint | null {
                   <span className="text-[9px] text-slate-400 font-mono">단위: 주</span>
                 </div>
               </div>
-              <div className="w-full h-[90px] min-h-[90px] shrink-0 relative">
+              <div
+                ref={chart3mVolumeContainerRef}
+                className={`w-full h-[90px] min-h-[90px] shrink-0 relative ${isDragging3mChart ? 'cursor-grabbing' : 'cursor-grab'}`}
+                onMouseDown={handle3mDragStart}
+                onMouseMove={handle3mDragMove}
+                onMouseUp={handle3mDragEnd}
+                onMouseLeave={handle3mDragEnd}
+                onDoubleClick={() => setCandle3mZoomRange(null)}
+              >
                 <ResponsiveContainer width="100%" height={90}>
-                  <ComposedChart data={candles3m} margin={{ top: 5, right: 75, left: -10, bottom: 0 }}>
+                  {/* 🎯 [기능 추가 - 확대/축소] 위 가격 차트와 "1:1 수직 정렬"이 목적이라(원래 주석), 줌 상태도
+                      그대로 따라가야 어긋나지 않는다 - candles3m(전체)가 아니라 visibleCandles3m을 쓴다.
+                      휠/드래그 핸들러도 위 가격 차트와 동일하게 달아서 어느 쪽에서 조작해도 같이 움직인다. */}
+                  <ComposedChart data={visibleCandles3m} margin={{ top: 5, right: 75, left: -10, bottom: 0 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke={gridColor} opacity={0.7} />
                     <XAxis dataKey="time" stroke={axisColor} tick={{ fontSize: 9 }} interval="preserveStartEnd" />
                     <YAxis stroke={axisColor} tickFormatter={(v) => (v >= 10000 ? `${Math.round(v / 10000)}만` : v.toLocaleString())} tick={{ fontSize: 9 }} width={72} domain={[0, 'auto']} />

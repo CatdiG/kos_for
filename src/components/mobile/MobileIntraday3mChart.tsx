@@ -142,6 +142,54 @@ export default function MobileIntraday3mChart({ symbol }: MobileIntraday3mChartP
   const [tapPos, setTapPos] = useState<{ x: number; y: number } | null>(null);
   const containerRef = React.useRef<HTMLDivElement>(null);
 
+  // 🎯 [기능 추가 - 사용자 요청: "hts나 mts처럼 확대, 축소 못하나 보기가 너무 불편해"] 캔들 1개당 폭을
+  // 고정 상수(MIN_CANDLE_PX)가 아니라 두 손가락 핀치로 조절 가능한 state로 바꾼다 - 가로 스크롤(팬)은
+  // 이미 있었으니(위 주석 29~36번 줄) 확대/축소만 추가하면 된다. 스크롤 자체는 브라우저 네이티브
+  // overflow-x-auto가 처리하므로 새로 만들 필요 없다.
+  const [candlePxWidth, setCandlePxWidth] = useState(MIN_CANDLE_PX);
+  const pinchRef = React.useRef<{ startDist: number; startWidth: number } | null>(null);
+  const pinchScrollRatioRef = React.useRef(0); // 핀치 시작 시점의 스크롤 비율(0~1) - 확대해도 보던 지점이 그대로 화면 중앙 근처에 남게
+
+  const getTouchDist = (touches: ArrayLike<{ clientX: number; clientY: number }>): number => {
+    const [a, b] = [touches[0], touches[1]];
+    return Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+  };
+
+  const handlePinchStart = (e: React.TouchEvent<HTMLDivElement>) => {
+    if (e.touches.length !== 2) return;
+    pinchRef.current = { startDist: getTouchDist(e.touches), startWidth: candlePxWidth };
+    if (scrollRef.current) {
+      const el = scrollRef.current;
+      const maxScroll = el.scrollWidth - el.clientWidth;
+      pinchScrollRatioRef.current = maxScroll > 0 ? el.scrollLeft / maxScroll : 0;
+    }
+  };
+  // 🚨 [버그 수정 - 실측: 콘솔에 "Unable to preventDefault inside passive event listener invocation"
+  // 반복 발생] React 17+는 onTouchMove도 onWheel과 동일하게 passive 리스너라 합성 이벤트 안의
+  // e.preventDefault()가 무시된다(핀치 중 배경 페이지/브라우저 자체 확대가 같이 동작하는 부작용도 못
+  // 막았다) - 아래 useEffect에서 { passive: false } 네이티브 리스너로 직접 붙여야 실제로 먹는다.
+  const handlePinchMove = (e: TouchEvent) => {
+    if (!pinchRef.current || e.touches.length !== 2) return;
+    e.preventDefault(); // 핀치 중엔 브라우저 자체 페이지 확대(pinch-to-zoom) 대신 차트 줌만 동작하게
+    const { startDist, startWidth } = pinchRef.current;
+    if (startDist <= 0) return;
+    const scale = getTouchDist(e.touches) / startDist;
+    const newWidth = Math.max(3, Math.min(28, startWidth * scale));
+    setCandlePxWidth(newWidth);
+  };
+  const handlePinchEnd = () => {
+    pinchRef.current = null;
+  };
+
+  // touchmove만 { passive: false } 네이티브 리스너로 직접 붙인다(위 주석 참고) - touchstart/touchend는
+  // preventDefault가 필요 없어 아래 JSX에 그대로 React onTouchStart/onTouchEnd로 남겨둔다.
+  React.useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    el.addEventListener('touchmove', handlePinchMove, { passive: false });
+    return () => el.removeEventListener('touchmove', handlePinchMove);
+  }, [candlePxWidth]);
+
   React.useEffect(() => {
     const handleOutsideTap = (e: MouseEvent) => {
       if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
@@ -241,8 +289,18 @@ export default function MobileIntraday3mChart({ symbol }: MobileIntraday3mChartP
   const formatYPrice = (v: number) => v.toLocaleString(undefined, { maximumFractionDigits: 0 });
   const formatYVol = (v: number) => (v >= 100000000 ? `${Math.round(v / 100000000)}억` : v >= 10000 ? `${Math.round(v / 10000)}만` : v.toLocaleString());
 
-  // 캔들 1개당 최소폭(MIN_CANDLE_PX)을 보장하는 전체 차트 폭 - 375px 화면보다 넓어지면 가로 스크롤됨.
-  const chartWidth = Math.max(candles.length * MIN_CANDLE_PX, 320);
+  // 캔들 1개당 폭(candlePxWidth, 핀치로 조절됨)을 보장하는 전체 차트 폭 - 375px 화면보다 넓어지면 가로 스크롤됨.
+  const chartWidth = Math.max(candles.length * candlePxWidth, 320);
+
+  // 🎯 [기능 추가 - 확대/축소] 핀치로 candlePxWidth가 바뀌면 chartWidth(스크롤 영역 전체 폭)도 즉시
+  // 바뀌는데, 그대로 두면 스크롤 위치가 왼쪽으로 확 튄다 - 핀치 시작 시점에 기억해둔 스크롤 비율을
+  // 새 전체 폭에 다시 적용해서 보고 있던 지점이 화면에서 크게 벗어나지 않게 한다.
+  React.useLayoutEffect(() => {
+    if (!pinchRef.current || !scrollRef.current) return;
+    const el = scrollRef.current;
+    const maxScroll = el.scrollWidth - el.clientWidth;
+    el.scrollLeft = maxScroll * pinchScrollRatioRef.current;
+  }, [candlePxWidth]);
 
   // 🚨 [사용자 피드백 반영] 라벨 세로 충돌을 "안 겹치는 것만 텍스트로 보여주는" 방식으로 1차 수정했었는데,
   // 사용자가 아예 "그래프 오른쪽 글씨 다 없애고 밑에 범례로 확실하게 보여달라"고 재요청했다 - 화면 폭이
@@ -417,7 +475,13 @@ export default function MobileIntraday3mChart({ symbol }: MobileIntraday3mChartP
           </div>
         ))}
       </div>
-      <div ref={scrollRef} className="overflow-x-auto flex-1 min-w-0">
+      <div
+        ref={scrollRef}
+        className="overflow-x-auto flex-1 min-w-0"
+        onTouchStart={handlePinchStart}
+        onTouchEnd={handlePinchEnd}
+        onTouchCancel={handlePinchEnd}
+      >
       <div style={{ width: chartWidth }}>
       <div className="relative">
       <ResponsiveContainer width="100%" height={PRICE_CHART_HEIGHT}>

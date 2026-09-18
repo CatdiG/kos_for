@@ -193,6 +193,48 @@ function getKstDateStr() {
   return `${kst.getUTCFullYear()}${String(kst.getUTCMonth() + 1).padStart(2, '0')}${String(kst.getUTCDate()).padStart(2, '0')}`;
 }
 
+// 🚨 [버그 수정 - 사용자 지적: "성호전자는 3분봉 안움직이는데?"] candleState가 순수 인메모리라, 이
+// 프로세스가 재시작되면(오늘처럼 배포 재기동, 혹은 서버 재부팅) 그날 이미 쌓인 봉을 전부 잊어버리고
+// 처음부터 다시 쌓기 시작했다 - 그런데 upsertCandlesToSupabase가 "새로 쌓은 것만"을 그 날짜 행에
+// 통째로 덮어써서, 재시작 이후에도 계속 체결이 들어온 종목(예: SK하이닉스)은 09:00~재시작 전 구간의
+// 정규장 캔들이 통째로 사라졌다(실측: 재시작 후 57개만 남고 09:00~14:39 구간 소실). 재시작 직후
+// Supabase에 이미 저장된 오늘자 캔들을 먼저 읽어와 candleState를 복원한 뒤 틱 처리를 시작하면, 새
+// 틱은 기존 봉 위에 "이어 쌓이기"만 하고 과거 봉은 그대로 보존된다.
+async function hydrateCandleStateFromSupabase(symbols) {
+  if (!symbols || symbols.length === 0) return;
+  const todayStr = getKstDateStr();
+  try {
+    const symbolFilter = symbols.map((s) => `"${s}"`).join(',');
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/intraday_3m_candles?date=eq.${todayStr}&symbol=in.(${symbolFilter})&select=symbol,candles`, {
+      headers: { apikey: SUPABASE_SERVICE_ROLE_KEY, authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}` },
+    });
+    if (!res.ok) {
+      log('[캔들 복원 실패] HTTP', res.status);
+      return;
+    }
+    const rows = await res.json();
+    let restoredSymbols = 0;
+    let restoredBuckets = 0;
+    for (const row of rows) {
+      if (!Array.isArray(row.candles) || row.candles.length === 0) continue;
+      const bucketMap = new Map();
+      for (const c of row.candles) {
+        if (!c.time) continue;
+        bucketMap.set(c.time, c);
+      }
+      if (bucketMap.size === 0) continue;
+      candleState.set(row.symbol, bucketMap);
+      restoredSymbols++;
+      restoredBuckets += bucketMap.size;
+    }
+    if (restoredSymbols > 0) {
+      log(`[캔들 복원 완료] ${restoredSymbols}종목, 총 ${restoredBuckets}개 봉 - 재시작으로 오늘자 캔들이 끊기지 않도록 이어받음`);
+    }
+  } catch (e) {
+    log('[캔들 복원 예외]', e.message);
+  }
+}
+
 function bucketKeyOf(hhmmss) {
   const h = hhmmss.slice(0, 2);
   const m = parseInt(hhmmss.slice(2, 4), 10);
@@ -332,6 +374,7 @@ async function connect() {
     return;
   }
   log(`[초기화] 감시 종목 ${initialSymbols.length}개:`, initialSymbols.join(', '));
+  await hydrateCandleStateFromSupabase(initialSymbols);
 
   const ws = new WebSocket('ws://ops.koreainvestment.com:21000');
   liveWs = ws;
@@ -381,6 +424,7 @@ setInterval(async () => {
   const toAdd = desired.filter((s) => !subscribedSymbols.has(s));
   const toRemove = [...subscribedSymbols].filter((s) => !desiredSet.has(s));
 
+  if (toAdd.length > 0) await hydrateCandleStateFromSupabase(toAdd); // 새로 추가된 종목도 오늘자 기존 캔들이 있으면 이어받기
   for (const symbol of toAdd) {
     sendSubscribe(liveWs, symbol, '1');
     subscribedSymbols.add(symbol);
