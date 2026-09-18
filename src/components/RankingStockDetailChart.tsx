@@ -18,7 +18,7 @@ import { InvestorTrendResponse, TrendPeriod } from '@/lib/types';
 import { findSplitSafeStartIndex, roundToKrxTick, computeRecentVolumeRatio, getStockName } from '@/lib/mockData';
 import { Calendar, Activity, RefreshCw, AlertCircle, X, Radio } from 'lucide-react';
 import { useTheme } from '@/providers/ThemeProvider';
-import { PRICE_CHART_CONFIG, CandlestickBar, CustomCandleTooltip, CustomSupplyTooltip, CustomDailyVolumeTooltip, getTrendBadgeInfo } from '@/components/chart/CandlestickPrimitives';
+import { PRICE_CHART_CONFIG, CandlestickBar, CustomCandleTooltip, CustomSupplyTooltip, CustomDailyVolumeTooltip, CustomIntraday3mVolumeTooltip, getTrendBadgeInfo } from '@/components/chart/CandlestickPrimitives';
 
 interface RankingStockDetailChartProps {
   symbol: string;
@@ -161,6 +161,24 @@ export default function RankingStockDetailChart({
   const chart3mDragRef = React.useRef<{ startX: number; startRange: { start: number; end: number } } | null>(null);
   const [isDragging3mChart, setIsDragging3mChart] = useState(false);
   const MIN_VISIBLE_3M_CANDLES = 15;
+  // 🎯 [기능 추가 - 사용자 요청: "오른쪽으로 드래그하면 확대, 왼쪽으로 드래그하면 축소"] 박스로 영역을
+  // 찝어서 확대하는 방식 대신, 드래그 방향(누적 이동 거리)에 비례해 실시간으로 확대/축소되는 방식으로
+  // 바꿨다 - 오른쪽으로 끌수록 좁아지고(확대), 왼쪽으로 끌수록 넓어진다(축소). 휠 줌과 동일하게 "현재
+  // 보이는 구간의 중심"을 고정한 채 창 크기만 늘였다 줄였다 한다.
+  const chart3mZoomDragRef = React.useRef<{ startX: number; startRange: { start: number; end: number }; rect: DOMRect; lastClientX?: number; pending?: { start: number; end: number } } | null>(null);
+  // 🎯 [기능 추가 - 사용자 요청: "봉이 너무 많으니까 렉걸려서 내가 원하는 곳을 정확히 못찝어"] 예전엔
+  // 드래그하는 동안 매 마우스 이동마다 candle3mZoomRange를 바로 갱신해서, 봉이 700개+일 때 매 프레임
+  // 무거운 차트 전체(캔들+MA+VWAP)가 다시 그려져 렉이 걸렸다. 이제 드래그 도중에는 가벼운 오버레이
+  // (좌우 마스크 + 범위 텍스트)만 갱신하고, 실제 무거운 재렌더(setCandle3mZoomRange)는 마우스를 뗄 때
+  // 딱 한 번만 커밋한다.
+  const [zoomDragPreview, setZoomDragPreview] = useState<{ highlightLeftPx: number; highlightWidthPx: number; label: string } | null>(null);
+  // 🎯 [기능 추가 - 사용자 요청: "전날의 봉들만 보이게 확대해줘. 그리고 추가되면 추가된 만큼 보이게"]
+  // 기본 화면(전날+오늘)에 있을 때는 오늘 새 3분봉이 쌓일 때마다 보이는 구간의 끝(end)이 자동으로 따라
+  // 늘어나야 한다 - 사용자가 직접 휠/드래그로 확대·축소·이동하면(=default3mZoomRange와 달라지면) 그
+  // 순간부터는 사용자가 고른 구간을 그대로 존중하고 더 이상 자동으로 안 늘어난다.
+  const [default3mZoomRange, setDefault3mZoomRange] = useState<{ start: number; end: number } | null>(null);
+  const default3mZoomAppliedRef = React.useRef(false);
+  const [is3mZoomAnchoredToLatest, setIs3mZoomAnchoredToLatest] = useState(true);
 
   // Symbol Match Guard: Only use propData if it matches currently selected safeSymbol
   const isPropDataMatching = Boolean(propData && propData.stockInfo?.symbol === safeSymbol);
@@ -320,6 +338,12 @@ export default function RankingStockDetailChart({
       const trendBadgeObj = getTrendBadgeInfo(closePrice, ma5, ma20, ma60, volumeRatio);
       const trendStatus = trendBadgeObj.badge;
 
+      // 🎯 [기능 추가 - 사용자 요청: "일봉에 거래대금 차트도 추가하자"] KIS 일봉 응답엔 거래대금 필드가
+      // 따로 없어서, 이 파일 다른 곳(historyService.ts 등)에서 이미 쓰는 것과 동일한 근사식
+      // (종가 × 거래량)을 그대로 재사용한다(수칙 1-6, 새 공식 아님). 억원 단위로 미리 나눠둬서
+      // Y축 포맷터가 매번 나눗셈할 필요 없게 한다.
+      const tradingValueEok = Number(((closePrice * (item.volume || 0)) / 100000000).toFixed(1));
+
       return {
         ...item,
         stck_bsop_date: dateLabel,
@@ -335,6 +359,7 @@ export default function RankingStockDetailChart({
         ma60,
         ma120,
         volMa20,
+        tradingValueEok,
         recentLow,
         trendStatus,
         programNetBuyAmt: progAmt,
@@ -709,9 +734,52 @@ function findActiveSwingLow(candles: any[]): SwingLowPoint | null {
   return activeSwingLows[activeSwingLows.length - 1];
 }
 
+// 🎯 [기능 추가 - 사용자 요청: "3분봉 눌렀을때 봉이 너무 많이 보이면 다 뭉게지니까 전날의 봉들만 보이게
+// 확대해줘"] 5거래일치(최대 780개)를 전부 기본으로 보여주면 한 화면에 다 뭉개져서 아무것도 안 보인다.
+// candles3m은 날짜 오름차순이라, 배열 끝에서부터 "오늘" 구간과 그 바로 앞 "전날" 구간의 개수만 세면
+// 두 날짜(전날+오늘)만큼만 기본으로 잘라 보여줄 수 있다 - 전체 5일치는 그대로 유지하고(휠/드래그로
+// 축소하면 언제든 다시 볼 수 있음), 처음 열었을 때 보여주는 "기본 화면"만 좁힌다.
+function computeDefault3mZoomRange(candles: any[]): { start: number; end: number } | null {
+  if (!candles || candles.length === 0) return null;
+  const lastDate = candles[candles.length - 1]?.date;
+  let todayCount = 0;
+  for (let i = candles.length - 1; i >= 0 && candles[i].date === lastDate; i--) todayCount++;
+  const prevIdx = candles.length - 1 - todayCount;
+  const prevDate = prevIdx >= 0 ? candles[prevIdx]?.date : undefined;
+  let prevDayCount = 0;
+  if (prevDate) {
+    for (let i = prevIdx; i >= 0 && candles[i].date === prevDate; i--) prevDayCount++;
+  }
+  const windowSize = todayCount + prevDayCount;
+  if (windowSize <= 0 || windowSize >= candles.length) return null; // 이미 이틀치 이하면 자를 필요 없음
+  return { start: candles.length - windowSize, end: candles.length };
+}
+
   // 3-Minute Candlestick + Pivot R1 Target Tight Domain Computation (하단: 최저가 - 2틱, 상단: R1 + 2틱)
   const candles3m = intraday3mQuery.data?.candles || [];
   const levels3m = intraday3mQuery.data?.levels;
+
+  // 처음 데이터가 들어왔을 때 딱 한 번만 "전날+오늘" 기본 확대 범위를 적용한다 - 이후 사용자가 직접
+  // 조작하면 이 effect는 다시 실행돼도 already-applied 가드 때문에 아무 것도 안 건드린다.
+  React.useEffect(() => {
+    if (default3mZoomAppliedRef.current) return;
+    if (!candles3m || candles3m.length === 0) return;
+    const def = computeDefault3mZoomRange(candles3m);
+    default3mZoomAppliedRef.current = true;
+    setDefault3mZoomRange(def);
+    if (def) setCandle3mZoomRange(def);
+  }, [candles3m]);
+
+  // 기본 화면(전날+오늘)을 그대로 보고 있는 동안(is3mZoomAnchoredToLatest)에는, 오늘 새 3분봉이
+  // 쌓여서 candles3m.length가 늘어날 때마다 보이는 구간의 끝을 그만큼 같이 늘려서 "추가된 만큼 보이게"
+  // 한다 - 시작점(전날 시작 지점)은 그대로 두고 끝만 최신 길이로 따라간다.
+  React.useEffect(() => {
+    if (!is3mZoomAnchoredToLatest) return;
+    setCandle3mZoomRange((prev) => {
+      if (!prev || prev.end === candles3m.length) return prev;
+      return { start: prev.start, end: candles3m.length };
+    });
+  }, [candles3m.length, is3mZoomAnchoredToLatest]);
 
   // 🎯 [기능 추가 - 확대/축소] 줌 범위가 있으면 그 구간만 잘라서 차트/Y축에 넘긴다 - isR1Flipped·
   // activeSwingLow·latestVwapValues는 "오늘 하루 전체 사실"이라 줌과 무관하게 candles3m(전체)를 계속 쓴다.
@@ -721,6 +789,13 @@ function findActiveSwingLow(candles: any[]): SwingLowPoint | null {
     const end = Math.max(start + 1, Math.min(candle3mZoomRange.end, candles3m.length));
     return candles3m.slice(start, end);
   }, [candles3m, candle3mZoomRange]);
+
+  // 🎯 [기능 추가 - 사용자 요청: "3분봉도 거래대금 차트 추가"] 3분봉 원본엔 거래대금 필드가 없어서
+  // 일봉과 동일한 근사식(종가 × 그 봉의 거래량, 수칙 1-6)으로 봉 하나하나에 값을 붙인다 - 3분이라는
+  // 짧은 구간 안에서는 가격이 거의 안 바뀌므로 일봉 때보다 오차가 더 작다.
+  const visibleCandles3mWithAmount = React.useMemo(() => {
+    return visibleCandles3m.map((c: any) => ({ ...c, tradingValueEok: Number(((c.closePrice * (c.volume || 0)) / 100000000).toFixed(2)) }));
+  }, [visibleCandles3m]);
 
   // 🚨 [버그 수정 - 실측: 콘솔에 "Unable to preventDefault inside passive event listener invocation"
   // 반복 발생] React 17+는 onWheel을 passive 리스너로 등록해서 합성 이벤트 안에서 e.preventDefault()가
@@ -735,21 +810,94 @@ function findActiveSwingLow(candles: any[]): SwingLowPoint | null {
     const zoomFactor = e.deltaY < 0 ? 0.85 : 1 / 0.85; // 휠 위 = 확대(창 축소), 휠 아래 = 축소(창 확대)
     let newSize = Math.round(windowSize * zoomFactor);
     newSize = Math.max(MIN_VISIBLE_3M_CANDLES, Math.min(candles3m.length, newSize));
-    const center = current.start + windowSize / 2;
-    let newStart = Math.round(center - newSize / 2);
+    // 🚨 [버그 수정 - 사용자 지적: "엉뚱한곳이 확대되잖아"] 예전엔 항상 "현재 보이는 구간의 정중앙"을
+    // 고정한 채 확대해서, 마우스 커서가 어디 있든 무시하고 늘 화면 한가운데만 확대됐다 - 커서가 가리키는
+    // 지점(candle3mPriceContainerRef 기준 픽셀 위치)을 그대로 고정한 채 그 지점 기준으로 확대/축소한다.
+    const rect = (e.currentTarget as HTMLDivElement).getBoundingClientRect();
+    const plotWidth = Math.max(1, rect.width - 90);
+    const cursorRatio = Math.max(0, Math.min(1, (e.clientX - rect.left) / plotWidth));
+    let newStart = Math.round(current.start + cursorRatio * (windowSize - newSize));
     let newEnd = newStart + newSize;
     if (newStart < 0) { newStart = 0; newEnd = newSize; }
     if (newEnd > candles3m.length) { newEnd = candles3m.length; newStart = newEnd - newSize; }
+    setIs3mZoomAnchoredToLatest(false); // 수동 조작 시작 - 기본 화면 자동 확장 중단(더블클릭으로 복귀)
     if (newSize >= candles3m.length) { setCandle3mZoomRange(null); return; }
     setCandle3mZoomRange({ start: newStart, end: newEnd });
   };
 
   const handle3mDragStart = (e: React.MouseEvent<HTMLDivElement>) => {
     if (candles3m.length <= MIN_VISIBLE_3M_CANDLES) return;
-    chart3mDragRef.current = { startX: e.clientX, startRange: candle3mZoomRange || { start: 0, end: candles3m.length } };
-    setIsDragging3mChart(true);
+    const startRange = candle3mZoomRange || { start: 0, end: candles3m.length };
+    // Shift+드래그 = 이동(팬), 일반 드래그 = 방향 기반 확대/축소(아래 handle3mDragMove)
+    if (e.shiftKey) {
+      chart3mDragRef.current = { startX: e.clientX, startRange };
+      setIsDragging3mChart(true);
+      return;
+    }
+    e.preventDefault();
+    // 🚨 [버그 수정 - 사용자 지적: "내가 클릭한곳에서 오른쪽까지 보이게 하라고, 원하는 구간을 찝어서
+    // 확대한다고 맨처음에 그거 됐었잖아"] 방향+거리 기반으로 양옆이 같이 줄어드는 방식은 원하는 게
+    // 아니었다 - 클릭을 시작한 지점을 왼쪽(또는 오른쪽) 경계로 고정하고, 마우스를 뗀 지점까지의 구간을
+    // 그대로 확대하는 순수 "찝어서 확대(박스 선택)" 방식으로 되돌린다. rect는 드래그 시작 시점에 한 번만
+    // 재서 고정해둔다(드래그 도중 마우스가 컨테이너 경계를 넘나들어도 좌표 기준이 흔들리지 않게).
+    const rect = e.currentTarget.getBoundingClientRect();
+    chart3mZoomDragRef.current = { startX: e.clientX, startRange, rect };
   };
   const handle3mDragMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (chart3mZoomDragRef.current) {
+      const { startX, startRange, rect } = chart3mZoomDragRef.current;
+      const windowSize = startRange.end - startRange.start;
+      const plotWidth = Math.max(1, rect.width - 90);
+      const startRel = startX - rect.left;
+      const currentRel = e.clientX - rect.left;
+      const deltaX = e.clientX - startX;
+      let newStart: number;
+      let newEnd: number;
+      if (deltaX >= 0) {
+        // 🚨 [버그 수정 - 사용자 지적: "클릭한곳에서 오른쪽까지 보이게, 찝어서 확대한다고 그거 됐었잖아"]
+        // 오른쪽 드래그 = 클릭 시작점을 왼쪽 경계로 고정하고, 마우스를 뗀 지점까지 그대로 확대(박스 선택).
+        newStart = Math.round(startRange.start + (startRel / plotWidth) * windowSize);
+        newEnd = Math.round(startRange.start + (currentRel / plotWidth) * windowSize);
+        if (newEnd - newStart < MIN_VISIBLE_3M_CANDLES) newEnd = newStart + MIN_VISIBLE_3M_CANDLES;
+      } else {
+        // 🚨 [버그 수정 - 사용자 지적: "왼쪽으로 드래그하면 축소되는건 또 안먹히잖아"] 박스 선택은 항상
+        // 현재 보이는 구간의 부분집합만 고를 수 있어 "축소(더 넓게 보기)"가 원천적으로 불가능하다 - 왼쪽
+        // 드래그일 때만 클릭 지점을 고정점으로 삼아 창을 넓히는 축소 모드로 분기한다(휠 축소와 동일한
+        // 감쇠 공식, 중심이 아니라 클릭 지점 기준).
+        const clickRatio = Math.max(0, Math.min(1, startRel / plotWidth));
+        // 🚨 [보정 - 사용자 지시: "170px 드래그에 200개 해봐"] 200개는 기본 화면(256개)보다 적은
+        // 숫자라 그대로 목표로 삼으면 "왼쪽=축소(더 넓게)" 방향이 반대로 뒤집힌다 - "170px 드래그하면
+        // 200개만큼 늘어나게"(256+200=456개)로 해석해서 역산했다. 목표 배율 456/256=1.78125를
+        // 0.99^(170*k)=1.78125로 풀면 k≈0.338.
+        const factor = Math.pow(0.99, deltaX * 0.338); // deltaX<0 → factor>1 → 창이 넓어짐
+        let newSize = Math.round(windowSize * factor);
+        newSize = Math.max(MIN_VISIBLE_3M_CANDLES, Math.min(candles3m.length, newSize));
+        newStart = Math.round(startRange.start + clickRatio * (windowSize - newSize));
+        newEnd = newStart + newSize;
+      }
+      if (newStart < 0) { newEnd -= newStart; newStart = 0; }
+      if (newEnd > candles3m.length) { newStart -= (newEnd - candles3m.length); newEnd = candles3m.length; }
+      newStart = Math.max(0, newStart);
+      newEnd = Math.min(candles3m.length, Math.max(newStart + MIN_VISIBLE_3M_CANDLES, newEnd));
+      // 🚨 [버그 수정 - 사용자 지적: "봉이 너무 많으니까 렉걸려서 내가 원하는 곳을 정확히 못찝어"] 여기서
+      // 매 마우스 이동마다 setCandle3mZoomRange를 바로 부르면 700개+ 봉을 매 프레임 다시 그려야 해서
+      // 렉이 걸렸다. 무거운 재렌더 없이 "이 구간이 선택될 것"이라는 정보만 가벼운 오버레이 state로
+      // 갱신하고, 실제 확대는 마우스를 뗄 때(handle3mDragEnd) 한 번만 커밋한다.
+      chart3mZoomDragRef.current.pending = { start: newStart, end: newEnd };
+      chart3mZoomDragRef.current.lastClientX = e.clientX;
+      // 🚨 [버그 수정 - 사용자 지적: "왼쪽 드래그는 왜 색이 전체로 생겨? 내가 클릭하고 드래그 하는
+      // 부분만 생기게해"] 왼쪽 드래그(축소)의 결과 범위는 지금 보이는 화면보다 훨씬 넓어서(전날 이전
+      // 날짜까지 포함), 그 결과를 지금 화면의 좌표계로 표시하려 하면 항상 화면 전체가 채워져 버렸다.
+      // 하이라이트는 "확대될 결과"가 아니라 "지금 손가락으로 쓸고 있는 구간"만 그대로 보여주면 된다 -
+      // 오른쪽 드래그(박스 선택)는 이게 결과와 정확히 같고, 왼쪽 드래그(축소)는 결과와 달라도 상관없이
+      // 그냥 클릭~현재 마우스 위치 사이만 칠한다.
+      const highlightLeftPx = Math.max(0, Math.min(plotWidth, Math.min(startRel, currentRel)));
+      const highlightRightPx = Math.max(0, Math.min(plotWidth, Math.max(startRel, currentRel)));
+      const fmtBoundary = (c: any) => (c ? `${c.formattedDate ? c.formattedDate + ' ' : ''}${c.time}` : '');
+      const label = `${fmtBoundary(candles3m[newStart])} ~ ${fmtBoundary(candles3m[Math.max(newStart, newEnd - 1)])} · ${newEnd - newStart}개 봉`;
+      setZoomDragPreview({ highlightLeftPx, highlightWidthPx: Math.max(0, highlightRightPx - highlightLeftPx), label });
+      return;
+    }
     if (!chart3mDragRef.current || candles3m.length === 0) return;
     const { startX, startRange } = chart3mDragRef.current;
     const rect = e.currentTarget.getBoundingClientRect();
@@ -760,11 +908,32 @@ function findActiveSwingLow(candles: any[]): SwingLowPoint | null {
     let newEnd = newStart + windowSize;
     if (newStart < 0) { newStart = 0; newEnd = windowSize; }
     if (newEnd > candles3m.length) { newEnd = candles3m.length; newStart = newEnd - windowSize; }
+    setIs3mZoomAnchoredToLatest(false); // 수동 이동 시작 - 기본 화면 자동 확장 중단
     setCandle3mZoomRange({ start: newStart, end: newEnd });
   };
   const handle3mDragEnd = () => {
+    if (chart3mZoomDragRef.current) {
+      const { startX, lastClientX, pending } = chart3mZoomDragRef.current;
+      chart3mZoomDragRef.current = null;
+      setZoomDragPreview(null);
+      // 클릭 수준의 미세한 움직임(5px 미만)은 확대로 취급하지 않는다 - 캔들 위에서 그냥 클릭했을 때마다
+      // 매번 15개짜리 확대로 튀는 걸 방지.
+      if (pending && lastClientX !== undefined && Math.abs(lastClientX - startX) >= 5) {
+        setIs3mZoomAnchoredToLatest(false); // 수동 확대/축소 완료 - 기본 화면 자동 확장 중단
+        if (pending.end - pending.start >= candles3m.length) {
+          setCandle3mZoomRange(null);
+        } else {
+          setCandle3mZoomRange(pending);
+        }
+      }
+    }
     chart3mDragRef.current = null;
     setIsDragging3mChart(false);
+  };
+  // 더블클릭 = "기본 화면(전날+오늘)"으로 복귀 + 오늘 새 봉이 쌓이면 다시 자동으로 따라 늘어나게 재개
+  const handle3mZoomDoubleClickReset = () => {
+    setCandle3mZoomRange(default3mZoomRange);
+    setIs3mZoomAnchoredToLatest(true);
   };
 
   // 🚨 [버그 수정 - 위 handle3mWheelZoom 주석 참고] onWheel React prop 대신 { passive: false } 네이티브
@@ -1765,11 +1934,15 @@ function findActiveSwingLow(candles: any[]): SwingLowPoint | null {
               </div>
             </div>
 
-            {/* Bottom Subplot Panel 3: Daily 거래량 바 차트 (신규 추가, Panel 2와 동일 syncId로 X축 동기화) */}
+            {/* Bottom Subplot Panel 3: Daily 거래량 바 차트 + 거래대금 보조축 라인 (신규 추가, Panel 2와
+                동일 syncId로 X축 동기화) - 🎯 [기능 추가 - 사용자 요청: "일봉에 거래대금 차트도 추가하자.
+                다른거 좀 줄여서 할 수 있겠어? 차트 너무 커지지 않게"] 별도 패널을 새로 만들면 차트가
+                커지니, 이미 있는 거래량 패널에 보조(오른쪽) Y축으로 거래대금 라인만 겹쳐 그린다 - 패널
+                높이 추가 없음. */}
             <div className="p-2 flex flex-col justify-between">
               <div className="flex items-center justify-between text-[11px] font-bold text-slate-700 dark:text-slate-300 pb-0.5">
-                <div className="flex items-center gap-2">
-                  <span>일별 거래량</span>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span>일별 거래량·거래대금</span>
                   <span className="flex items-center gap-1 text-[9px] font-semibold text-red-500">
                     <span className="w-2 h-2 rounded-xs bg-red-500 inline-block" />양봉
                   </span>
@@ -1781,8 +1954,12 @@ function findActiveSwingLow(candles: any[]): SwingLowPoint | null {
                     <svg width="12" height="6" className="inline-block shrink-0"><line x1="0" y1="3" x2="12" y2="3" stroke="#f59e0b" strokeWidth="1.5" strokeDasharray="3 2" /></svg>
                     20일 평균거래량
                   </span>
+                  <span className="flex items-center gap-1 text-[9px] font-semibold text-violet-500">
+                    <svg width="12" height="6" className="inline-block shrink-0"><line x1="0" y1="3" x2="12" y2="3" stroke="#8b5cf6" strokeWidth="1.5" /></svg>
+                    거래대금
+                  </span>
                 </div>
-                <span className="text-[9px] text-slate-400 font-mono">단위: 주</span>
+                <span className="text-[9px] text-slate-400 font-mono">좌: 주 · 우: 억원</span>
               </div>
               {/* "20일 평균"과는 별개로, "이번 무브에서 거래량이 평소 대비 처음 급증(돌파)한 날"과 오늘
                   거래량을 직접 비교한다 - 방향(양봉/음봉) 매칭은 쓰지 않는다(사용자 지시: "같은봉 찾지
@@ -1803,9 +1980,13 @@ function findActiveSwingLow(candles: any[]): SwingLowPoint | null {
                   <ComposedChart syncId="stock-detail-chart" data={displayTrend} margin={{ top: 5, right: 15, left: -10, bottom: 0 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke={gridColor} opacity={0.7} />
                     <XAxis dataKey="formattedDate" stroke={axisColor} tick={{ fontSize: 9 }} />
-                    <YAxis stroke={axisColor} tickFormatter={(v: number) => (v >= 100000000 ? `${Math.round(v / 100000000)}억` : v >= 10000 ? `${Math.round(v / 10000)}만` : v.toLocaleString())} tick={{ fontSize: 9 }} width={68} domain={[0, 'auto']} />
+                    <YAxis yAxisId="vol" stroke={axisColor} tickFormatter={(v: number) => (v >= 100000000 ? `${Math.round(v / 100000000)}억` : v >= 10000 ? `${Math.round(v / 10000)}만` : v.toLocaleString())} tick={{ fontSize: 9 }} width={68} domain={[0, 'auto']} />
+                    {/* 🎯 [기능 추가 - 사용자 요청: "일봉에 거래대금 차트도 추가"] 거래량(주)과 거래대금(원)은
+                        단위 스케일이 완전히 달라 같은 축을 쓰면 한쪽이 뭉개진다 - 보조(오른쪽) Y축을
+                        새로 둬서 패널은 그대로, 축만 하나 더 쓴다. */}
+                    <YAxis yAxisId="amt" orientation="right" stroke="#8b5cf6" tickFormatter={(v: number) => `${Math.round(v)}억`} tick={{ fontSize: 9 }} width={44} domain={[0, 'auto']} />
                     <Tooltip content={<CustomDailyVolumeTooltip />} cursor={{ fill: isDark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.04)' }} />
-                    <Bar dataKey="volume" name="거래량" radius={[2, 2, 0, 0]} isAnimationActive={false}>
+                    <Bar yAxisId="vol" dataKey="volume" name="거래량" radius={[2, 2, 0, 0]} isAnimationActive={false}>
                       {displayTrend.map((entry: any, idx: number) => (
                         <Cell
                           key={`daily-vol-cell-${idx}`}
@@ -1814,7 +1995,8 @@ function findActiveSwingLow(candles: any[]): SwingLowPoint | null {
                       ))}
                     </Bar>
                     {/* 20일 평균 거래량 기준선 - 막대가 이 선 위로 올라오면 "평소보다 거래가 실린 날" */}
-                    <Line type="monotone" dataKey="volMa20" name="20일 평균거래량" stroke="#f59e0b" strokeWidth={1.5} strokeDasharray="3 2" dot={false} isAnimationActive={false} />
+                    <Line yAxisId="vol" type="monotone" dataKey="volMa20" name="20일 평균거래량" stroke="#f59e0b" strokeWidth={1.5} strokeDasharray="3 2" dot={false} isAnimationActive={false} />
+                    <Line yAxisId="amt" type="monotone" dataKey="tradingValueEok" name="거래대금" stroke="#8b5cf6" strokeWidth={1.5} dot={false} isAnimationActive={false} />
                   </ComposedChart>
                 </ResponsiveContainer>
               </div>
@@ -1834,27 +2016,27 @@ function findActiveSwingLow(candles: any[]): SwingLowPoint | null {
                     </span>
                   )}
                   {/* 🎯 [기능 추가 - 사용자 요청: "hts나 mts처럼 확대, 축소 못하나"] 휠로 확대/축소, 드래그로
-                      이동, 더블클릭으로 초기화 - 줌 중일 때만 안내와 초기화 버튼을 보여준다. */}
-                  {candle3mZoomRange && (
+                      이동, 더블클릭으로 초기화 - 기본 화면(전날+오늘)과 다를 때만 안내와 초기화 버튼을
+                      보여준다(처음 열자마자 자동 적용되는 기본 축소는 "사용자가 확대함"으로 안 친다). */}
+                  {(candle3mZoomRange?.start !== default3mZoomRange?.start || candle3mZoomRange?.end !== default3mZoomRange?.end) && (
                     <button
                       type="button"
-                      onClick={() => setCandle3mZoomRange(null)}
+                      onClick={handle3mZoomDoubleClickReset}
                       className="text-[10px] font-normal px-2 py-0.5 rounded-md bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20 cursor-pointer hover:bg-amber-500/20"
-                      title="더블클릭해도 초기화됩니다"
+                      title="더블클릭해도 기본 화면으로 돌아갑니다"
                     >
-                      확대 중 · 전체보기
+                      확대/이동 중 · 기본 화면
                     </button>
                   )}
                 </div>
-                <span className="text-[10px] text-slate-400 font-mono">단위: 원 · 휠로 확대/축소, 드래그로 이동</span>
               </div>
               <div
                 ref={chart3mPriceContainerRef}
-                className={`w-full h-[220px] min-h-[220px] shrink-0 relative ${isDragging3mChart ? 'cursor-grabbing' : 'cursor-grab'}`}
+                className={`w-full h-[220px] min-h-[220px] shrink-0 relative select-none ${isDragging3mChart ? 'cursor-grabbing' : 'cursor-crosshair'}`}
                 onMouseDown={handle3mDragStart}
-                onDoubleClick={() => setCandle3mZoomRange(null)}
+                onDoubleClick={handle3mZoomDoubleClickReset}
                 onMouseMove={(e) => {
-                  if (chart3mDragRef.current) {
+                  if (chart3mDragRef.current || chart3mZoomDragRef.current) {
                     handle3mDragMove(e);
                     setHover3mPriceInfo(null);
                     return;
@@ -1879,6 +2061,18 @@ function findActiveSwingLow(candles: any[]): SwingLowPoint | null {
                 onMouseUp={handle3mDragEnd}
                 onMouseLeave={() => { setHover3mPriceInfo(null); handle3mDragEnd(); }}
               >
+                {/* 🎯 [기능 추가 - 사용자 요청: "내가 어디범위까지 드래그 하는지 보이게 해줘", 이후
+                    "클릭하면 하얀색 나오는거 말고 클릭한 부분만 색이 생기게 해라"] 드래그 도중에는 무거운
+                    차트를 다시 그리지 않고, 실제로 선택될 구간만 파란색으로 하이라이트 + 정확한 시간
+                    범위 라벨을 보여준다 - 마우스를 떼면 실제로 반영된다. */}
+                {zoomDragPreview && (
+                  <>
+                    <div className="absolute top-2.5 bottom-0 bg-blue-400/25 border-x-2 border-blue-500 pointer-events-none z-20" style={{ left: zoomDragPreview.highlightLeftPx, width: zoomDragPreview.highlightWidthPx }} />
+                    <div className="absolute top-1 left-1/2 -translate-x-1/2 z-30 px-2 py-1 rounded-md bg-slate-900/90 text-white text-[10px] font-mono whitespace-nowrap pointer-events-none shadow-lg">
+                      {zoomDragPreview.label}
+                    </div>
+                  </>
+                )}
                 {intraday3mQuery.isLoading ? (
                   <div className="w-full h-full flex items-center justify-center text-xs text-slate-400">
                     <RefreshCw className="w-4 h-4 animate-spin mr-2" />
@@ -1886,7 +2080,7 @@ function findActiveSwingLow(candles: any[]): SwingLowPoint | null {
                   </div>
                 ) : (
                   <ResponsiveContainer width="100%" height={220}>
-                    <ComposedChart data={visibleCandles3m} margin={{ top: 10, right: 75, left: -10, bottom: 0 }}>
+                    <ComposedChart syncId="stock-3m-chart" data={visibleCandles3m} margin={{ top: 10, right: 75, left: -10, bottom: 0 }}>
                       <CartesianGrid strokeDasharray="3 3" stroke={gridColor} opacity={0.7} />
                       <XAxis dataKey="time" height={24} stroke={axisColor} tick={{ fontSize: 9 }} interval="preserveStartEnd" />
                       <YAxis stroke={axisColor} tickFormatter={formatYPrice} tick={{ fontSize: 10 }} width={72} domain={intraday3mPriceAxis.priceDomain} allowDataOverflow={true} />
@@ -2097,7 +2291,7 @@ function findActiveSwingLow(candles: any[]): SwingLowPoint | null {
             {/* Bottom Subplot: 3분봉 거래량 바 차트 (상단 차트와 1:1 수직 정렬 동기화) */}
             <div className="min-h-[130px] h-[130px] bg-slate-50/50 dark:bg-[#161a25]/60 rounded-xl p-2 border border-slate-200/60 dark:border-[#2a2e39] flex flex-col justify-between shrink-0">
               <div className="flex items-center justify-between text-[11px] font-bold text-slate-700 dark:text-slate-300 pb-0.5">
-                <span>3분봉 거래량</span>
+                <span>3분봉 거래량·거래대금</span>
                 <div className="flex items-center gap-2">
                   <span className="flex items-center gap-1 text-[9px] font-semibold text-red-500">
                     <span className="w-2 h-2 rounded-xs bg-red-500 inline-block" />매수(양봉)
@@ -2105,40 +2299,49 @@ function findActiveSwingLow(candles: any[]): SwingLowPoint | null {
                   <span className="flex items-center gap-1 text-[9px] font-semibold text-blue-500">
                     <span className="w-2 h-2 rounded-xs bg-blue-500 inline-block" />매도(음봉)
                   </span>
-                  <span className="text-[9px] text-slate-400 font-mono">단위: 주</span>
+                  {/* 🎯 [기능 추가 - 사용자 요청: "3분봉도 거래대금 차트 추가"] 일봉과 동일하게 별도
+                      패널 없이 이 패널에 보조축 라인만 겹친다(패널 높이 추가 없음). */}
+                  <span className="flex items-center gap-1 text-[9px] font-semibold text-violet-500">
+                    <svg width="12" height="6" className="inline-block shrink-0"><line x1="0" y1="3" x2="12" y2="3" stroke="#8b5cf6" strokeWidth="1.5" /></svg>
+                    거래대금
+                  </span>
+                  <span className="text-[9px] text-slate-400 font-mono">좌: 주 · 우: 억원</span>
                 </div>
               </div>
               <div
                 ref={chart3mVolumeContainerRef}
-                className={`w-full h-[90px] min-h-[90px] shrink-0 relative ${isDragging3mChart ? 'cursor-grabbing' : 'cursor-grab'}`}
+                className={`w-full h-[90px] min-h-[90px] shrink-0 relative select-none ${isDragging3mChart ? 'cursor-grabbing' : 'cursor-crosshair'}`}
                 onMouseDown={handle3mDragStart}
                 onMouseMove={handle3mDragMove}
                 onMouseUp={handle3mDragEnd}
                 onMouseLeave={handle3mDragEnd}
-                onDoubleClick={() => setCandle3mZoomRange(null)}
+                onDoubleClick={handle3mZoomDoubleClickReset}
               >
                 <ResponsiveContainer width="100%" height={90}>
                   {/* 🎯 [기능 추가 - 확대/축소] 위 가격 차트와 "1:1 수직 정렬"이 목적이라(원래 주석), 줌 상태도
                       그대로 따라가야 어긋나지 않는다 - candles3m(전체)가 아니라 visibleCandles3m을 쓴다.
                       휠/드래그 핸들러도 위 가격 차트와 동일하게 달아서 어느 쪽에서 조작해도 같이 움직인다. */}
-                  <ComposedChart data={visibleCandles3m} margin={{ top: 5, right: 75, left: -10, bottom: 0 }}>
+                  <ComposedChart syncId="stock-3m-chart" data={visibleCandles3mWithAmount} margin={{ top: 5, right: 75, left: -10, bottom: 0 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke={gridColor} opacity={0.7} />
                     <XAxis dataKey="time" stroke={axisColor} tick={{ fontSize: 9 }} interval="preserveStartEnd" />
-                    <YAxis stroke={axisColor} tickFormatter={(v) => (v >= 10000 ? `${Math.round(v / 10000)}만` : v.toLocaleString())} tick={{ fontSize: 9 }} width={72} domain={[0, 'auto']} />
-                    <Tooltip
-                      formatter={(value: any, _name: any, item: any) => {
-                        const isUp = item?.payload?.closePrice >= item?.payload?.openPrice;
-                        return [`${Number(value).toLocaleString()}주`, isUp ? '거래량 (매수 우위/양봉)' : '거래량 (매도 우위/음봉)'];
-                      }}
-                    />
-                    <Bar dataKey="volume" name="거래량" radius={[2, 2, 0, 0]} isAnimationActive={false}>
-                      {candles3m.map((entry: any, idx: number) => (
+                    <YAxis yAxisId="vol" stroke={axisColor} tickFormatter={(v) => (v >= 10000 ? `${Math.round(v / 10000)}만` : v.toLocaleString())} tick={{ fontSize: 9 }} width={72} domain={[0, 'auto']} />
+                    {/* 🎯 [기능 추가 - 사용자 요청: "3분봉도 거래대금 차트 추가"] 일봉 패널과 동일하게
+                        보조(오른쪽) Y축 하나만 추가 - 새 패널 없음. */}
+                    <YAxis yAxisId="amt" orientation="right" stroke="#8b5cf6" tickFormatter={(v) => `${Math.round(v)}억`} tick={{ fontSize: 9 }} width={40} domain={[0, 'auto']} />
+                    <Tooltip content={<CustomIntraday3mVolumeTooltip />} />
+                    <Bar yAxisId="vol" dataKey="volume" name="거래량" radius={[2, 2, 0, 0]} isAnimationActive={false}>
+                      {/* 🚨 [버그 수정 - 코드 리뷰 발견, 제 실수] 확대/축소 추가하면서 위 data는
+                          visibleCandles3m(줌 구간)으로 바꿨는데 이 Cell 색상 배열만 candles3m(전체)로
+                          남아있었다 - 줌 상태에서 막대 개수와 색상 배열 길이/순서가 어긋나 엉뚱한 봉에
+                          엉뚱한 색이 칠해지는 버그였다. */}
+                      {visibleCandles3mWithAmount.map((entry: any, idx: number) => (
                         <Cell
                           key={`vol-cell-${idx}`}
                           fill={entry.closePrice >= entry.openPrice ? '#ef4444' : '#3b82f6'}
                         />
                       ))}
                     </Bar>
+                    <Line yAxisId="amt" type="monotone" dataKey="tradingValueEok" name="거래대금" stroke="#8b5cf6" strokeWidth={1.5} dot={false} isAnimationActive={false} />
                   </ComposedChart>
                 </ResponsiveContainer>
               </div>

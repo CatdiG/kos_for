@@ -191,8 +191,10 @@ export default function MobileStockDetailChart({ trend, stockInfo, isLoading }: 
 
       const volumeRatio = idx > 0 && arr[idx - 1].volume > 0 ? d.volume / arr[idx - 1].volume : null;
       const { badge } = getTrendBadgeInfo(d.closePrice, ma5, idx >= 19 ? ma20 : null, idx >= 59 ? ma60 : null, volumeRatio);
+      // 🎯 [기능 추가 - 데스크톱과 동일(수칙 1-6), 사용자 요청: "일봉에 거래대금 차트도 추가"] 종가×거래량 근사.
+      const tradingValueEok = Number(((d.closePrice * (d.volume || 0)) / 100000000).toFixed(1));
 
-      return { ...d, ma5, ma20, ma60, ma120, volMa20, trendStatus: badge };
+      return { ...d, ma5, ma20, ma60, ma120, volMa20, tradingValueEok, trendStatus: badge };
     });
   }, [rawTrend]);
 
@@ -729,21 +731,25 @@ export default function MobileStockDetailChart({ trend, stockInfo, isLoading }: 
           </ResponsiveContainer>
         </div>
 
-        {/* 거래량 - 팝업 내용(양봉/음봉·20일 평균·평균 대비 %)은 위 캔들 차트의 통합 팝업이 대신 보여준다
-            (수칙 1-6, 아래 참고). 캔들과 같은 chartWidth 컨테이너 안에 있어야 가로 스크롤해도 x축이
-            어긋나지 않는다 - Y축(거래량 눈금)은 3분봉과 동일하게 스크롤 대상에 포함. */}
+        {/* 거래량·거래대금 - 팝업 내용(양봉/음봉·20일 평균·평균 대비 %·거래대금)은 위 캔들 차트의 통합
+            팝업이 대신 보여준다(수칙 1-6, 아래 참고). 캔들과 같은 chartWidth 컨테이너 안에 있어야 가로
+            스크롤해도 x축이 어긋나지 않는다 - Y축(거래량 눈금)은 3분봉과 동일하게 스크롤 대상에 포함.
+            🎯 [기능 추가 - 데스크톱과 동일(수칙 1-6), 사용자 요청: "일봉에 거래대금 차트도 추가하자,
+            다른거 좀 줄여서. 차트 너무 커지지 않게"] 새 패널 대신 이 패널에 보조(오른쪽) Y축만 추가. */}
         <div className="mt-1">
           <ResponsiveContainer key={`vol-${chartWidth}-${outsideTapKey}`} width="100%" height={70}>
             <ComposedChart syncId="mobile-stock-detail-chart" data={displayTrend} margin={{ top: 5, right: 15, left: -10, bottom: 0 }}>
               <XAxis dataKey="formattedDate" stroke={axisColor} tick={{ fontSize: 8 }} />
-              <YAxis stroke={axisColor} tickFormatter={formatYVol} tick={{ fontSize: 8 }} width={52} />
+              <YAxis yAxisId="vol" stroke={axisColor} tickFormatter={formatYVol} tick={{ fontSize: 8 }} width={52} />
+              <YAxis yAxisId="amt" orientation="right" stroke="#8b5cf6" tickFormatter={(v: number) => `${Math.round(v)}억`} tick={{ fontSize: 8 }} width={36} domain={[0, 'auto']} />
               {/* 팝업 내용은 위 캔들 차트의 통합 팝업이 이미 보여주므로 여기선 세로 기준선만 유지한다. */}
               <Tooltip content={() => null} cursor={{ fill: isDark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.04)' }} />
-              <Bar dataKey="volume" name="거래량" radius={[2, 2, 0, 0]}>
+              <Bar yAxisId="vol" dataKey="volume" name="거래량" radius={[2, 2, 0, 0]}>
                 {displayTrend.map((d, i) => (
                   <Cell key={`vol-${i}`} fill={d.closePrice >= (d.openPrice ?? d.closePrice) ? '#ef4444' : '#3b82f6'} fillOpacity={0.6} />
                 ))}
               </Bar>
+              <Line yAxisId="amt" type="monotone" dataKey="tradingValueEok" name="거래대금" stroke="#8b5cf6" strokeWidth={1.5} dot={false} isAnimationActive={false} />
             </ComposedChart>
           </ResponsiveContainer>
         </div>

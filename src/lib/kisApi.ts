@@ -5,7 +5,7 @@ import os from 'os';
 import { InvestorTrendDay, InvestorTrendResponse, KisTokenResponse, ProgramTradeIntradayPoint, ProgramTradeSummary, SupplySummary, TrendPeriod, InvestorRankingResponse, RankingItem, RankingDirection, RankingPeriod, RankingType, OverlapInvestorRank, MarketType, SurgingRankItem, ScoreBreakdown, SurgingMode, isEtfOrEtn, IntradayCandlePoint, IntradayPivotFibonacciLevels, IntradayChartResponse, IndexTrendResponse, IndexTrendDay, StockBadgeItem, StockBadgeSummaryResponse, VwapReclaimSignal, PivotReclaimSignal, PivotLevelSignal } from './types';
 import { getStockName, resolveStockPriceAndChange, updateRuntimeStockPrice, registerRuntimeStockName, resolveMarketType, computeUnifiedStatusBadge, getSettledAsOfDateLabel, getKrxEstimateSlotInfo, findSplitSafeStartIndex, roundToKrxTick, computeRecentVolumeRatio } from './mockData';
 import { TOP_300_STOCKS } from './stockUniverse300';
-import { fetchTokenFromSupabase, fetchCreditBatchFromSupabase, saveCreditBatchToSupabase, CreditBatchRow, fetchIntraday3mCandlesFromSupabase, fetchFreshIntraday3mCandlesFromSupabase, saveIntraday3mCandlesToSupabase, fetchConsecutiveOverlapWatch, upsertConsecutiveOverlapWatch, fetchDailyOverlapFirstSeen, insertDailyOverlapFirstSeenIfMissing, fetchLatestActiveBeforeDate, upsertSharedRankCache, fetchSharedRankCacheBatch, fetchWatchSignalState, upsertWatchSignalState, logReclaimSignalEvent, updateReclaimSignalOutcome } from './supabase';
+import { fetchTokenFromSupabase, fetchCreditBatchFromSupabase, saveCreditBatchToSupabase, CreditBatchRow, fetchIntraday3mCandlesFromSupabase, fetchFreshIntraday3mCandlesFromSupabase, saveIntraday3mCandlesToSupabase, isSymbolInWsWatchlist, fetchConsecutiveOverlapWatch, upsertConsecutiveOverlapWatch, fetchDailyOverlapFirstSeen, insertDailyOverlapFirstSeenIfMissing, fetchLatestActiveBeforeDate, upsertSharedRankCache, fetchSharedRankCacheBatch, fetchWatchSignalState, upsertWatchSignalState, logReclaimSignalEvent, updateReclaimSignalOutcome } from './supabase';
 // mockData.ts도 함께 써야 해서(runtimePriceCache 공유) kisApi.ts↔mockData.ts 순환 참조를 피하려고
 // getGlobalMap 정의를 별도 파일(globalCache.ts)로 옮겼다 - 기존 호출부(batchCollector.ts 등)가 계속
 // `from './kisApi'`로 가져다 쓸 수 있도록 여기서 재수출한다.
@@ -6003,7 +6003,17 @@ export async function fetchKis3mCandlesFullDay(
     // 어제자 조회 시 유효).
     const isMarketFullyClosedForToday = kstTimeNum >= 2000 || kstTimeNum < 900;
     const bridgeFreshnessMs = isMarketFullyClosedForToday ? 24 * 60 * 60 * 1000 : 45000;
-    const bridgeCandles = await fetchFreshIntraday3mCandlesFromSupabase(todayYmd, symbol, bridgeFreshnessMs);
+    // 🚨 [버그 수정 - 사용자 지적: "동양뿐만 아니라 다 걸리는 거 아니야?"] intraday_3m_candles는 REST
+    // 폴백(이 함수 자신)의 일회성 스냅샷도 같은 테이블/같은 updated_at에 저장한다. ws_watchlist(브릿지가
+    // 실제로 감시 중인 종목의 정본 목록)에 없는 종목은, 하루 중 아무 때나 한 번이라도 조회되면 그 시점의
+    // 부분 스냅샷이 "최근에 업데이트됨"이라는 이유만으로 영구히 신선한 데이터로 오인되어(그리고 그걸 다시
+    // 저장하면서 updated_at만 계속 지금 시각으로 갱신) 그 시점에 차트가 영원히 고정되는 버그가 있었다
+    // (실측: 동양 001520이 09:12에 멈춘 채 몇 시간째 그대로였음). ws-bridge 감시 대상이 아니면 애초에
+    // "신선한 브릿지 데이터"로 오인할 여지 자체를 차단하고 무조건 REST로 그 시점 실제 데이터를 다시 받는다.
+    const isBridgeWatched = await isSymbolInWsWatchlist(symbol);
+    const bridgeCandles = isBridgeWatched
+      ? await fetchFreshIntraday3mCandlesFromSupabase(todayYmd, symbol, bridgeFreshnessMs)
+      : null;
 
     let aggregatedAll: Array<{
       date: string;
@@ -6188,6 +6198,11 @@ export async function fetchKis3mCandlesFullDay(
     let refClose = 0;
     let refOpen = 0;
     let prevTradeDateStr = 'PREV';
+    // 🎯 [기능 추가 - 사용자 요청: "hts, mts처럼", "3분봉 130개 이상 된다며"] 예전엔 직전 1거래일만 오늘과
+    // 이어붙여 130개로 캡핑했는데, 이러면 줌아웃해도 "오늘 하루치"만 보여서 진짜 HTS/MTS처럼 지난 며칠치를
+    // 스크롤/줌아웃으로 보는 게 불가능했다. 아래에서 확정된 과거 거래일 목록을 미리 확보해뒀다가, 4번
+    // 섹션에서 최근 여러 거래일의 아카이브를 한꺼번에 이어붙인다(가짜 보간 없이 실제 아카이브가 있는 날짜만).
+    let recentPastTradeDates: string[] = [];
 
     try {
       // executeKisInvestorTrendFetch(raw)를 직접 호출하면 kisQueue 레이트리밋 보호와 재시도가 전혀 없어
@@ -6207,6 +6222,8 @@ export async function fetchKis3mCandlesFullDay(
             return !isToday && item._numericDate > 0 && item.highPrice && item.lowPrice && item.closePrice;
           })
           .sort((a: any, b: any) => a._numericDate - b._numericDate);
+
+        recentPastTradeDates = pastDailies.map((item: any) => item._strDate).filter(Boolean);
 
         if (pastDailies.length > 0) {
           const targetDaily = pastDailies[pastDailies.length - 1];
@@ -6319,15 +6336,19 @@ export async function fetchKis3mCandlesFullDay(
     }
 
     // ========================================================================
-    // 4. 직전 거래일(어제) 실제 3분봉 데이터 확보 (가짜 보간 전면 폐기)
+    // 4. 최근 여러 거래일 실제 3분봉 데이터 확보 (HTS/MTS처럼 줌아웃하면 지난 날짜까지 이어서 보이게 -
+    //    가짜 보간 전면 폐기, 아카이브가 실제로 있는 날짜만 이어붙인다)
     // ========================================================================
-    let prevDayRealCandles: any[] = [];
-    const archivedPrev = await load3mCandlesFromDisk(symbol, prevTradeDateStr);
-    if (archivedPrev && archivedPrev.length > 0) {
-      // 어제 아카이브(Supabase 우선, 로컬 디스크 폴백)가 존재하는 경우 (130개 실제 분봉 완전체)
-      prevDayRealCandles = archivedPrev;
-    } else {
-      // 아카이브가 없는 경우 KIS 실시간 API에서 수신된 어제 실제 틱 분봉만 사용 (가짜 보간 일체 금지)
+    const PAST_TRADING_DAYS_TO_STITCH = 5; // 오늘 제외 최근 5거래일 - Supabase 병렬 조회라 지연 미미
+    const datesToLoad = recentPastTradeDates.slice(-PAST_TRADING_DAYS_TO_STITCH);
+    const archivedDays = await Promise.all(datesToLoad.map((dt) => load3mCandlesFromDisk(symbol, dt)));
+    let prevDayRealCandles: any[] = archivedDays
+      .filter((day): day is any[] => Array.isArray(day) && day.length > 0)
+      .flat();
+    const stitchedPastDayCount = archivedDays.filter((day) => Array.isArray(day) && day.length > 0).length;
+
+    if (prevDayRealCandles.length === 0) {
+      // 아카이브가 전혀 없는 경우(신규상장 등) KIS 실시간 API에서 수신된 어제 실제 틱 분봉만 사용 (가짜 보간 일체 금지)
       prevDayRealCandles = aggregatedAll
         .filter((c) => c.date !== latestDate)
         .map((c) => ({
@@ -6337,11 +6358,9 @@ export async function fetchKis3mCandlesFullDay(
     }
 
     // ========================================================================
-    // 5. 100% 실제 데이터 결합 (어제 실제 봉 + 오늘 실제 실시간 봉, 최대 130개)
+    // 5. 100% 실제 데이터 결합 (최근 여러 거래일 실제 봉 + 오늘 실제 실시간 봉 - 인위적 130개 상한 제거)
     // ========================================================================
-    const neededPrev = Math.max(0, 130 - todayCandles.length);
-    const slicedPrev = neededPrev > 0 ? prevDayRealCandles.slice(-neededPrev) : [];
-    const combinedReal = [...slicedPrev, ...todayCandles].slice(-130);
+    const combinedReal = [...prevDayRealCandles, ...todayCandles];
 
     // ========================================================================
     // 6. 실제 봉 배열 대상 연속 이동평균선(MA5, MA20, MA60) 정석 연산
@@ -6422,12 +6441,9 @@ export async function fetchKis3mCandlesFullDay(
     const totalCount = candles.length;
     const todayCount = todayCandles.length;
     const prevCount = totalCount - todayCount;
-    let statusNotice = '';
-    if (totalCount < 130) {
-      statusNotice = `총 ${totalCount}/130개 봉 표시 중 (어제 실제 틱 ${prevCount}개 + 오늘 ${todayCount}개)`;
-    } else {
-      statusNotice = `최근 130개 3분봉 롤링 완료 (어제 ${prevCount}개 + 오늘 ${todayCount}개)`;
-    }
+    const statusNotice = stitchedPastDayCount > 0
+      ? `최근 ${stitchedPastDayCount}거래일 + 오늘 3분봉 이어붙임 (과거 ${prevCount}개 + 오늘 ${todayCount}개)`
+      : `총 ${totalCount}개 봉 표시 중 (과거 아카이브 없음, 오늘 ${todayCount}개)`;
 
     // 1. 클래식 피봇 포인트 (Pivot Points - 전일 일봉 기준 불변 고정선)
     // 계산값을 실제 KRX 호가단위에 맞춰 반올림 (실제로 존재하지 않는 호가가 화면에 뜨는 것 방지)

@@ -349,6 +349,35 @@ export async function removeFromWsWatchlist(symbol: string): Promise<boolean> {
   }
 }
 
+/**
+ * 🚨 [버그 수정 - 사용자 지적: "동양뿐만 아니라 다 걸리는 거 아니야?"] intraday_3m_candles는 ws-bridge
+ * 실시간 쓰기와 REST 폴백(fetchKis3mCandlesFullDay)의 일회성 스냅샷 쓰기가 같은 테이블/같은 updated_at
+ * 필드를 공유해서, "최근에 업데이트됨"만으로는 그게 ws-bridge의 진짜 실시간 데이터인지 REST 폴백의
+ * 오래된 스냅샷인지 구분이 안 됐다(장마감 후 24시간 신선도 윈도우에서 특히 영구 고착됨). 새 컬럼을 추가해
+ * 출처를 또 저장하는 대신, "이 종목이 지금 ws-bridge 감시 대상인가"의 정본인 ws_watchlist를 그대로
+ * 재사용한다 - 감시 대상이 아니면 애초에 "신선한 브릿지 데이터"로 오인할 여지 자체를 차단한다.
+ */
+export async function isSymbolInWsWatchlist(symbol: string): Promise<boolean> {
+  if (!symbol) return false;
+  const client = getSupabaseAdmin() || getSupabasePublic();
+  if (!client) return false;
+  try {
+    const { data, error } = await client
+      .from('ws_watchlist')
+      .select('symbol')
+      .eq('symbol', symbol)
+      .maybeSingle();
+    if (error) {
+      console.warn('[Supabase ws_watchlist Membership Check Error]', error.message);
+      return false;
+    }
+    return !!data;
+  } catch (e: any) {
+    console.warn('[Supabase ws_watchlist Membership Check Exception]', e?.message || e);
+    return false;
+  }
+}
+
 // ============================================================================
 // 🎯 [기능 추가 - 사용자 요청: "발굴 장마감" 탭] 매 거래일 14:30(KST) 크론이 계산한 그날의 발굴
 // 후보군 스냅샷을 영구 저장한다. raw_daily_data(장마감 확정치)와 달리 장마감 "직전" 잠정 데이터라

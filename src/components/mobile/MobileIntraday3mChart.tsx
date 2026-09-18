@@ -222,6 +222,12 @@ export default function MobileIntraday3mChart({ symbol }: MobileIntraday3mChartP
   const candles = data?.candles || [];
   const levels = data?.levels;
 
+  // 🎯 [기능 추가 - 데스크톱과 동일(수칙 1-6), 사용자 요청: "3분봉도 거래대금 차트 추가"] 종가×그 봉의
+  // 거래량 근사(3분이라는 짧은 구간이라 오차가 더 작다).
+  const candlesWithAmount = React.useMemo(() => {
+    return candles.map((c: any) => ({ ...c, tradingValueEok: Number(((c.closePrice * (c.volume || 0)) / 100000000).toFixed(2)) }));
+  }, [candles]);
+
   // R1(1차 익절 저항) 돌파 시 지지선으로 전환 - RankingStockDetailChart.tsx 694~698번 줄과 동일 공식.
   const isR1Flipped = React.useMemo(() => {
     const r1 = levels?.pivot?.r1;
@@ -424,8 +430,10 @@ export default function MobileIntraday3mChart({ symbol }: MobileIntraday3mChartP
         const isUp = closePrice >= openPrice;
         const rate = openPrice > 0 ? ((closePrice - openPrice) / openPrice) * 100 : 0;
         // 팝업 카드 예상 크기 기준으로 화면 밖으로 넘치지 않게 좌표를 clamp한다.
+        // 🎯 [기능 추가 - 사용자 요청: "3분봉도 거래대금 차트 추가"] 거래량·거래대금 두 줄이 늘어난 만큼
+        // POPUP_H도 같이 늘린다(108→144) - 안 늘리면 팝업 하단이 잘려 보인다.
         const POPUP_W = 168;
-        const POPUP_H = 108;
+        const POPUP_H = 144;
         const MARGIN = 8;
         const vw = typeof window !== 'undefined' ? window.innerWidth : 375;
         const vh = typeof window !== 'undefined' ? window.innerHeight : 812;
@@ -450,6 +458,15 @@ export default function MobileIntraday3mChart({ symbol }: MobileIntraday3mChartP
                 <b className="text-slate-900 dark:text-white">{Math.round(closePrice).toLocaleString()}</b>
                 <b className={isUp ? 'text-red-500' : 'text-blue-500'}>{isUp ? '+' : ''}{rate.toFixed(2)}%</b>
               </span>
+            </div>
+            {/* 🎯 [기능 추가 - 사용자 요청: "3분봉도 거래대금 차트 추가"] */}
+            <div className="flex justify-between border-t border-slate-100 dark:border-slate-800 pt-1">
+              <span className="text-slate-400">거래량</span>
+              <b className="text-slate-700 dark:text-slate-200">{(info.volume || 0).toLocaleString()}</b>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-violet-500">거래대금</span>
+              <b className="text-violet-600 dark:text-violet-400">{(info.tradingValueEok ?? 0).toLocaleString()}억</b>
             </div>
           </div>
         );
@@ -548,8 +565,8 @@ export default function MobileIntraday3mChart({ symbol }: MobileIntraday3mChartP
           const relX = e.clientX - rect.left;
           const idx = Math.round((relX / rect.width) * (candles.length - 1));
           const clamped = Math.max(0, Math.min(candles.length - 1, idx));
-          if (candles[clamped]) {
-            setSelectedCandle(candles[clamped]);
+          if (candlesWithAmount[clamped]) {
+            setSelectedCandle(candlesWithAmount[clamped]);
             setTapPos({ x: e.clientX, y: e.clientY });
           }
         }}
@@ -575,21 +592,25 @@ export default function MobileIntraday3mChart({ symbol }: MobileIntraday3mChartP
       )}
       </div>
 
-      {/* 거래량 - 캔들 차트와 동일한 chartWidth 컨테이너 안에 있어야 가로 스크롤 시 x축이 어긋나지 않는다 */}
+      {/* 거래량·거래대금 - 캔들 차트와 동일한 chartWidth 컨테이너 안에 있어야 가로 스크롤 시 x축이
+          어긋나지 않는다. 🎯 [기능 추가 - 데스크톱과 동일(수칙 1-6), 사용자 요청: "3분봉도 거래대금
+          차트 추가"] 새 패널 대신 보조(오른쪽) Y축만 추가. */}
       <div className="mt-1">
         <ResponsiveContainer width="100%" height={70}>
           <ComposedChart
-            data={candles}
+            data={candlesWithAmount}
             margin={{ top: 5, right: 10, left: -10, bottom: 0 }}
           >
             <XAxis dataKey="time" stroke={axisColor} tick={{ fontSize: 8 }} interval="preserveStartEnd" />
-            <YAxis stroke={axisColor} tickFormatter={formatYVol} tick={{ fontSize: 8 }} width={52} />
+            <YAxis yAxisId="vol" stroke={axisColor} tickFormatter={formatYVol} tick={{ fontSize: 8 }} width={52} />
+            <YAxis yAxisId="amt" orientation="right" stroke="#8b5cf6" tickFormatter={(v: number) => `${Math.round(v)}억`} tick={{ fontSize: 8 }} width={36} domain={[0, 'auto']} />
             {selectedCandle && <ReferenceLine x={selectedCandle.time} stroke="#94a3b8" strokeWidth={1} strokeDasharray="3 3" />}
-            <Bar dataKey="volume" name="거래량" radius={[2, 2, 0, 0]}>
-              {candles.map((c, i) => (
+            <Bar yAxisId="vol" dataKey="volume" name="거래량" radius={[2, 2, 0, 0]}>
+              {candlesWithAmount.map((c: any, i: number) => (
                 <Cell key={`vol3m-${i}`} fill={c.closePrice >= (c.openPrice ?? c.closePrice) ? '#ef4444' : '#3b82f6'} fillOpacity={0.6} />
               ))}
             </Bar>
+            <Line yAxisId="amt" type="monotone" dataKey="tradingValueEok" name="거래대금" stroke="#8b5cf6" strokeWidth={1.5} dot={false} isAnimationActive={false} />
           </ComposedChart>
         </ResponsiveContainer>
       </div>

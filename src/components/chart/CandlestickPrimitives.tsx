@@ -279,6 +279,14 @@ export const CustomUnifiedMobileTooltip = ({ active, payload, label, priceLabel 
             <span className={`font-mono font-bold ${volRatioVsAvg >= 100 ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-500 dark:text-slate-400'}`}>{volRatioVsAvg}%</span>
           </div>
         )}
+        {/* 🎯 [기능 추가 - 사용자 요청: "일봉에 거래대금 차트도 추가하자"] 아래 거래량 차트에 보조축으로
+            겹쳐 그린 거래대금(tradingValueEok, MobileStockDetailChart.tsx에서 계산)을 팝업에도 같이 보여준다. */}
+        {dataPoint.tradingValueEok !== undefined && (
+          <div className="flex justify-between items-center gap-3">
+            <span className="text-violet-500 font-medium">💰 거래대금:</span>
+            <span className="font-mono font-bold text-slate-900 dark:text-white">{Number(dataPoint.tradingValueEok).toLocaleString()}억원</span>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -293,6 +301,7 @@ export const CustomDailyVolumeTooltip = ({ active, payload, label }: any) => {
 
   const volume = dataPoint.volume || 0;
   const volMa20 = dataPoint.volMa20 || 0;
+  const tradingValueEok = dataPoint.tradingValueEok as number | undefined;
   const isUp = (dataPoint.closePrice ?? 0) >= (dataPoint.openPrice ?? 0);
   // 오늘 거래량이 20일 평균 대비 몇 %인지 - "기준선 위로 올라왔는지"를 숫자로도 바로 확인
   const ratioVsAvg = volMa20 > 0 ? Math.round((volume / volMa20) * 100) : null;
@@ -300,7 +309,7 @@ export const CustomDailyVolumeTooltip = ({ active, payload, label }: any) => {
   return (
     <div className="bg-white/95 dark:bg-[#1e222d]/95 backdrop-blur-md p-2.5 rounded-xl border border-slate-200 dark:border-[#2a2e39] shadow-xl text-xs space-y-1 z-50">
       <div className="font-bold text-slate-700 dark:text-slate-200 pb-1 border-b border-slate-100 dark:border-slate-800">
-        {label} 거래량
+        {label} 거래량·거래대금
       </div>
       <div className="flex justify-between items-center gap-3">
         <span className={`font-bold flex items-center gap-1 ${isUp ? 'text-red-500' : 'text-blue-500'}`}>
@@ -308,6 +317,14 @@ export const CustomDailyVolumeTooltip = ({ active, payload, label }: any) => {
         </span>
         <span className="font-mono font-bold text-slate-900 dark:text-white">{volume.toLocaleString()}주</span>
       </div>
+      {/* 🎯 [기능 추가 - 사용자 요청: "일봉에 거래대금 차트도 추가하자"] 별도 패널 대신 이 패널(거래량)에
+          보조축 라인으로 겹쳐 그리므로, 툴팁에도 같이 보여준다(수칙 1-6, 패널 새로 안 늘림). */}
+      {tradingValueEok !== undefined && (
+        <div className="flex justify-between items-center gap-3">
+          <span className="font-semibold text-violet-600 dark:text-violet-400">거래대금</span>
+          <span className="font-mono font-bold text-slate-900 dark:text-white">{tradingValueEok.toLocaleString()}억원</span>
+        </div>
+      )}
       {volMa20 > 0 && (
         <div className="flex justify-between items-center gap-3 pt-1 border-t border-slate-100 dark:border-slate-800">
           <span className="font-semibold text-amber-600 dark:text-amber-400">20일 평균</span>
@@ -320,6 +337,41 @@ export const CustomDailyVolumeTooltip = ({ active, payload, label }: any) => {
           <span className={`font-mono font-bold ${ratioVsAvg >= 100 ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-500 dark:text-slate-400'}`}>
             {ratioVsAvg}%{ratioVsAvg >= 100 ? ' (기준선 이상)' : ''}
           </span>
+        </div>
+      )}
+    </div>
+  );
+};
+
+// 🎯 [기능 추가 - 사용자 요청: "3분봉 거래대금, 거래량 팝업 구리다. 예쁘게 만들어. 일봉처럼 다 같이
+// 나오게"] 3분봉 거래량 패널은 Recharts 기본 <Tooltip formatter> 그대로 써서 스타일이 하나도 안 입혀진
+// 회색 기본 박스였다. 위 CustomDailyVolumeTooltip과 같은 톤(수칙 1-6, 새 디자인 발명 없이 재사용)으로
+// 통일하되, 3분봉 전용 필드(시각 라벨, 여러 날짜가 이어붙는 경우의 날짜 구분)에 맞게 조정했다.
+export const CustomIntraday3mVolumeTooltip = ({ active, payload, label }: any) => {
+  if (!active || !payload || !payload.length) return null;
+  const dataPoint = payload[0]?.payload;
+  if (!dataPoint) return null;
+
+  const volume = dataPoint.volume || 0;
+  const tradingValueEok = dataPoint.tradingValueEok as number | undefined;
+  const isUp = (dataPoint.closePrice ?? 0) >= (dataPoint.openPrice ?? 0);
+
+  return (
+    <div className="bg-white/95 dark:bg-[#1e222d]/95 backdrop-blur-md p-2.5 rounded-xl border border-slate-200 dark:border-[#2a2e39] shadow-xl text-xs space-y-1 z-50 min-w-[150px]">
+      <div className="font-bold text-slate-700 dark:text-slate-200 pb-1 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between gap-3">
+        <span>{dataPoint.formattedDate ? `${dataPoint.formattedDate} ` : ''}{label}</span>
+        <span className={`font-bold flex items-center gap-1 ${isUp ? 'text-red-500' : 'text-blue-500'}`}>
+          {isUp ? '🔴 양봉' : '🔵 음봉'}
+        </span>
+      </div>
+      <div className="flex justify-between items-center gap-3">
+        <span className="font-semibold text-slate-500 dark:text-slate-400">거래량</span>
+        <span className="font-mono font-bold text-slate-900 dark:text-white">{volume.toLocaleString()}주</span>
+      </div>
+      {tradingValueEok !== undefined && (
+        <div className="flex justify-between items-center gap-3">
+          <span className="font-semibold text-violet-600 dark:text-violet-400">거래대금</span>
+          <span className="font-mono font-bold text-slate-900 dark:text-white">{tradingValueEok.toLocaleString()}억원</span>
         </div>
       )}
     </div>
