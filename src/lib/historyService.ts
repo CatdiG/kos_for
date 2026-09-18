@@ -79,6 +79,18 @@ function formatDateLabel(dateStr: string): string {
   return '(확정 데이터)';
 }
 
+// 🚨 [버그 수정 - 사용자 지적: "0을 실제 데이터의 '기관매수 아님'과 결측을 구분해야 한다"] raw_daily_data의
+// foreign_net_buy_amt/organ_net_buy_amt/program_net_buy_amt 세 필드가 2026-04-24~08-06(수집 시작
+// 초기 구간)엔 전 종목이 예외 없이 0으로 저장되던 실제 데이터 공백이었다(실측:
+// scratch/backtest_postmarket_organ_robustness.js - 08/07이 세 필드 전부의 첫 non-zero 관측일).
+// 그 기간의 0은 "매수 안 함"(NO)이 아니라 "결측"(UNKNOWN)이므로, 이 날짜 이전의 수급 필드를 신뢰해
+// 판정(연속 교집합·기관매수우위 배지·이탈 사유)하면 안 된다 - 날짜가 갱신될 일이 없는 상수이므로
+// 하드코딩이 아니라 실측으로 확정된 값이다(수칙 1-3).
+const SUPPLY_DATA_AVAILABLE_FROM = '20260807';
+function hasSupplyData(dateStr: string): boolean {
+  return dateStr >= SUPPLY_DATA_AVAILABLE_FROM;
+}
+
 // ============================================================================
 // [Layer A] 원본 수급 데이터 계층 (계산 로직과 무관한 KIS 영구 불변 팩트 데이터)
 // ============================================================================
@@ -524,6 +536,25 @@ export async function calculateConsecutiveOverlapFromHistory(
 
   const orderedDates = dateGroups.map((g) => g.date); // 오름차순, 최대 20개
   const lastTargetDates = orderedDates.slice(-targetDays); // 이 탭의 "매일 2개 이상 동시매수" 판정 대상 구간
+
+  // 🚨 [버그 수정 - 사용자 지적: "0을 실제 데이터의 '기관매수 아님'과 결측을 구분해야 한다"] 판정 대상
+  // 구간(lastTargetDates)에 수급 데이터 공백일(hasSupplyData 참고)이 하나라도 끼면, 그날은 외국인/기관/
+  // 프로그램이 전부 0으로 저장돼 있어 모든 종목이 무조건 minOverlap 미달로 걸러진다 - "겹치는 종목이
+  // 정말 없다"가 아니라 "그날 데이터를 신뢰할 수 없다"인데 지금까지는 조용히 빈 목록만 반환해서 둘을
+  // 구분할 수 없었다. 위 513번째 줄의 "수집 시작일 근처" 에러와 동일한 방식으로 정직하게 알린다.
+  if (lastTargetDates.some((d) => !hasSupplyData(d))) {
+    return {
+      type: 'overlap',
+      direction,
+      period: `consecutive${targetDays}d` as any,
+      list: [],
+      isMock: false,
+      updatedAt: new Date().toISOString(),
+      lastBatchTime: dateLabel,
+      error: `${normalizedDate} 기준 최근 ${targetDays}영업일 중 외국인/기관/프로그램 수급 데이터가 수집되지 않은 날(${SUPPLY_DATA_AVAILABLE_FROM} 이전)이 포함돼 있어 연속 교집합을 신뢰할 수 없습니다.`,
+    };
+  }
+
   const results: RankingItem[] = [];
 
   bySymbol.forEach((dateMap, symbol) => {
@@ -678,6 +709,12 @@ export async function calculateOverlapDropoutsFromHistory(
   if (prevActive.error) {
     return { list: [], targetDays, comparedDate, note: `${comparedDate} 기준 비교 데이터 부족: ${prevActive.error}` };
   }
+  // 🚨 [버그 수정 - 동일 이유(수급 데이터 공백)] prevActive만 확인하고 todayActive.error는 안 봐서, 기준
+  // 날짜 쪽 창이 공백 구간에 걸리면 todayActive.list가 조용히 비어 prevActive의 모든 종목이 "이탈"한
+  // 것처럼 잘못 표시될 수 있었다.
+  if (todayActive.error) {
+    return { list: [], targetDays, comparedDate, note: `${normalizedDate} 기준 데이터 부족: ${todayActive.error}` };
+  }
 
   const todaySymbols = new Set(todayActive.list.map((i) => i.symbol));
   const dropped = prevActive.list.filter((i) => !todaySymbols.has(i.symbol));
@@ -694,6 +731,11 @@ export async function calculateOverlapDropoutsFromHistory(
     let reason = '이탈';
     if (!todayRaw) {
       reason = '당일 데이터 없음';
+    } else if (!hasSupplyData(normalizedDate)) {
+      // 🚨 [버그 수정 - 동일 이유] 수급 데이터 공백 구간엔 foreign/organ/program이 전부 0이라, 그대로
+      // 두면 모든 종목이 "외국인·기관·프로그램 동시매수 조건 이탈"이라는 확정적인(그러나 거짓인) 이유를
+      // 받는다 - 결측을 정직하게 표시한다.
+      reason = '수급 데이터 수집 공백 구간(원인 확인 불가)';
     } else {
       const passesDirection = (amt: number) => ((params.direction || 'buy') === 'buy' ? amt > 0 : amt < 0);
       const broken: string[] = [];
@@ -971,8 +1013,10 @@ export async function calculatePostMarketFromHistory(
     })
     .filter((x) => x.surgingRanks.length >= 2);
 
-  // 🚨 [실측 기반 - kisApi.ts enrichCandidatesWithNarrowRangeScore와 동일 공식 재사용] KIS 재호출 없이
-  // 그 날 원본(open/high/low/close/organ_net_buy_amt)만으로 그대로 재구성한다.
+  // 🚨 [공식 동기화 - kisApi.ts enrichCandidatesWithNarrowRangeScore와 동일 공식 재사용, 수칙 1-6] KIS
+  // 재호출 없이 그 날 원본(open/high/low/close/organ_net_buy_amt)만으로 그대로 재구성한다. 라이브 공식이
+  // 백테스트로 "변동폭 넓을수록 가산 + 기관매수우위 항목 제외(데이터 공백으로 근거 없음 확인됨)"로
+  // 바뀌었으므로 여기도 같이 맞춘다 - 안 그러면 히스토리가 라이브와 다른 기준으로 순위를 매기게 된다.
   const scored: RankingItem[] = withModes.map(({ r, surgingRanks }) => {
     const high = r.high_price || Math.max(r.close_price, r.open_price || r.close_price);
     const low = r.low_price || Math.min(r.close_price, r.open_price || r.close_price);
@@ -980,9 +1024,11 @@ export async function calculatePostMarketFromHistory(
     const range = high - low;
     const todayRangePct = close > 0 ? Number(((range / close) * 100).toFixed(1)) : 0;
     const closePositionPct = range > 0 ? Number((((close - low) / range) * 100).toFixed(0)) : 50;
-    const organStrong = (r.organ_net_buy_amt || 0) > 0;
+    // organ_net_buy_amt가 결측 구간(hasSupplyData=false)이면 "매수 없음"이 아니라 "확인불가"이므로
+    // organStrong을 아예 false로 고정(배지에 잘못 표시되지 않게)한다 - 점수엔 어차피 안 쓰인다.
+    const organStrong = hasSupplyData(normalizedDate) && (r.organ_net_buy_amt || 0) > 0;
     const overlapCount = surgingRanks.length;
-    const postMarketScore = Number((overlapCount * 20 + closePositionPct * 0.3 + Math.max(0, 30 - todayRangePct) + (organStrong ? 15 : 0)).toFixed(1));
+    const postMarketScore = Number((overlapCount * 20 + closePositionPct * 0.3 + Math.min(30, todayRangePct)).toFixed(1));
     const surgingBadge = `${surgingRanks.map((s) => `${s.label} ${s.rank}위`).join(' · ')} · 고가마감 ${closePositionPct}% · 변동폭 ${todayRangePct}%${organStrong ? ' · 기관매수우위' : ''}`;
 
     return {

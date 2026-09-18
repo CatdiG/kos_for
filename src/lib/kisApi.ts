@@ -4696,16 +4696,35 @@ export async function fetchKisSurgingOverlap(
 //      변동폭이 좁아도 저가 마감이면 매수세가 약했다는 뜻이라 신뢰도가 떨어지기 때문.
 //   3. 기관 수급 지속 - investor-trend가 이미 계산해주는 3-상태(STRONG_BUY/BUY/...) 재사용, 새 판정
 //      로직을 만들지 않는다.
-const POSTMARKET_CACHE_TTL_MS = 5 * 60 * 1000; // 5분 - 당일 캔들 기반 지표라 급등주(60초)만큼 자주 바뀌지 않음
 const postMarketCacheStore = getGlobalMap<string, { data: InvestorRankingResponse; timestamp: number }>('postMarketCacheStore');
 
 /**
  * 후보 종목 배열에 당일 고가/저가/종가 기반 변동폭(todayRangePct)·고가권 마감도(closePositionPct)를
- * 채우고, 교집합 개수(overlapCount) + 고가권 마감 + 변동폭 좁음 + 기관 매수 우위를 합산한 postMarketScore
- * 까지 계산해 점수 내림차순으로 정렬·재랭크한다. "장마감 후보군"(급등주 기반, fetchKisPostMarketCandidates)
- * 전용 — 수급교집합 쪽 "장마감 후보만" 토글(applyQuietAccumulationFilter, 아래 4700번 줄 근방)은 실측
- * 백테스트로 이 공식(고가마감·변동폭 좁음이 좋다)이 다음날 수익률과 반대 방향임이 확인돼 별도 공식으로
- * 분리했다 - 이름은 비슷해도 서로 다른 검증 결과에 기반한 별개 로직이니 다시 통합하지 말 것.
+ * 채우고, 교집합 개수(overlapCount) + 고가권 마감 + 변동폭을 합산한 postMarketScore까지 계산해 점수
+ * 내림차순으로 정렬·재랭크한다. "장마감 후보군"(급등주 기반, fetchKisPostMarketCandidates) 전용 —
+ * 수급교집합 쪽 "장마감 후보만" 토글(applyQuietAccumulationFilter, 아래 4700번 줄 근방)은 별개 로직
+ * 이니 다시 통합하지 말 것.
+ *
+ * 🚨 [공식 수정 - 사용자 요청: "공식을 손보는걸 따로 만들어봐 그래서 결과를 보고 로컬로 옮길지 말지 하자"]
+ * 원래 "변동폭 좁을수록 가산점"이었는데, raw_daily_data 100거래일(2026-04-24~09-18, 현재 확보 가능한
+ * 전체 기간) 백테스트(scratch/backtest_toggle_conditions_4pct.js, backtest_toggle_formula_variants.js)
+ * 로 다음날 고가 +4% 도달률을 직접 측정해보니 정반대였다: 변동폭 좁음(≤10%) 36.6% vs 넓음 56.2%,
+ * TOP15 픽 기준 공식 반전 시 44.1%→49.3%(+5.2%p). 100거래일 전체에서 TOP15/TOP30 둘 다 일관되게
+ * 개선돼(우연한 부분 구간 효과 아님) "변동폭 넓을수록 가산"으로 반영했다.
+ *
+ * 🚨 [수정 철회 - 사용자 지적: "기관 매수 우위 자체가 나쁘다는 뜻으로 해석하면 안돼, 한번 더 돌려서
+ * 같은 결과가 나오는지 봐봐"] 처음엔 "기관 매수 우위 패널티(-10)"도 같이 반영했는데, 강건성 재검증
+ * (scratch/backtest_postmarket_organ_robustness.js)에서 raw_daily_data의 foreign/organ/
+ * program_net_buy_amt 세 필드가 2026-04-24~08-06(100거래일 중 75일)엔 전 종목이 예외 없이 0으로
+ * 수집되던 데이터 공백 기간이었음을 발견했다 - 그 기간엔 "기관매수 우위" 후보가 정의상 0건이라, 원래
+ * 비교(YES 36.7% vs NO 47.6%)는 사실상 "최근 30일(YES) vs 대부분 공백기간을 포함한 100일(NO)"을
+ * 비교한 것이었다. 데이터가 실제로 존재하는 구간(08/07~, 29거래일)만으로 다시 보면 YES 36.7% vs NO
+ * 34.8%로 방향이 뒤집힌다. 표본이 작아(NO n=423) 이것도 확정적이진 않지만, 최소한 "기관매수 우위가
+ * 나쁘다"는 최초 결론은 데이터 공백이 만든 착시였다 - 근거가 사라진 채로 패널티를 유지하는 것도 수칙
+ * 1-3 위반이라 이 항목은 점수에서 완전히 뺐다(중립). organStrong 자체는 배지 표시(surgingBadge,
+ * 아래)용으로만 계속 쓴다. 표본이 이 기간(변동성 큰 장)에 한정된 결과이므로, 데이터가 더 쌓이면(원본
+ * raw_daily_data 자체가 04/24부터 시작이라 지금이 물리적 최대치) 같은 스크립트로 재검증할 것 - 사용자
+ * 확정, 임의 튜닝 아님.
  */
 async function enrichCandidatesWithNarrowRangeScore<T extends RankingItem>(
   candidates: T[],
@@ -4729,9 +4748,11 @@ async function enrichCandidatesWithNarrowRangeScore<T extends RankingItem>(
           return { ...item, todayRangePct, closePositionPct, organStrong } as T;
         } catch (e) {
           console.warn(`[PostMarket Candidate Enrich Skip] ${item.symbol}:`, (e as any)?.message || e);
-          // 조회 실패 종목은 배제 신호(변동폭 999%)를 줘서 점수 계산 시 자연스럽게 하위로 밀리게 한다
-          // (수칙 1-3 - 실패를 성공인 것처럼 가짜 값으로 채우지 않음).
-          return { ...item, todayRangePct: 999, closePositionPct: 0, organStrong } as T;
+          // 조회 실패 종목은 배제 신호를 줘서 점수 계산 시 자연스럽게 하위로 밀리게 한다(수칙 1-3 -
+          // 실패를 성공인 것처럼 가짜 값으로 채우지 않음). 🚨 [공식 수정에 맞춰 배제값도 반전] 예전엔
+          // "변동폭 좁을수록 가산"이라 999(최악)로 배제했는데, 지금은 "변동폭 넓을수록 가산"이라 999를
+          // 그대로 두면 실패한 종목이 오히려 만점을 받는다 - 0으로 바꿔야 여전히 최하위로 밀린다.
+          return { ...item, todayRangePct: 0, closePositionPct: 0, organStrong } as T;
         }
       })
     );
@@ -4742,14 +4763,23 @@ async function enrichCandidatesWithNarrowRangeScore<T extends RankingItem>(
     }
   }
 
-  // 종합 점수: 교집합/연속매수 개수(최대 60) + 고가권 마감(최대 30) + 변동폭 좁음(최대 30) + 기관 매수 우위(+15)
+  // 종합 점수: 교집합/연속매수 개수(최대 60) + 고가권 마감(최대 30) + 변동폭 넓음(최대 30).
+  // 🚨 [수정 철회 - 사용자 지적: "기관 매수 우위 자체가 나쁘다는 뜻으로 해석하면 안돼, 한번 더 돌려서
+  // 같은 결과가 나오는지 봐봐"] 처음엔 기관매수 우위에 -10 패널티를 넣었는데, 강건성 재검증
+  // (scratch/backtest_postmarket_organ_robustness.js)에서 raw_daily_data의 foreign/organ/
+  // program_net_buy_amt 세 필드가 2026-04-24~08-06(전체 100거래일 중 75일)엔 전 종목이 예외 없이
+  // 0으로 수집되던 실제 데이터 공백 기간이었음을 발견했다 - 그 기간엔 "기관매수 우위"가 정의상 단 한
+  // 건도 없어서(organStrong 후보 n=0), 원래 비교(YES 36.7% vs NO 47.6%)는 사실상 "최근 30일(YES)
+  // vs 전체 100일 평균(NO 대부분 공백기간)"을 비교한 것이었다. 데이터가 실제로 존재하는 구간
+  // (08/07~, 29거래일)만으로 다시 보면 YES 36.7% vs NO 34.8%로 방향이 뒤집힌다 - 표본이 작아(NO
+  // n=423) 이것도 확정적이진 않지만, 최소한 원래의 "기관매수 우위가 나쁘다"는 결론은 데이터 공백이
+  // 만든 착시였다. 신뢰할 근거가 없는 채로 페널티를 주는 것도 수칙 1-3 위반이라 이 항목은 점수에서
+  // 완전히 뺀다(중립) - organStrong 자체는 배지 표시(surgingBadge, 아래)용으로만 계속 쓴다.
   enriched.forEach((item) => {
-    const organStrong = Boolean((item as any).organStrong);
     const overlapScore = (item.overlapCount || 2) * 20;
     const closeScore = (item.closePositionPct ?? 50) * 0.3;
-    const rangeScore = Math.max(0, 30 - (item.todayRangePct ?? 30));
-    const organBonus = organStrong ? 15 : 0;
-    item.postMarketScore = Number((overlapScore + closeScore + rangeScore + organBonus).toFixed(1));
+    const rangeScore = Math.min(30, item.todayRangePct ?? 0);
+    item.postMarketScore = Number((overlapScore + closeScore + rangeScore).toFixed(1));
   });
 
   enriched.sort((a, b) => (b.postMarketScore || 0) - (a.postMarketScore || 0));
@@ -4761,18 +4791,20 @@ async function enrichCandidatesWithNarrowRangeScore<T extends RankingItem>(
 
 export async function fetchKisPostMarketCandidates(market: MarketType = 'ALL'): Promise<InvestorRankingResponse> {
   const cacheKey = `postmarket-${market}`;
+  // 🚨 [버그 수정 - 사용자 지적: "정규장 마감하고나면 바뀌는거 없이 그대로 둬도 되잖아. 매번 로딩할거야?"]
+  // 원래 장중이든 장마감 후든 무조건 5분마다 재계산했다 - 당일 고가/저가 기반
+  // 지표(enrichCandidatesWithNarrowRangeScore)라 장이 끝나면 그 값이 다음 거래일 재개장 전까지 절대
+  // 안 바뀌는데도, 장마감 후 몇 시간이 지나도 5분마다 후보 38종목 전부를 다시 개별 조회했다(종목당 KIS
+  // 큐가 200ms 간격으로 직렬 처리돼 실측 7~9초 소요). 이 파일의 다른 모든 랭킹(외국인/기관/급등주)이
+  // 이미 쓰는 getSharedCacheMaxAgeMs()(장중 60초/장마감 후엔 다음 재개장 경계까지)를 그대로 재사용한다
+  // (수칙 1-6, 새 로직 아님 - 원래 여기만 이 패턴을 안 쓰고 있었다).
+  const maxAgeMs = getSharedCacheMaxAgeMs();
   const cached = postMarketCacheStore.get(cacheKey);
-  if (cached && Date.now() - cached.timestamp < POSTMARKET_CACHE_TTL_MS) {
+  if (cached && Date.now() - cached.timestamp < maxAgeMs) {
     return cached.data;
   }
 
-  // 🚨 [버그 수정 - 사용자 지적: "로딩이 왜이렇게 느리지?"] 이 함수에 인메모리 캐시(postMarketCacheStore)만
-  // 있고, 이 파일의 다른 모든 랭킹(외국인/기관/급등주/지수 등)이 이미 갖고 있는 "다른 인스턴스가 최근에
-  // 이미 계산해둔 게 있으면 재사용" Supabase 공유캐시 폴백이 빠져 있었다 - 서버 재시작이나 5분 캐시
-  // 만료마다 무조건 종목당 최대 5회 KIS를 호출하는 무거운 investor-trend를 30~40종목분 처음부터 다시
-  // 돌려서 실측 15~40초가 걸렸다(사용자 터미널 RAW 로그 확인). fetchKisSurgingStocks(1866번 줄 근방)와
-  // 동일 패턴을 그대로 적용한다(수칙 1-6).
-  const sharedMap = await fetchSharedRankCacheBatch([`full:${cacheKey}`], POSTMARKET_CACHE_TTL_MS).catch(() => new Map<string, any[]>());
+  const sharedMap = await fetchSharedRankCacheBatch([`full:${cacheKey}`], maxAgeMs).catch(() => new Map<string, any[]>());
   const sharedList = sharedMap.get(`full:${cacheKey}`);
   if (sharedList && sharedList.length > 0) {
     console.log(`[Shared Rank Cache Hit] full:${cacheKey} - 다른 인스턴스가 이미 계산해둔 장마감 후보군을 Supabase에서 재사용`);

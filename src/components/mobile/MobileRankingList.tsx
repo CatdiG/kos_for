@@ -30,9 +30,10 @@ import {
   RankingType,
   SurgingMode,
 } from '@/lib/types';
-import { Rocket, Trophy, Globe2, Landmark, Cpu, Flame, ShieldCheck, ArrowUpDown, TrendingDown, RotateCcw, TrendingUp, Coins, Filter, ChevronDown, ChevronUp, Target, Zap, RefreshCw, Compass, Radar } from 'lucide-react';
+import { Rocket, Trophy, Globe2, Landmark, Cpu, Flame, ShieldCheck, ArrowUpDown, TrendingDown, RotateCcw, TrendingUp, Coins, Filter, ChevronDown, ChevronUp, Target, Zap, RefreshCw, Compass, Radar, Star } from 'lucide-react';
 import MobileStockDetailPanel from './MobileStockDetailPanel';
 import MobileLoadingSpinner from './MobileLoadingSpinner';
+import { getSupabaseBrowserClient } from '@/lib/supabaseBrowserClient';
 import { fetchReclaimWatchSignals, ReclaimWatchSignal, computeReclaimFreshnessInfo } from '@/lib/vwapReclaimClient';
 import { VwapReclaimSignal, PivotReclaimSignal } from '@/lib/types';
 
@@ -95,6 +96,10 @@ async function fetchDropouts(direction: RankingDirection, market: MarketType, sc
 const TABS: { id: RankingType; label: string; icon: any; badge?: string }[] = [
   { id: 'surging', label: '급등주', icon: Rocket, badge: 'LIVE' },
   { id: 'comprehensive', label: '단타종합', icon: Trophy, badge: 'SCORE' },
+  // 🚨 [기능 추가 - 데스크톱과 동일(수칙 1-6), 사용자 지적: "당연하지 모바일도 데스크탑이랑 볼수있는
+  // 탭과 차트는 같아야지"] 종목 상세의 "실시간" 토글로 등록한 관심종목(ws_watchlist, 오라클 웹소켓
+  // 브릿지 구독 대상과 동일 목록) 현재가 탭 - 데스크톱과 같은 위치(단타종합-장마감후보군 사이).
+  { id: 'watchlist', label: '관심종목', icon: Star },
   // 🚨 [기능 통합 - 사용자 요청: "장마감 탭들을 장마감 후보군 탭으로 합쳐서 각자 토글로"] 데스크톱
   // InvestorRankingTable.tsx와 동일하게 급등/발굴/전조 3개 탭을 화면엔 하나로 합친다.
   { id: 'postmarket', label: '장마감 후보군', icon: Target, badge: 'NEW' },
@@ -185,7 +190,7 @@ function buildOverlapSubLine(item: RankingItem, overlapMode: OverlapMode, quietA
   return parts.join(' · ') || item.investorBadge || '-';
 }
 
-function RankingCard({ item, activeTab, overlapMode, quietAccumFilter, pivotSignal, pivotWatchActive, isExpanded, onClick }: { item: RankingItem; activeTab: RankingType; overlapMode: OverlapMode; quietAccumFilter: boolean; pivotSignal?: PivotReclaimSignal; pivotWatchActive: boolean; isExpanded: boolean; onClick?: () => void }) {
+function RankingCard({ item, activeTab, overlapMode, quietAccumFilter, pivotSignal, pivotWatchActive, isExpanded, onClick, isWsWatchlisted, wsWatchlistToggling, onToggleWsWatchlist }: { item: RankingItem; activeTab: RankingType; overlapMode: OverlapMode; quietAccumFilter: boolean; pivotSignal?: PivotReclaimSignal; pivotWatchActive: boolean; isExpanded: boolean; onClick?: () => void; isWsWatchlisted: boolean; wsWatchlistToggling: boolean; onToggleWsWatchlist: () => void }) {
   const isUp = item.change >= 0;
   return (
     <div
@@ -206,6 +211,17 @@ function RankingCard({ item, activeTab, overlapMode, quietAccumFilter, pivotSign
         <div className="flex items-center gap-1.5">
           <span className="text-sm font-bold text-slate-900 dark:text-white truncate">{item.name}</span>
           <span className="text-[10px] font-mono text-slate-400 shrink-0">{item.symbol}</span>
+          {/* 🚨 [기능 추가 - 데스크톱과 동일(수칙 1-6), 사용자 지적: "모바일도 데스크탑이랑 같아야지"]
+              관심종목 추가/제거 별 토글 - 카드 자체의 onClick(아코디언 펼침)과 겹치지 않게 막는다. */}
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); onToggleWsWatchlist(); }}
+            disabled={wsWatchlistToggling}
+            title={isWsWatchlisted ? '관심종목에서 제거' : '관심종목에 추가 (실시간 웹소켓 감시)'}
+            className={`shrink-0 cursor-pointer disabled:opacity-40 ${isWsWatchlisted ? 'text-amber-500' : 'text-slate-300 dark:text-slate-600'}`}
+          >
+            <Star className="w-3.5 h-3.5" fill={isWsWatchlisted ? 'currentColor' : 'none'} />
+          </button>
           {item.isCreditAvailable && <ShieldCheck className="w-3 h-3 text-emerald-500 shrink-0" />}
           {/* 🚨 [기능 재설계 - 데스크톱과 동일(수칙 1-6), 사용자 지적: "번개로고가 vwap인거 아니야? 그게
               나오지 말고 피봇에 녹아들어서 점수를 내야하는거라고" - "지금 로고별로 나오잖아"] VWAP 독립
@@ -315,6 +331,8 @@ function RankingCard({ item, activeTab, overlapMode, quietAccumFilter, pivotSign
             ? (item.surgingBadge || `거래량 ${item.volume?.toLocaleString() || '-'}`)
             : activeTab === 'comprehensive'
             ? `종합점수 ${item.scoreBreakdown?.totalScore ?? '-'}점`
+            : activeTab === 'watchlist'
+            ? `거래량 ${item.volume?.toLocaleString() || '-'}`
             : `순매수 ${formatEok(item.netBuyAmtEok)}`}
         </div>
       </div>
@@ -385,6 +403,43 @@ export default function MobileRankingList() {
   const [quietAccumFilter, setQuietAccumFilter] = useState(false);
   const [market, setMarket] = useState<MarketType>('ALL');
   const queryClient = useQueryClient();
+
+  // 🚨 [기능 추가 - 데스크톱과 동일(수칙 1-6), 사용자 지적: "당연하지 모바일도 데스크탑이랑 볼수있는
+  // 탭과 차트는 같아야지"] 관심종목 탭만 있고 종목을 추가/제거할 방법이 없으면 못 채운다 - 데스크톱의
+  // 종목명 옆 별(⭐) 토글을 그대로 이식한다(InvestorRankingTable.tsx 125~158번 줄과 동일 queryKey
+  // 'ws-watchlist'를 써서 두 화면이 별도 호출 없이 캐시를 공유한다).
+  const { data: wsWatchlistData } = useQuery<{ symbols: Array<{ symbol: string }> }>({
+    queryKey: ['ws-watchlist'],
+    queryFn: async () => {
+      const res = await fetch('/api/ws-watchlist');
+      if (!res.ok) throw new Error('관심종목 목록 조회 실패');
+      return res.json();
+    },
+    staleTime: 30 * 1000,
+    refetchInterval: 30 * 1000,
+  });
+  const wsWatchlistSet = new Set((wsWatchlistData?.symbols || []).map((s) => s.symbol));
+  const [wsWatchlistTogglingSymbol, setWsWatchlistTogglingSymbol] = useState<string | null>(null);
+
+  const toggleWsWatchlistSymbol = async (symbol: string, name: string) => {
+    setWsWatchlistTogglingSymbol(symbol);
+    try {
+      if (wsWatchlistSet.has(symbol)) {
+        await fetch(`/api/ws-watchlist?symbol=${symbol}`, { method: 'DELETE' });
+      } else {
+        await fetch('/api/ws-watchlist', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ symbol, name }),
+        });
+      }
+      await queryClient.invalidateQueries({ queryKey: ['ws-watchlist'] });
+      await queryClient.invalidateQueries({ queryKey: ['m-surging', 'watchlist'] });
+    } finally {
+      setWsWatchlistTogglingSymbol(null);
+    }
+  };
+
   const [creditOnly, setCreditOnly] = useState(false);
   const [entryReadyOnly, setEntryReadyOnly] = useState(false);
   const [weights, setWeights] = useState<Weights>(DEFAULT_WEIGHTS);
@@ -411,13 +466,14 @@ export default function MobileRankingList() {
   // 🚨 [기능 추가 - "모바일에는 장마감 후보군 안뜨던데"] 데스크톱 InvestorRankingTable.tsx 84번 줄과 동일 -
   // postmarket도 surgingMode 서브탭과 무관하게 항상 고정된 모드(postmarket)로 fetchSurging을 재사용한다.
   // discovery/precursor도 순매수 개념이 없는 "장마감 후보군" 그룹이라 포함한다.
-  const isSurging = activeTab === 'surging' || activeTab === 'comprehensive' || activeTab === 'postmarket' || activeTab === 'discovery' || activeTab === 'precursor';
+  // 🚨 [기능 추가 - 데스크톱과 동일(수칙 1-6)] watchlist도 순매수 개념이 없는 그룹이라 포함한다.
+  const isSurging = activeTab === 'surging' || activeTab === 'comprehensive' || activeTab === 'postmarket' || activeTab === 'discovery' || activeTab === 'precursor' || activeTab === 'watchlist';
   const isComprehensive = activeTab === 'comprehensive';
   // 🚨 [기능 통합 - 사용자 요청: "장마감 탭들을 장마감 후보군 탭으로 합쳐서 각자 토글로"] 데스크톱과
   // 동일 - 화면엔 "장마감 후보군" 탭 하나만 보이고 activeTab 자체는 셋 중 하나를 유지한다.
   const isPostMarketGroup = activeTab === 'postmarket' || activeTab === 'discovery' || activeTab === 'precursor';
 
-  const surgingQueryMode = activeTab === 'comprehensive' ? 'comprehensive' : activeTab === 'postmarket' ? 'postmarket' : surgingMode;
+  const surgingQueryMode = activeTab === 'comprehensive' ? 'comprehensive' : activeTab === 'postmarket' ? 'postmarket' : activeTab === 'watchlist' ? 'watchlist' : surgingMode;
 
   const { data, isLoading, isError } = useQuery<InvestorRankingResponse>({
     queryKey: activeTab === 'discovery'
@@ -446,6 +502,16 @@ export default function MobileRankingList() {
         }
         return res.json();
       }
+      // 🚨 [기능 추가 - 데스크톱과 동일(수칙 1-6), 사용자 요청: "관심종목으로 누른 종목들 관심종목으로
+      // 따로 빼줘"] 관심종목(ws_watchlist) 실시간 현재가 - market 필터 없이 등록된 전체를 반환한다.
+      if (activeTab === 'watchlist') {
+        const res = await fetch('/api/stock/watchlist-ranking');
+        if (!res.ok) {
+          const errJson = await res.json().catch(() => null);
+          throw new Error(errJson?.error || '관심종목 데이터를 가져오는 중 오류가 발생했습니다.');
+        }
+        return res.json();
+      }
       return isSurging
         ? fetchSurging(surgingQueryMode, market)
         : fetchRanking(activeTab, direction, period, overlapMode, market, activeTab === 'overlap' && quietAccumFilter);
@@ -459,9 +525,56 @@ export default function MobileRankingList() {
       const d = query.state.data as InvestorRankingResponse | undefined;
       if (d?.isPartial) return 4 * 1000;
       if (activeTab === 'program' && d?.stillWarming) return 50 * 1000;
+      // 🚨 [기능 재설계 - 데스크톱과 동일(수칙 1-6)] 아래 realtime_quotes 구독(useEffect)이 진짜 push를
+      // 담당하고, 이 30초는 연결 끊김/재시작/41개 초과분 대비 안전망으로만 남긴다.
+      if (activeTab === 'watchlist') return 30 * 1000;
       return false;
     },
   });
+
+  // 🎯 [기능 추가 - 데스크톱과 동일(수칙 1-6), 사용자 요청: "관심종목 웹소캣으로 실시간 된다는거
+  // 아니였어? 안되는데" - "당연하지 모바일도 데스크탑이랑 같아야지"] Supabase Realtime으로
+  // realtime_quotes 테이블 변경을 직접 구독한다 - 오라클 클라우드의 ws-bridge가 KIS 웹소켓 틱마다
+  // 이 표에 upsert하면 Postgres 변경 스트림이 새 웹소켓 서버 없이 브라우저로 바로 push된다.
+  useEffect(() => {
+    if (activeTab !== 'watchlist') return;
+    const client = getSupabaseBrowserClient();
+    if (!client) return;
+
+    const queryKey = ['m-surging', 'watchlist', market];
+    const channel = client
+      .channel('m-watchlist-realtime-quotes')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'realtime_quotes' },
+        (payload) => {
+          const row = payload.new as { symbol?: string; price?: number; change?: number; change_rate?: number; volume?: number } | null;
+          if (!row?.symbol) return;
+          queryClient.setQueryData(queryKey, (old: InvestorRankingResponse | undefined) => {
+            if (!old?.list) return old;
+            let changed = false;
+            const list = old.list.map((item) => {
+              if (item.symbol !== row.symbol) return item;
+              changed = true;
+              return {
+                ...item,
+                currentPrice: row.price ?? item.currentPrice,
+                change: row.change ?? item.change,
+                changeRate: row.change_rate ?? item.changeRate,
+                volume: row.volume ?? item.volume,
+              };
+            });
+            if (!changed) return old;
+            return { ...old, list };
+          });
+        }
+      )
+      .subscribe();
+
+    return () => {
+      client.removeChannel(channel);
+    };
+  }, [activeTab, market, queryClient]);
 
   // 🎯 [기능 추가 - 데스크톱과 동일(수칙 1-6), 사용자 요청: "장마감 후보들은 언제 업데이트 되는거야? 각자
   // 토글 옆에 표시해줘"] 발굴/전조는 lastBatchTime을 이미 갖고 있다(수칙 1-5 기준일 표기 관례) - 지금
@@ -968,6 +1081,9 @@ export default function MobileRankingList() {
                   pivotWatchActive={pivotWatchActive}
                   isExpanded={isExpanded}
                   onClick={() => setExpandedSymbol((prev) => (prev === item.symbol ? '' : item.symbol))}
+                  isWsWatchlisted={wsWatchlistSet.has(item.symbol)}
+                  wsWatchlistToggling={wsWatchlistTogglingSymbol === item.symbol}
+                  onToggleWsWatchlist={() => toggleWsWatchlistSymbol(item.symbol, item.name)}
                 />
                 {isExpanded && (
                   <div className="pl-1 pr-0.5 -mt-1">
