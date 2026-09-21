@@ -731,8 +731,14 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
   });
 
   // 4. Assign overallRank to the FULL Sorted List (Strictly 1, 2, 3, 4, 5...)
+  // 🚨 [버그 수정 - 사용자 지적: "거래대금 하면 원래 순위가 몇이었는지도 알려줘야해"] "거래대금" 버튼을
+  // 누르면 위 3번 정렬 단계에서 item.rank 필드 자체는 손대지 않은 채 배열 순서만 amountEok 기준으로
+  // 바뀐다 - 즉 이 시점의 item.rank는 아직 "정상"(교집합 등 원래 정렬 기준) 순위값이다. 여기서
+  // rank/overallRank를 1,2,3...으로 덮어쓰기 직전에 그 값을 originalRank로 스냅샷해둔다(수칙 1-6,
+  // vwapOriginalRank와 동일한 관례).
   fullList = fullList.map((item, idx) => ({
     ...item,
+    originalRank: item.rank,
     rank: idx + 1,
     overallRank: idx + 1,
   }));
@@ -822,7 +828,17 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
     displayList = displayList
       .map((item) => ({ item, ...getWatchPriority(item) }))
       .filter(({ priority }) => priority > 0)
-      .sort((a, b) => b.priority - a.priority || (Number(b.vwapBonus) - Number(a.vwapBonus)) || a.elapsedMs - b.elapsedMs || a.item.rank - b.item.rank)
+      // 🚨 [버그 수정 - 사용자 지적: "실시간 감시했을때 거래대금 버튼 안먹힌다"] 예전엔 sortField가
+      // 무엇이든 무조건 priority(재돌파 신선도) 기준으로만 재정렬해서, "거래대금" 버튼을 눌러 sortField를
+      // 'amountEok'로 바꿔도 화면 순서가 그대로 priority 순이었다(3번 정렬 단계의 결과가 여기서 통째로
+      // 덮어써짐). 실시간 감시로 걸러진(priority>0) 종목 안에서도 거래대금 버튼을 누르면 거래대금 순으로
+      // 보여야 하므로, sortField==='amountEok'일 때는 priority 정렬 대신 거래대금 내림차순을 쓴다.
+      .sort((a, b) => {
+        if (sortField === 'amountEok') {
+          return (b.item.amountEok || 0) - (a.item.amountEok || 0);
+        }
+        return b.priority - a.priority || (Number(b.vwapBonus) - Number(a.vwapBonus)) || a.elapsedMs - b.elapsedMs || a.item.rank - b.item.rank;
+      })
       .map(({ item }, idx) => ({
         ...item,
         vwapOriginalRank: item.rank,
@@ -2234,10 +2250,20 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
                                 🚨 [기능 재설계 - 사용자 지적: "그게 나오지 말고 피봇에 녹아들어서"] 정렬
                                 자체가 이제 pivotWatchActive(R1/R2)로만 일어나므로(vwapOriginalRank도 그
                                 때만 채워짐) 게이트를 pivotWatchActive 하나로 맞춘다. */}
-                            {pivotWatchActive && (item as any).vwapOriginalRank !== undefined && (
+                            {/* 🎯 [기능 추가 - 사용자 요청: "거래대금 하면 원래 순위가 몇이었는지도
+                                알려줘야해"] "거래대금" 버튼으로 정렬 중일 때는, 위 rank 배지 자체가 이미
+                                거래대금 순위로 바뀌어 있으므로 원래(정상 순서) 순위를 별도로 옆에 표기한다.
+                                같은 자리를 두고 vwapOriginalRank 표기와 겹칠 수 있어 이 경우가 우선한다. */}
+                            {sortField === 'amountEok' && (item as any).originalRank !== undefined ? (
                               <span className="text-[9px] text-slate-400 dark:text-slate-500 font-sans font-normal whitespace-nowrap shrink-0">
-                                (전체 {(item as any).vwapOriginalRank}위)
+                                (원래 {(item as any).originalRank}위)
                               </span>
+                            ) : (
+                              pivotWatchActive && (item as any).vwapOriginalRank !== undefined && (
+                                <span className="text-[9px] text-slate-400 dark:text-slate-500 font-sans font-normal whitespace-nowrap shrink-0">
+                                  (전체 {(item as any).vwapOriginalRank}위)
+                                </span>
+                              )
                             )}
                           </div>
                         </td>
