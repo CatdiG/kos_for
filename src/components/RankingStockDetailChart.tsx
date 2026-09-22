@@ -797,33 +797,10 @@ function computeDefault3mZoomRange(candles: any[]): { start: number; end: number
     return visibleCandles3m.map((c: any) => ({ ...c, tradingValueEok: Number(((c.closePrice * (c.volume || 0)) / 100000000).toFixed(2)) }));
   }, [visibleCandles3m]);
 
-  // 🚨 [버그 수정 - 실측: 콘솔에 "Unable to preventDefault inside passive event listener invocation"
-  // 반복 발생] React 17+는 onWheel을 passive 리스너로 등록해서 합성 이벤트 안에서 e.preventDefault()가
-  // 항상 무시되고 에러만 찍힌다(줌 state 갱신 자체는 됐지만, 휠 도는 동안 배경 페이지도 같이 스크롤되는
-  // 부작용은 못 막았다). 아래 useEffect에서 { passive: false } 네이티브 리스너를 직접 붙여야
-  // preventDefault가 실제로 먹는다 - onWheel prop 대신 컨테이너 ref에 이 핸들러를 연결한다.
-  const handle3mWheelZoom = (e: WheelEvent) => {
-    if (candles3m.length <= MIN_VISIBLE_3M_CANDLES) return;
-    e.preventDefault();
-    const current = candle3mZoomRange || { start: 0, end: candles3m.length };
-    const windowSize = current.end - current.start;
-    const zoomFactor = e.deltaY < 0 ? 0.85 : 1 / 0.85; // 휠 위 = 확대(창 축소), 휠 아래 = 축소(창 확대)
-    let newSize = Math.round(windowSize * zoomFactor);
-    newSize = Math.max(MIN_VISIBLE_3M_CANDLES, Math.min(candles3m.length, newSize));
-    // 🚨 [버그 수정 - 사용자 지적: "엉뚱한곳이 확대되잖아"] 예전엔 항상 "현재 보이는 구간의 정중앙"을
-    // 고정한 채 확대해서, 마우스 커서가 어디 있든 무시하고 늘 화면 한가운데만 확대됐다 - 커서가 가리키는
-    // 지점(candle3mPriceContainerRef 기준 픽셀 위치)을 그대로 고정한 채 그 지점 기준으로 확대/축소한다.
-    const rect = (e.currentTarget as HTMLDivElement).getBoundingClientRect();
-    const plotWidth = Math.max(1, rect.width - 90);
-    const cursorRatio = Math.max(0, Math.min(1, (e.clientX - rect.left) / plotWidth));
-    let newStart = Math.round(current.start + cursorRatio * (windowSize - newSize));
-    let newEnd = newStart + newSize;
-    if (newStart < 0) { newStart = 0; newEnd = newSize; }
-    if (newEnd > candles3m.length) { newEnd = candles3m.length; newStart = newEnd - newSize; }
-    setIs3mZoomAnchoredToLatest(false); // 수동 조작 시작 - 기본 화면 자동 확장 중단(더블클릭으로 복귀)
-    if (newSize >= candles3m.length) { setCandle3mZoomRange(null); return; }
-    setCandle3mZoomRange({ start: newStart, end: newEnd });
-  };
+  // 🚨 [기능 제거 - 사용자 지적: "차트 스크롤하면 확대/축소 되는거 없애줘. 다른거 스크롤할때 그게
+  // 자꾸 적용되어서 오히려 시간뺏어먹어"] 마우스 휠로 차트를 확대/축소하는 기능이, 차트 위를 지나가며
+  // 페이지를 스크롤하려 할 때마다 의도치 않게 확대/축소를 걸어 오히려 방해가 됐다. 드래그로 구간을
+  // 찝어서 확대/축소하는 기능과 더블클릭 초기화는 그대로 남기고, 휠 줌만 제거한다.
 
   const handle3mDragStart = (e: React.MouseEvent<HTMLDivElement>) => {
     if (candles3m.length <= MIN_VISIBLE_3M_CANDLES) return;
@@ -936,21 +913,10 @@ function computeDefault3mZoomRange(candles: any[]): { start: number; end: number
     setIs3mZoomAnchoredToLatest(true);
   };
 
-  // 🚨 [버그 수정 - 위 handle3mWheelZoom 주석 참고] onWheel React prop 대신 { passive: false } 네이티브
-  // 리스너를 두 컨테이너(가격 차트·거래량 차트) 모두에 직접 붙인다 - 최신 핸들러 클로저를 쓰도록 관련
-  // 값이 바뀔 때마다 재등록한다.
+  // 드래그 확대/축소(handle3mDragStart/Move/End)와 크로스헤어가 컨테이너 좌표 계산에 쓰는 ref -
+  // 휠 줌 제거 후에도 그대로 필요하다.
   const chart3mPriceContainerRef = React.useRef<HTMLDivElement>(null);
   const chart3mVolumeContainerRef = React.useRef<HTMLDivElement>(null);
-  React.useEffect(() => {
-    const containers = [chart3mPriceContainerRef.current, chart3mVolumeContainerRef.current].filter(Boolean) as HTMLDivElement[];
-    containers.forEach((el) => el.addEventListener('wheel', handle3mWheelZoom, { passive: false }));
-    return () => {
-      containers.forEach((el) => el.removeEventListener('wheel', handle3mWheelZoom));
-    };
-    // activeTab이 'daily'->'3m'으로 바뀌는 순간에야 두 컨테이너 ref가 처음 DOM에 붙으므로(그 전엔 이
-    // JSX 자체가 렌더링 안 됨) activeTab도 의존성에 넣어야 탭을 눌러 3분봉으로 들어온 뒤에 리스너가
-    // 실제로 등록된다 - 안 넣으면 최초 마운트 시점(ref가 아직 null)에만 실행되고 다신 재실행 안 됐다.
-  }, [candles3m.length, candle3mZoomRange, activeTab]);
 
   // 1. R1 저항 → 지지 전환 판정 (당일 장중 고가/종가가 R1 이상으로 돌파한 이력이 있는지)
   const isR1Flipped = React.useMemo(() => {
@@ -2080,7 +2046,13 @@ function computeDefault3mZoomRange(candles: any[]): { start: number; end: number
                   </div>
                 ) : (
                   <ResponsiveContainer width="100%" height={220}>
-                    <ComposedChart syncId="stock-3m-chart" data={visibleCandles3m} margin={{ top: 10, right: 75, left: -10, bottom: 0 }}>
+                    {/* 🚨 [버그 수정 - 사용자 지적: "3분봉 차트랑 거래량, 거래대금 차트 위치가 안맞잖냐.
+                        같은거리에 딱 맞춰줘야지"] 아래 거래량·거래대금 패널(2333번째 줄)은 오른쪽에
+                        거래대금 보조축(YAxis width=40)이 추가로 붙어서 margin.right(75)+보조축(40)=115px를
+                        플롯 오른쪽에서 뺀다. 이 가격 차트는 보조축이 없어 margin.right=75만 빼서, 같은
+                        syncId로 정렬돼도 두 패널의 실제 플롯 폭(=캔들 위치)이 40px씩 어긋나 있었다.
+                        보조축 폭만큼 margin.right를 동일하게 115로 맞춰 두 패널의 플롯 오른쪽 경계를 맞춘다. */}
+                    <ComposedChart syncId="stock-3m-chart" data={visibleCandles3m} margin={{ top: 10, right: 115, left: -10, bottom: 0 }}>
                       <CartesianGrid strokeDasharray="3 3" stroke={gridColor} opacity={0.7} />
                       <XAxis dataKey="time" height={24} stroke={axisColor} tick={{ fontSize: 9 }} interval="preserveStartEnd" />
                       <YAxis stroke={axisColor} tickFormatter={formatYPrice} tick={{ fontSize: 10 }} width={72} domain={intraday3mPriceAxis.priceDomain} allowDataOverflow={true} />
@@ -2167,9 +2139,11 @@ function computeDefault3mZoomRange(candles: any[]): { start: number; end: number
                   </ResponsiveContainer>
                 )}
 
-                {/* 3분봉 매물대(가격대별 누적 거래량) 반투명 오버레이 - 일간 차트와 동일 패턴 */}
+                {/* 3분봉 매물대(가격대별 누적 거래량) 반투명 오버레이 - 일간 차트와 동일 패턴.
+                    🚨 위 ComposedChart margin.right를 115로 맞춘 것과 동일하게(수칙 1-6), 이 오버레이도
+                    실제 플롯 오른쪽 경계(115px)에 맞춰야 매물대 막대가 캔들과 어긋나지 않는다. */}
                 {show3mVolumeProfile && volumeProfile3mBins.length > 0 && (
-                  <div className="absolute left-[72px] right-[75px] top-0 bottom-0 pointer-events-none">
+                  <div className="absolute left-[72px] right-[115px] top-0 bottom-0 pointer-events-none">
                     <svg width="100%" height="100%" style={{ overflow: 'visible' }}>
                       {volumeProfile3mBins.map((bin, i) => {
                         const { minPrice: iMin, maxPrice: iMax } = intraday3mPriceAxis;
@@ -2202,7 +2176,7 @@ function computeDefault3mZoomRange(candles: any[]): { start: number; end: number
                 {hover3mPriceInfo && (
                   <div className="absolute inset-0 pointer-events-none z-30">
                     <div
-                      className="absolute left-[72px] right-[75px] border-b border-dashed border-[#94a3b8]"
+                      className="absolute left-[72px] right-[115px] border-b border-dashed border-[#94a3b8]"
                       style={{ top: `${hover3mPriceInfo.y}px` }}
                     />
                     <div

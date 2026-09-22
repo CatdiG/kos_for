@@ -4,7 +4,7 @@ import { TOP_50_STOCKS, getStockName, resolveMarketType, getSettledAsOfDateLabel
 import { TOP_300_STOCKS } from './stockUniverse300';
 import { fetchKisInvestorTrend, fetchKisProgramTrade, fetchKisProgramTradeDaily, fetchKisForeignInstitutionRanking, assertNoMockLeak, getKisAccessToken, getEvaluatedCreditStatus, computeStatusBadgeFromTrend, resolveTrendForBadge, getGlobalMap, syncSharedRankCache, kisQueue } from './kisApi';
 import { InvestorRankingResponse, RankingItem, RankingType, RankingDirection, RankingPeriod, MarketType } from './types';
-import { saveRawDailyDataToSupabase, RawDailyInvestorRecord, upsertSharedRankCache, fetchSharedRankCacheBatch, fetchWsWatchlist } from './supabase';
+import { saveRawDailyDataToSupabase, RawDailyInvestorRecord, upsertSharedRankCache, fetchSharedRankCacheBatch, fetchWsWatchlist, fetchRecentSnapshotSymbols } from './supabase';
 
 // 🚨 [버그 수정 - 수칙 1-3/1-6] DELAY_MS/CHUNK_SIZE/MAX_RETRIES/RETRY_DELAY_MS는 선언만 되고 실제
 // 로직에서 단 한 곳도 참조되지 않는 죽은 설정값이었다(실사용 청크 크기는 759번 줄의 별도 로컬
@@ -762,13 +762,27 @@ export async function runRawDailyDataBackfill(
   // 하지만 불필요한 KIS 호출을 줄인다).
   let targetList: Array<{ symbol: string; name: string }> = baseList;
   if (startIdx === 0) {
-    const watchlist = await fetchWsWatchlist().catch(() => []);
+    // 🚨 [버그 수정 - 사용자 지적: "영원히 미수집이면 안되지. 그걸 고치라고 말하는거잖아"] 발굴/전조
+    // 장마감 후보는 TOP_300_STOCKS보다 훨씬 넓은 유니버스(KOSPI+KOSDAQ 약 260여 종목)에서 뽑히는데
+    // "다음날 결과"는 이 raw_daily_data에서만 찾다 보니 TOP_300 밖 후보는 영원히 "미수집"으로 남았다.
+    // 관심종목과 동일한 방식(바로 아래)으로, 최근 5거래일간 discovery_snapshots/precursor_snapshots에
+    // 등장했던 TOP_300 밖 종목도 함께 수집 대상에 얹는다(수칙 1-6, 새 로직 아님).
+    const [watchlist, discoverySymbols, precursorSymbols, postmarketSymbols] = await Promise.all([
+      fetchWsWatchlist().catch(() => []),
+      fetchRecentSnapshotSymbols('discovery_snapshots', 5).catch(() => []),
+      fetchRecentSnapshotSymbols('precursor_snapshots', 5).catch(() => []),
+      fetchRecentSnapshotSymbols('postmarket_snapshots', 5).catch(() => []),
+    ]);
     const top300Symbols = new Set(TOP_300_STOCKS.map((s) => s.symbol));
-    const extra = watchlist
-      .filter((w) => !top300Symbols.has(w.symbol))
-      .map((w) => ({ symbol: w.symbol, name: w.name || w.symbol }));
+    const extraMap = new Map<string, string>();
+    [...watchlist, ...discoverySymbols, ...precursorSymbols, ...postmarketSymbols].forEach((w) => {
+      if (!top300Symbols.has(w.symbol) && !extraMap.has(w.symbol)) {
+        extraMap.set(w.symbol, w.name || w.symbol);
+      }
+    });
+    const extra = Array.from(extraMap.entries()).map(([symbol, name]) => ({ symbol, name }));
     if (extra.length > 0) {
-      console.log(`[Raw Daily Data Backfill] 관심종목 중 TOP_300 밖 ${extra.length}개 추가 수집: ${extra.map((e) => e.name).join(', ')}`);
+      console.log(`[Raw Daily Data Backfill] 관심종목+발굴/전조/급등장마감 후보 중 TOP_300 밖 ${extra.length}개 추가 수집: ${extra.map((e) => e.name).join(', ')}`);
       targetList = [...baseList, ...extra];
     }
   }

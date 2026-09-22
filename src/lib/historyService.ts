@@ -13,7 +13,7 @@ import {
   isEtfOrEtn,
 } from './types';
 import { TOP_300_STOCKS } from './stockUniverse300';
-import { getSupabaseAdmin, getSupabasePublic, RawDailyInvestorRecord, fetchWsWatchlist, fetchDiscoverySnapshots, fetchPrecursorSnapshots } from './supabase';
+import { getSupabaseAdmin, getSupabasePublic, RawDailyInvestorRecord, fetchWsWatchlist, fetchDiscoverySnapshots, fetchPrecursorSnapshots, fetchPostmarketSnapshots } from './supabase';
 import { resolveMarketType, resolveStockPriceAndChange } from './mockData';
 import { getGlobalMap } from './globalCache';
 import { fetchKisRecentDailyBars, fetchKisIndexDailyTrend } from './kisApi';
@@ -982,6 +982,57 @@ export async function calculatePostMarketFromHistory(
   const limit = params.limit || 50;
   const dateLabel = formatDateLabel(normalizedDate);
 
+  // 🚨 [버그 수정 - 사용자 지적: "급등 장마감은 실시간이랑 히스토리랑 종목 맞지도 않아. 3번은 2번으로
+  // 수정해"] postmarket_snapshots(라이브가 쓰는 fetchKisPostMarketCandidates의 결과를 그대로 저장해둔
+  // 스냅샷, discovery/precursor_snapshots와 동일 패턴)가 있으면 그걸 그대로 쓴다. 예전엔 아래
+  // raw_daily_data(TOP_300_STOCKS만 있음)로 항상 "재구성"했는데, 실시간은 시장 전체(KOSPI+KOSDAQ)를
+  // 스캔해서 유니버스 자체가 달라 종목이 어긋났다 - 스냅샷을 그대로 읽으면 실시간=히스토리가 원천적으로
+  // 같은 소스가 된다. 스냅샷이 아직 없는 과거 날짜(이 기능 도입 이전)만 기존 재구성 로직으로 폴백한다.
+  const snapshotRows = await fetchPostmarketSnapshots(normalizedDate);
+  if (snapshotRows.length > 0) {
+    const snapshotFiltered: RankingItem[] = (market === 'ALL' ? snapshotRows : snapshotRows.filter((r) => r.market === market))
+      .slice(0, limit)
+      .map((r) => ({
+        rank: r.rank || 0,
+        symbol: r.symbol,
+        name: r.name,
+        market: r.market,
+        currentPrice: r.current_price,
+        change: 0,
+        changeRate: r.change_rate,
+        volume: r.volume || 0,
+        ratioVsVolume: 0,
+        netBuyQty: 0,
+        netBuyAmt: 0,
+        netBuyAmtEok: 0,
+        amountEok: r.amount_eok,
+        overlapCount: r.overlap_count,
+        surgingModes: r.surging_modes as any,
+        surgingRanks: r.surging_ranks as any,
+        surgingBadge: r.surging_badge,
+        todayRangePct: r.today_range_pct,
+        closePositionPct: r.close_position_pct,
+        postMarketScore: r.post_market_score,
+        foreignSupplyBadge: r.foreign_supply_badge,
+        organSupplyBadge: r.organ_supply_badge,
+        asOfDateLabel: dateLabel,
+      }));
+
+    const snapshotNextDay = await loadNextTradingDayRecords(normalizedDate);
+    const snapshotWithNextDay = attachNextDayResults(snapshotFiltered, snapshotNextDay);
+
+    return {
+      type: 'postmarket',
+      direction: 'buy',
+      period: params.period || '1d',
+      list: snapshotWithNextDay,
+      isMock: false,
+      updatedAt: new Date().toISOString(),
+      lastBatchTime: dateLabel,
+    };
+  }
+
+  // ↓↓↓ 스냅샷이 없는 과거 날짜(compute-postmarket-snapshot 크론 도입 이전) 전용 재구성 폴백 ↓↓↓
   const rawRecords = await loadRawDailyRecordsForDate(normalizedDate);
   const filtered = rawRecords
     .filter((r) => market === 'ALL' || resolveMarketType(r.symbol) === market)
@@ -1069,7 +1120,9 @@ export async function calculatePostMarketFromHistory(
     list: withNextDay,
     isMock: false,
     updatedAt: new Date().toISOString(),
-    lastBatchTime: dateLabel,
+    // 🎯 [정직 표시 - 수칙 1-5, discovery/precursor와 동일 관례] 이 경로는 스냅샷이 없는 과거 날짜용
+    // 재구성 폴백이라 raw_daily_data(TOP_300_STOCKS) 유니버스로 다시 계산한 근사치다.
+    lastBatchTime: `${dateLabel} (TOP300 원본 재구성 - 실시간 탭과 종목 구성이 다를 수 있음)`,
   };
 }
 

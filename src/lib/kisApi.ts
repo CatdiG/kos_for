@@ -7108,9 +7108,18 @@ const pivotWatchHistory = getGlobalMap<string, PivotWatchState>('pivotWatchHisto
 // - 그래서 화면(level 선택 로직)이 R2는 아예 못 본 셈 치고 더 낮은 R1(예전에 진짜 재돌파했던 이력)을
 // 대신 보여줬다. hasBroken(뚫은 적 있음)만으로도 신호를 노출하되, "눌렸다 다시 뚫음(재돌파)"과 "처음
 // 뚫고 계속 유지(holding)"를 holding 필드로 구분해서 어느 쪽인지는 여전히 알 수 있게 한다.
+// 🚨 [버그 수정 - 사용자 지적: "실시간 감시에서 왜 급등주 순매수 조건에 부합하는 종목 데이터가
+// 없습니다 라고 뜨는지, r1,r2 유지만 되어도 떠야하는거아 아냐?"] 예전엔 samples.length < 2(=이 서버
+// 인스턴스에서 아직 실시간 표본을 2개 못 모음)면 hasBroken이 true(Supabase에서 복구됐어도)여도
+// 무조건 전부 false로 뭉갰다 - Vercel 서버리스는 재배포·콜드스타트마다 이 메모리(pivotWatchHistory)가
+// 통째로 날아가는데, 그 직후 첫 폴링(최소 15초) 동안은 R1/R2를 실제로 계속 유지 중인 종목까지 전부
+// "신호 없음"으로 보여 화면이 통째로 비었다(실측: 프로덕션에서 배포 직후 재현). approach/freshness
+// 계산 함수들(computeApproachingSignal, computeReclaimFreshness)은 표본 1개만 있어도 안전하게
+// 동작하도록 이미 짜여 있으므로(길이 부족분은 함수 내부에서 자체적으로 안전 처리), currentlyAbove
+// 판정에 필요한 표본 1개(방금 push한 현재가)만 있으면 그대로 진행한다.
 function computePivotLevelSignal(samples: PivotSample[], levelState: PivotLevelState, target: number, symbol: string, levelType: 'r1' | 'r2'): PivotLevelSignal {
   const hadPriorBreak = levelState.hasBroken && levelState.hasBeenBelowAfterBreak;
-  if (samples.length < 2 || !levelState.hasBroken) {
+  if (samples.length < 1 || !levelState.hasBroken) {
     return { reclaimed: false, holding: false, elapsedMs: null, approaching: false, sellPressureWarning: false, volSurge: false, hadPriorBreak };
   }
 
@@ -7224,7 +7233,11 @@ async function computePivotSignalFromLive(
     }
   }
 
-  if (state.samples.length < 2) return { ...fallback, insufficientData: true };
+  // 🚨 [버그 수정 - 위 computePivotLevelSignal 주석과 동일 원인(수칙 1-6)] 여기서 samples.length < 2로
+  // 막아버리면 방금 push한 현재가 표본(samples.length === 1)이 있어도 computePivotLevelSignal 자체를
+  // 호출하지 못해 hasBroken 복구 여부와 무관하게 무조건 fallback(전부 false)이 나갔다. 표본이 정말
+  // 0개(현재가 조회 자체 실패 등 - live가 null이면 위에서 이미 fallback으로 빠짐)일 때만 막는다.
+  if (state.samples.length < 1) return { ...fallback, insufficientData: true };
 
   return {
     symbol,

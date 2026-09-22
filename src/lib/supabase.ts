@@ -518,6 +518,154 @@ export async function fetchPrecursorSnapshots(date: string): Promise<PrecursorSn
   }
 }
 
+// ============================================================================
+// 🎯 [기능 추가 - 사용자 지적: "급등 장마감은 실시간이랑 히스토리랑 종목 맞지도 않아. 3번은 2번으로
+// 수정해"] discovery/precursor_snapshots와 동일한 이유·동일 패턴(scratch/
+// create_postmarket_snapshots_table.sql) - 라이브 fetchKisPostMarketCandidates(kisApi.ts)의 결과를
+// 그대로 저장해서, 히스토리가 raw_daily_data로 "재구성"하지 않고 이 스냅샷을 그대로 읽게 한다(수칙 1-6).
+// ============================================================================
+export interface PostmarketSnapshotRecord {
+  date: string;
+  symbol: string;
+  name: string;
+  market: string;
+  current_price: number;
+  change_rate: number;
+  volume?: number;
+  amount_eok?: number;
+  overlap_count?: number;
+  surging_modes?: string[];
+  surging_ranks?: Array<{ type: string; label: string; rank: number }>;
+  surging_badge?: string;
+  today_range_pct?: number;
+  close_position_pct?: number;
+  post_market_score?: number;
+  foreign_supply_badge?: string;
+  organ_supply_badge?: string;
+  rank?: number;
+}
+
+export async function savePostmarketSnapshots(records: PostmarketSnapshotRecord[]): Promise<boolean> {
+  if (!records || records.length === 0) return false;
+  const client = getSupabaseAdmin();
+  if (!client) return false;
+  const date = records[0].date;
+  try {
+    const { error: deleteError } = await client.from('postmarket_snapshots').delete().eq('date', date);
+    if (deleteError) {
+      console.warn('[Supabase postmarket_snapshots Delete Error]', deleteError.message);
+    }
+
+    const { error } = await client
+      .from('postmarket_snapshots')
+      .upsert(records, { onConflict: 'date,symbol' });
+    if (error) {
+      console.warn('[Supabase postmarket_snapshots Save Error]', error.message);
+      return false;
+    }
+    console.log(`[Supabase postmarket_snapshots Save] ${date} 급등 장마감 스냅샷 ${records.length}건 저장 완료(기존 행 삭제 후 재적재)`);
+    return true;
+  } catch (e: any) {
+    console.error('[Supabase postmarket_snapshots Save Exception]', e?.message || e);
+    return false;
+  }
+}
+
+export async function fetchPostmarketSnapshots(date: string): Promise<PostmarketSnapshotRecord[]> {
+  const client = getSupabaseAdmin() || getSupabasePublic();
+  if (!client || !date) return [];
+  try {
+    const { data, error } = await client
+      .from('postmarket_snapshots')
+      .select('*')
+      .eq('date', date)
+      .order('rank', { ascending: true });
+    if (error) {
+      console.warn('[Supabase postmarket_snapshots List Error]', error.message);
+      return [];
+    }
+    return data || [];
+  } catch (e: any) {
+    console.warn('[Supabase postmarket_snapshots List Exception]', e?.message || e);
+    return [];
+  }
+}
+
+// 🚨 [버그 수정 - 사용자 지적: "장마감 후보군 발굴, 전조가 왜 장 끝나면 부합하는 종목이 없다고
+// 나오지?? 장 끝나면 원래 있던게 다음 업데이트가 될때까지 남아 있어야지"] discovery/precursor 라우트가
+// 항상 "오늘 날짜"로만 스냅샷을 조회했다 - 크론 자체(14:30/14:40)는 매 거래일 정상 실행되고 있었지만
+// (실측: discovery_snapshots에 20260921 23건·20260918 32건 정상 저장), 자정이 지나 날짜가 바뀌는
+// 순간부터 그날 크론이 돌기 전까지는 "오늘 날짜"로 저장된 행이 하나도 없어 매번 빈 화면이 됐다.
+// "오늘"을 고집하지 않고 "가장 최근에 저장된 날짜"를 먼저 찾아 그 날짜의 스냅샷을 그대로 보여주면,
+// 다음 계산이 나올 때까지 직전 결과가 자연스럽게 유지된다. discovery/precursor 둘 다 완전히 동일한
+// 패턴이라 공용 함수로 합친다(수칙 1-6).
+async function fetchLatestSnapshotDate(table: 'discovery_snapshots' | 'precursor_snapshots' | 'postmarket_snapshots'): Promise<string | null> {
+  const client = getSupabaseAdmin() || getSupabasePublic();
+  if (!client) return null;
+  try {
+    const { data, error } = await client
+      .from(table)
+      .select('date')
+      .order('date', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (error || !data?.date) return null;
+    return data.date;
+  } catch (e: any) {
+    console.warn(`[Supabase ${table} Latest Date Exception]`, e?.message || e);
+    return null;
+  }
+}
+
+/** 가장 최근에 계산이 저장된 날짜의 발굴 장마감 스냅샷을 반환한다(오늘자가 아직 없으면 직전 계산분). */
+export async function fetchLatestDiscoverySnapshots(): Promise<{ date: string; rows: DiscoverySnapshotRecord[] } | null> {
+  const date = await fetchLatestSnapshotDate('discovery_snapshots');
+  if (!date) return null;
+  const rows = await fetchDiscoverySnapshots(date);
+  return { date, rows };
+}
+
+/** 가장 최근에 계산이 저장된 날짜의 전조 장마감 스냅샷을 반환한다(오늘자가 아직 없으면 직전 계산분). */
+export async function fetchLatestPrecursorSnapshots(): Promise<{ date: string; rows: PrecursorSnapshotRecord[] } | null> {
+  const date = await fetchLatestSnapshotDate('precursor_snapshots');
+  if (!date) return null;
+  const rows = await fetchPrecursorSnapshots(date);
+  return { date, rows };
+}
+
+// 🚨 [버그 수정 - 사용자 지적: "영원히 미수집이면 안되지. 그걸 고치라고 말하는거잖아"] 발굴/전조
+// 후보는 raw_daily_data(TOP_300_STOCKS 295종목)보다 훨씬 넓은 유니버스(KIS 순위 TR 직접 호출, KOSPI+
+// KOSDAQ 약 260여 종목)에서 뽑히는데, "다음날 결과"는 raw_daily_data에서만 찾다 보니 TOP_300 밖 후보는
+// 영원히 "미수집"으로 남았다. batchCollector.ts의 runRawDailyDataBackfill이 이미 "관심종목 중 TOP_300
+// 밖 종목도 추가 수집"하는 동일한 패턴을 쓰고 있었다(미투온 201490 실측 사례) - 최근 며칠간
+// discovery_snapshots/precursor_snapshots에 등장했던 심볼도 똑같이 그 추가 수집 대상에 얹는다(수칙 1-6).
+export async function fetchRecentSnapshotSymbols(
+  table: 'discovery_snapshots' | 'precursor_snapshots' | 'postmarket_snapshots',
+  recentDays: number = 5
+): Promise<Array<{ symbol: string; name: string }>> {
+  const client = getSupabaseAdmin() || getSupabasePublic();
+  if (!client) return [];
+  try {
+    const { data, error } = await client
+      .from(table)
+      .select('symbol, name, date')
+      .order('date', { ascending: false })
+      .limit(2000);
+    if (error || !data || data.length === 0) return [];
+    const recentDates = new Set(
+      Array.from(new Set(data.map((r: any) => r.date))).sort().reverse().slice(0, recentDays)
+    );
+    const seen = new Map<string, string>();
+    data.forEach((r: any) => {
+      if (recentDates.has(r.date) && !seen.has(r.symbol)) seen.set(r.symbol, r.name);
+    });
+    return Array.from(seen.entries()).map(([symbol, name]) => ({ symbol, name }));
+  } catch (e: any) {
+    console.warn(`[Supabase ${table} Recent Symbols Exception]`, e?.message || e);
+    return [];
+  }
+}
+
 /**
  * Supabase DB intraday_3m_candles 테이블에서 특정 날짜에 "실제로 조회되어 저장된 적 있는" 심볼과
  * 그 시점의 봉 개수 목록을 반환한다. 큐레이션된 TOP_300_STOCKS 밖의 종목(검색으로 연 임의 종목 등)도

@@ -30,6 +30,10 @@
       "schedule": "40 5 * * 1-5"
     },
     {
+      "path": "/api/cron/compute-postmarket-snapshot",
+      "schedule": "45 6 * * 1-5"
+    },
+    {
       "path": "/api/cron/collect-raw-daily-data?startIdx=0&endIdx=148",
       "schedule": "30 9 * * 1-5"
     },

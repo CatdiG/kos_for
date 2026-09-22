@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { fetchPrecursorSnapshots } from '@/lib/supabase';
+import { fetchLatestPrecursorSnapshots } from '@/lib/supabase';
 import { InvestorRankingResponse, RankingItem } from '@/lib/types';
 
 // 🎯 [기능 추가 - 사용자 요청: "전조 장마감" 탭] /api/stock/discovery와 동일 패턴 - 매일 14:40(KST)
-// cron(compute-precursor-postmarket)이 미리 계산해 precursor_snapshots에 저장해둔 오늘자 결과만 읽는다.
+// cron(compute-precursor-postmarket)이 미리 계산해 precursor_snapshots에 저장해둔 결과를 읽는다.
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
@@ -17,13 +17,17 @@ function todayYmdKst(): string {
   return `${y}${m}${d}`;
 }
 
+// 🚨 [버그 수정 - discovery/route.ts와 동일 원인·동일 수정(수칙 1-6)] "오늘 날짜" 고정 조회 대신
+// "가장 최근에 저장된 날짜"를 그대로 보여줘서, 자정이 지난 뒤 그날 14:40 크론이 돌기 전까지도 직전
+// 결과가 유지되게 한다.
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
   const market = searchParams.get('market') || 'ALL';
-  const date = todayYmdKst();
 
   try {
-    const rows = await fetchPrecursorSnapshots(date);
+    const latest = await fetchLatestPrecursorSnapshots();
+    const date = latest?.date || null;
+    const rows = latest?.rows || [];
     const filtered = market === 'ALL' ? rows : rows.filter((r) => r.market === market);
 
     const list: RankingItem[] = filtered.map((r) => ({
@@ -48,6 +52,14 @@ export async function GET(request: NextRequest) {
       precursorScore: r.precursor_score,
     }));
 
+    const isTodayResult = date === todayYmdKst();
+    const dateLabel = date ? `${date.slice(4, 6)}/${date.slice(6, 8)}` : null;
+    const lastBatchTime = !dateLabel
+      ? '아직 계산되지 않았습니다 (매 거래일 14:40 자동 계산)'
+      : isTodayResult
+      ? `${dateLabel} 14:40 기준`
+      : `${dateLabel} 14:40 기준 (다음 계산 전까지 최근 결과 유지 중)`;
+
     const response: InvestorRankingResponse = {
       type: 'precursor',
       direction: 'buy',
@@ -55,7 +67,7 @@ export async function GET(request: NextRequest) {
       list,
       isMock: false,
       updatedAt: new Date().toISOString(),
-      lastBatchTime: list.length === 0 ? '아직 계산되지 않았습니다 (매 거래일 14:40 자동 계산)' : `${date.slice(4, 6)}/${date.slice(6, 8)} 14:40 기준`,
+      lastBatchTime,
     };
 
     return NextResponse.json(response, {

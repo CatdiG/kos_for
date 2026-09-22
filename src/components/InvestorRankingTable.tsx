@@ -365,7 +365,7 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
   // 만들라고")은 버튼 배치(교집합 pill 옆에 병합 토글을 둔다)에 대한 것이었지, 교집합 목록을 감시에서
   // 제외하라는 뜻이 아니었다. 제외 로직을 걷어내고 다른 서브모드와 동일하게 취급한다.
   const reclaimWatchEnabled = watchTogglesVisible && (vwapWatchEnabled || pivotWatchEnabled);
-  const { data: reclaimWatchMap, isFetching: reclaimWatchFetching } = useQuery<Map<string, ReclaimWatchSignal>>({
+  const { data: reclaimWatchMap, isFetching: reclaimWatchFetching, refetch: refetchReclaimWatch } = useQuery<Map<string, ReclaimWatchSignal>>({
     queryKey: ['reclaim-watch', activeTab, surgingMode, market, direction, period, overlapMode, overlapLimit, quietAccumFilter, vwapWatchSymbolsKey],
     queryFn: () => fetchReclaimWatchSignals(vwapWatchSymbols),
     enabled: reclaimWatchEnabled && vwapWatchSymbols.length > 0,
@@ -1137,9 +1137,16 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
               )}
 
               {/* Refresh Button */}
+              {/* 🚨 [버그 수정 - 사용자 지적: "왜 새로고침 토글 안통해. 아무것도 안뜰때 내가 새로고침해서라도
+                  뜨게 하려했는데"] 이 버튼은 메인 랭킹 쿼리(refetch)만 다시 불러왔다 - 실시간 감시(VWAP/
+                  피봇 재돌파) 신호는 완전히 별도의 쿼리(reclaimWatchMap, 15초 자동 폴링)라서 눌러도 전혀
+                  반응하지 않았다. 감시가 켜져 있을 때는 그 쿼리도 함께 즉시 refetch한다. */}
               <button
                 type="button"
-                onClick={() => refetch()}
+                onClick={() => {
+                  refetch();
+                  if (reclaimWatchEnabled) refetchReclaimWatch();
+                }}
                 disabled={isFetching}
                 className="p-1.5 bg-slate-100 hover:bg-slate-200 dark:bg-[#1e222d] dark:hover:bg-[#2a2e39] border border-slate-200 dark:border-[#2a2e39] rounded-xl text-slate-600 dark:text-gray-300 transition cursor-pointer"
                 title="새로고침"
