@@ -1251,6 +1251,10 @@ export interface WatchSignalStateRow {
   pivotR1HasBeenBelowAfterBreak: boolean;
   pivotR2HasBroken: boolean;
   pivotR2HasBeenBelowAfterBreak: boolean;
+  // 🎯 [기능 추가 - 사용자 지적: "돌파재시도 왜 몇번했는지 안알려줘?"] VWAP의 crossCount와 동일한
+  // 개념(수칙 1-6) - scratch/alter_watch_signal_state_add_pivot_cross_count.sql 실행 필요.
+  pivotR1CrossCount: number;
+  pivotR2CrossCount: number;
 }
 
 /**
@@ -1263,12 +1267,27 @@ export async function fetchWatchSignalState(date: string, symbol: string): Promi
   if (!client) return null;
 
   try {
-    const { data, error } = await client
+    let { data, error } = await client
       .from('watch_signal_state')
-      .select('vwap_has_been_below, vwap_cross_count, pivot_r1_has_broken, pivot_r1_has_been_below_after_break, pivot_r2_has_broken, pivot_r2_has_been_below_after_break')
+      .select('vwap_has_been_below, vwap_cross_count, pivot_r1_has_broken, pivot_r1_has_been_below_after_break, pivot_r2_has_broken, pivot_r2_has_been_below_after_break, pivot_r1_cross_count, pivot_r2_cross_count')
       .eq('date', date)
       .eq('symbol', symbol)
       .maybeSingle();
+
+    // 🚨 [버그 수정 - 회귀 방지] scratch/alter_watch_signal_state_add_pivot_cross_count.sql을 아직
+    // 실행하지 않은 배포 환경(컬럼 자체가 없음)에서는 위 select가 통째로 실패(PostgREST 400)해서
+    // hasBroken 등 기존에 잘 쓰던 복구 필드까지 전부 null로 무너뜨릴 뻔했다 - 새 컬럼 없이 한 번 더
+    // 시도해서, 마이그레이션 전에도 기존 기능은 그대로 살아있게 한다.
+    if (error) {
+      const fallback = await client
+        .from('watch_signal_state')
+        .select('vwap_has_been_below, vwap_cross_count, pivot_r1_has_broken, pivot_r1_has_been_below_after_break, pivot_r2_has_broken, pivot_r2_has_been_below_after_break')
+        .eq('date', date)
+        .eq('symbol', symbol)
+        .maybeSingle();
+      data = fallback.data as any;
+      error = fallback.error;
+    }
 
     if (error || !data) return null;
     return {
@@ -1278,6 +1297,8 @@ export async function fetchWatchSignalState(date: string, symbol: string): Promi
       pivotR1HasBeenBelowAfterBreak: !!data.pivot_r1_has_been_below_after_break,
       pivotR2HasBroken: !!data.pivot_r2_has_broken,
       pivotR2HasBeenBelowAfterBreak: !!data.pivot_r2_has_been_below_after_break,
+      pivotR1CrossCount: (data as any).pivot_r1_cross_count || 0,
+      pivotR2CrossCount: (data as any).pivot_r2_cross_count || 0,
     };
   } catch (e: any) {
     console.warn('[Supabase watch_signal_state Read Exception]', e?.message || e);
@@ -1302,6 +1323,8 @@ export async function upsertWatchSignalState(date: string, symbol: string, parti
     if (partial.pivotR1HasBeenBelowAfterBreak !== undefined) row.pivot_r1_has_been_below_after_break = partial.pivotR1HasBeenBelowAfterBreak;
     if (partial.pivotR2HasBroken !== undefined) row.pivot_r2_has_broken = partial.pivotR2HasBroken;
     if (partial.pivotR2HasBeenBelowAfterBreak !== undefined) row.pivot_r2_has_been_below_after_break = partial.pivotR2HasBeenBelowAfterBreak;
+    if (partial.pivotR1CrossCount !== undefined) row.pivot_r1_cross_count = partial.pivotR1CrossCount;
+    if (partial.pivotR2CrossCount !== undefined) row.pivot_r2_cross_count = partial.pivotR2CrossCount;
 
     const { error } = await client
       .from('watch_signal_state')

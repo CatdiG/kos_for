@@ -811,13 +811,24 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
     if (pLevel?.approaching) {
       pPriority = 5;
     } else if ((pLevel?.reclaimed || pLevel?.holding) && pLevel.elapsedMs != null) {
-      // 피봇(R1/R2)은 아직 crossCount를 추적하지 않아(DB 스키마 추가 필요) 잦은 등락 등급은 적용되지 않는다.
-      const info = computeReclaimFreshnessInfo(pLevel.elapsedMs, 0);
+      // 🎯 [기능 추가 - 사용자 지적: "돌파재시도 왜 몇번했는지 안알려줘?"] 피봇(R1/R2)도 이제
+      // crossCount를 추적하므로(watch_signal_state 테이블 확장, 수칙 1-6) VWAP과 동일하게 잦은 등락
+      // 등급(FREQUENT_FLIP_CROSS_COUNT=4 이상)이 적용된다.
+      const info = computeReclaimFreshnessInfo(pLevel.elapsedMs, pLevel.crossCount);
       pPriority = info.priority;
       pElapsed = pLevel.elapsedMs;
     } else if (pLevel?.hadPriorBreak) {
       pPriority = 1;
     }
+
+    // 🚨 [재설계 - 사용자 지적: "저렇게 박스를 하는게 내가 3분봉 보고 매매에 대해 도움이 되나? 박스권
+    // 하락, 박스권 돌파 이런걸 원했던건데... 순위표 배지로"] R1/R2와 무관한 순수 가격 흐름 기반 신호
+    // (priceLeg)도 정렬에 반영한다 - R1/R2 신호(pPriority)와 서로 다른 근거로 계산되므로 더 높은(더
+    // 볼 가치 있는) 쪽을 그대로 쓴다(max). 'up'(박스권재돌파)은 approaching과 비슷한 급의 진입 신호라
+    // 그 바로 아래, 'down'(R2돌파 후 하락)은 위험 신호라 hadPriorBreak보다는 위, 'box'(박스권 유지)는
+    // 예전 inBox와 동일한 자리(2)를 그대로 쓴다 - 아직 실측 백테스트로 검증한 등급은 아니다(수칙 1-7).
+    const priceLegPriority = p?.priceLeg?.type === 'up' ? 4 : p?.priceLeg?.type === 'down' ? 3 : p?.priceLeg?.type === 'box' ? 2 : 0;
+    pPriority = Math.max(pPriority, priceLegPriority);
 
     const v = vwapWatchActive ? vwapReclaimMap!.get(item.symbol) : undefined;
     const vwapBonus = !!(v?.reclaimed || v?.approaching); // "VWAP도 같이 회복 중" - 가산점(동점 타이브레이커)만, priority 자체엔 안 섞는다.
@@ -2348,7 +2359,7 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
                             섞여 있으면 어느 배지가 종목 정보고 어느 게 감시 신호인지 헷갈린다는 지적을
                             반영해 분리했다. */}
                         {reclaimWatchEnabled && (
-                          <td className="p-2.5 font-sans min-w-[140px] max-w-[220px]">
+                          <td className="p-2.5 font-sans min-w-[160px] max-w-[220px]">
                             <div className="flex items-center gap-1.5 flex-wrap">
                               {/* 🚨 [기능 재설계 - 사용자 지적: "번개로고가 vwap인거 아니야? 그게 나오지 말고
                                   피봇에 녹아들어서 점수를 내야하는거라고" - "지금 로고별로 나오잖아"] VWAP
@@ -2377,6 +2388,45 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
                               {pivotWatchEnabled && (() => {
                                 const p = pivotReclaimMap?.get(item.symbol);
                                 if (!p) return null;
+                                // 🚨 [재설계 - 사용자 지적: "저렇게 박스를 하는게 내가 3분봉 보고 매매에
+                                // 대해 도움이 되나? 박스권 하락, 박스권 돌파 이런걸 원했던건데... 순위표
+                                // 배지로"] R1/R2와 무관한 순수 가격 흐름 신호(priceLeg)를 R1/R2별 배지보다
+                                // 먼저, 최우선으로 보여준다 - 사용자가 실제로 원한 "지금 매매에 참고할 상태"
+                                // 이기 때문이다. RankingStockDetailChart.tsx의 파랑(상승)/보라(하락) 색을
+                                // 그대로 재사용한다(수칙 1-6).
+                                if (p.priceLeg?.type === 'up') {
+                                  return (
+                                    <span
+                                      className="text-[9px] px-1 py-0.2 rounded font-sans font-bold shrink-0 border bg-blue-50 dark:bg-blue-950/50 text-blue-600 dark:text-blue-400 border-blue-200 dark:border-blue-800/60 flex items-center gap-0.5"
+                                      title={`순수 가격 흐름만으로 판단: 최근 ${p.priceLeg.durationMs >= 3600000 ? `${Math.floor(p.priceLeg.durationMs / 3600000)}시간 ${Math.round((p.priceLeg.durationMs % 3600000) / 60000)}분` : `${Math.round(p.priceLeg.durationMs / 60000)}분`}간 ${p.priceLeg.changePct >= 0 ? '+' : ''}${p.priceLeg.changePct}% 상승 중(박스권재돌파) - R1/R2 여부와 무관`}
+                                    >
+                                      <Target className="w-2.5 h-2.5" />
+                                      박스권재돌파(+{p.priceLeg.changePct}%)
+                                    </span>
+                                  );
+                                }
+                                if (p.priceLeg?.type === 'down') {
+                                  return (
+                                    <span
+                                      className="text-[9px] px-1 py-0.2 rounded font-sans font-bold shrink-0 border bg-purple-50 dark:bg-purple-950/50 text-purple-600 dark:text-purple-400 border-purple-200 dark:border-purple-800/60 flex items-center gap-0.5"
+                                      title={`순수 가격 흐름만으로 판단: 최근 ${p.priceLeg.durationMs >= 3600000 ? `${Math.floor(p.priceLeg.durationMs / 3600000)}시간 ${Math.round((p.priceLeg.durationMs % 3600000) / 60000)}분` : `${Math.round(p.priceLeg.durationMs / 60000)}분`}간 ${p.priceLeg.changePct}% 하락 중(고점 찍고 내려가는 중) - R1/R2 여부와 무관`}
+                                    >
+                                      <Target className="w-2.5 h-2.5" />
+                                      박스권 하락({p.priceLeg.changePct}%)
+                                    </span>
+                                  );
+                                }
+                                if (p.priceLeg?.type === 'box') {
+                                  return (
+                                    <span
+                                      className="text-[9px] px-1 py-0.2 rounded font-sans font-bold shrink-0 border bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-400 border-amber-200 dark:border-amber-800/60 flex items-center gap-0.5"
+                                      title={`순수 가격 흐름만으로 판단: 최근 고점·저점이 반복해서 ±${(p.priceLeg.changePct / 2).toFixed(2)}% 범위 안에 갇혀 횡보 중입니다 - R1/R2 여부와 무관`}
+                                    >
+                                      <Target className="w-2.5 h-2.5" />
+                                      박스권 유지(±{(p.priceLeg.changePct / 2).toFixed(2)}%)
+                                    </span>
+                                  );
+                                }
                                 // 🚨 [버그 수정 - 사용자 지적: "성호전자 왜 r2 뚫엇는데 r1완료라고만 뜸?"]
                                 // holding(처음 뚫은 뒤 한 번도 안 내려가고 계속 위)도 레벨 선택에 포함.
                                 const level: 'R2' | 'R1' | null =
@@ -2388,6 +2438,19 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
                                   : p.r1.hadPriorBreak ? 'R1' : null;
                                 if (!level) return null;
                                 const sig = level === 'R2' ? p.r2 : p.r1;
+                                // 🎯 [기능 추가 - 사용자 지적: "돌파재시도 왜 몇번했는지 안알려줘?"] 오늘
+                                // 이 선을 2번째 이상 (재)시도 중일 때만 "N번째 시도"를 덧붙인다 - 첫 돌파는
+                                // "재시도"라고 부를 게 없어서(crossCount===1) 굳이 안 보여준다.
+                                // 🚨 [버그 수정 - 사용자 지적: "뱃지 겹치잖아. 안겹치게 예쁘게 만들어"] 배지
+                                // 문구 안에 이어 붙이면 텍스트가 길어져 "감시 신호" 칸 폭을 넘어 옆 "현재가"
+                                // 칸과 겹쳤다(실측: 최대 43px 침범). 배지 밖의 별도 작은 텍스트로 분리해서
+                                // 부모 flex-wrap 컨테이너가 필요할 때 자동으로 다음 줄로 넘기게 한다.
+                                const crossLabel = sig.crossCount >= 2 ? `${sig.crossCount}번째 시도` : '';
+                                const crossLabelSpan = crossLabel ? (
+                                  <span className="text-[8px] text-slate-400 dark:text-slate-500 font-sans font-normal shrink-0">
+                                    {crossLabel}
+                                  </span>
+                                ) : null;
                                 if (sig.approaching) {
                                   return (
                                     <span
@@ -2416,53 +2479,67 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
                                     reclaimed(재돌파)보다는 약하지만 hadPriorBreak(이전이력만)보다는 강한
                                     신호라 별도 색으로 구분한다. */}
                                 if (sig.holding && sig.elapsedMs != null) {
-                                  const info = computeReclaimFreshnessInfo(sig.elapsedMs, 0);
+                                  const info = computeReclaimFreshnessInfo(sig.elapsedMs, sig.crossCount);
                                   return (
-                                    <span
-                                      className="text-[9px] px-1 py-0.2 rounded font-sans font-bold shrink-0 border bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 border-indigo-200 dark:border-indigo-800/60 flex items-center gap-0.5"
-                                      title={`${level}을(를) 뚫은 뒤 한 번도 내려오지 않고 ${info.elapsedLabel}째 유지 중입니다(아직 눌림 후 재돌파 이력은 없음)${sig.volSurge ? ' - 거래량 속도도 여전히 높습니다' : ''}`}
-                                    >
-                                      <Target className="w-2.5 h-2.5" />
-                                      {level} 돌파유지({info.elapsedLabel}){sig.volSurge ? '·거래량↑' : ''}
-                                    </span>
+                                    <>
+                                      <span
+                                        className="text-[9px] px-1 py-0.2 rounded font-sans font-bold shrink-0 border bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 border-indigo-200 dark:border-indigo-800/60 flex items-center gap-0.5"
+                                        title={`${level}을(를) 뚫은 뒤 한 번도 내려오지 않고 ${info.elapsedLabel}째 유지 중입니다(아직 눌림 후 재돌파 이력은 없음)${sig.volSurge ? ' - 거래량 속도도 여전히 높습니다' : ''} - 오늘 ${level} 돌파 시도 ${sig.crossCount}번째`}
+                                      >
+                                        <Target className="w-2.5 h-2.5" />
+                                        {level} 돌파유지({info.elapsedLabel}){sig.volSurge ? '·거래량↑' : ''}
+                                      </span>
+                                      {crossLabelSpan}
+                                    </>
                                   );
                                 }
                                 if (sig.reclaimed && sig.elapsedMs != null) {
                                   // VWAP과 동일한 신선도 재설계(수칙 1-6) - reclaimed(가격만, 즉시)는
                                   // 그대로 보여주고, elapsedMs로 방금 확인/유지 중/오래된 완료를 구분한다.
-                                  const info = computeReclaimFreshnessInfo(sig.elapsedMs, 0); // 피봇은 crossCount 미추적
+                                  // 🎯 [기능 추가 - 사용자 지적: "돌파재시도 왜 몇번했는지 안알려줘?"] 피봇도
+                                  // 이제 crossCount를 추적하므로 VWAP과 동일하게 넘긴다(수칙 1-6).
+                                  const info = computeReclaimFreshnessInfo(sig.elapsedMs, sig.crossCount);
                                   if (info.tier === 'justConfirmed') {
                                     return (
-                                      <span
-                                        className="text-[9px] px-1 py-0.2 rounded font-sans font-bold shrink-0 border bg-purple-50/60 dark:bg-purple-950/30 text-purple-400 dark:text-purple-500 border-purple-100 dark:border-purple-900/60 flex items-center gap-0.5"
-                                        title={`방금(${info.elapsedLabel} 전) ${level}을(를) 재돌파했습니다 - 순간적으로 삐죽 올라간 것인지 아직 힘을 확인하는 중입니다(신뢰도 낮음)`}
-                                      >
-                                        <Target className="w-2.5 h-2.5" />
-                                        {level} 재돌파 확인
-                                      </span>
+                                      <>
+                                        <span
+                                          className="text-[9px] px-1 py-0.2 rounded font-sans font-bold shrink-0 border bg-purple-50/60 dark:bg-purple-950/30 text-purple-400 dark:text-purple-500 border-purple-100 dark:border-purple-900/60 flex items-center gap-0.5"
+                                          title={`방금(${info.elapsedLabel} 전) ${level}을(를) 재돌파했습니다 - 순간적으로 삐죽 올라간 것인지 아직 힘을 확인하는 중입니다(신뢰도 낮음) - 오늘 ${level} 돌파 시도 ${sig.crossCount}번째`}
+                                        >
+                                          <Target className="w-2.5 h-2.5" />
+                                          {level} 재돌파 확인
+                                        </span>
+                                        {crossLabelSpan}
+                                      </>
                                     );
                                   }
                                   const staleClass = info.tier === 'established'
                                     ? 'bg-slate-50 dark:bg-slate-900/60 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-slate-700/60'
                                     : 'bg-purple-50 dark:bg-purple-950/60 text-purple-600 dark:text-purple-400 border-purple-200 dark:border-purple-800/60';
                                   return (
-                                    <span
-                                      className={`text-[9px] px-1 py-0.2 rounded font-sans font-bold shrink-0 border flex items-center gap-0.5 ${staleClass}`}
-                                      title={`${info.elapsedLabel} 전 ${level}을(를) 재돌파해 계속 유지 중입니다${sig.volSurge ? ' - 거래량 속도도 여전히 높습니다' : ''}(참고용${info.tier === 'established' ? ', 진입 시점은 이미 지났을 수 있음' : ''})`}
-                                    >
-                                      <Target className="w-2.5 h-2.5" />
-                                      {level} 완료({info.elapsedLabel}){sig.volSurge ? '·거래량↑' : ''}
-                                    </span>
+                                    <>
+                                      <span
+                                        className={`text-[9px] px-1 py-0.2 rounded font-sans font-bold shrink-0 border flex items-center gap-0.5 ${staleClass}`}
+                                        title={`${info.elapsedLabel} 전 ${level}을(를) 재돌파해 계속 유지 중입니다${sig.volSurge ? ' - 거래량 속도도 여전히 높습니다' : ''}(참고용${info.tier === 'established' ? ', 진입 시점은 이미 지났을 수 있음' : ''}) - 오늘 ${level} 돌파 시도 ${sig.crossCount}번째`}
+                                      >
+                                        <Target className="w-2.5 h-2.5" />
+                                        {level} 완료({info.elapsedLabel}){sig.volSurge ? '·거래량↑' : ''}
+                                      </span>
+                                      {crossLabelSpan}
+                                    </>
                                   );
                                 }
+                                {/* 🎯 [기능 재설계 - 사용자 요청: "박스구간 뚫고 내려오면 돌파후하락"] "이전이력
+                                    (대기)"라는 모호한 문구 대신, 뚫었다가 다시 아래로 내려간 상태임을 명확히
+                                    드러낸다(로직 자체는 그대로 - hadPriorBreak, 문구만 재배치). */}
                                 if (sig.hadPriorBreak) {
                                   return (
                                     <span
                                       className="text-[9px] px-1 py-0.2 rounded font-sans font-bold shrink-0 border bg-slate-50 dark:bg-slate-900/60 text-slate-400 dark:text-slate-500 border-slate-200 dark:border-slate-700/60 flex items-center gap-0.5 opacity-70"
-                                      title={`오늘 이미 ${level}을(를) 뚫었다가 다시 아래로 내려간 이력이 있습니다(현재는 재접근 신호 없음, 대기 중)`}
+                                      title={`오늘 ${level}을(를) 뚫었다가(박스권에 갇혀 있었을 수도 있음) 다시 아래로 내려갔습니다(현재는 재접근 신호 없음, 대기 중)`}
                                     >
                                       <Target className="w-2.5 h-2.5" />
-                                      {level} 이전이력(대기)
+                                      {level} 돌파후하락
                                     </span>
                                   );
                                 }

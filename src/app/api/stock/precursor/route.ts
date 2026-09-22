@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { fetchLatestPrecursorSnapshots } from '@/lib/supabase';
 import { InvestorRankingResponse, RankingItem } from '@/lib/types';
+import { mergeCreditStatusToRanking } from '@/lib/kisApi';
 
 // 🎯 [기능 추가 - 사용자 요청: "전조 장마감" 탭] /api/stock/discovery와 동일 패턴 - 매일 14:40(KST)
 // cron(compute-precursor-postmarket)이 미리 계산해 precursor_snapshots에 저장해둔 결과를 읽는다.
@@ -52,6 +53,11 @@ export async function GET(request: NextRequest) {
       precursorScore: r.precursor_score,
     }));
 
+    // 🚨 [버그 수정 - 사용자 지적: "장마감 후보군 신용데이터는 다 똑같은걸 쓸텐데 왜 신용이 되는지
+    // 안되는지 안뜨냐고"] discovery/route.ts와 동일 원인·동일 수정(수칙 1-6) - 이미 있는 공용 함수
+    // mergeCreditStatusToRanking(kis_credits 테이블)을 그대로 재사용한다.
+    const listWithCredit = await mergeCreditStatusToRanking(list);
+
     const isTodayResult = date === todayYmdKst();
     const dateLabel = date ? `${date.slice(4, 6)}/${date.slice(6, 8)}` : null;
     const lastBatchTime = !dateLabel
@@ -64,7 +70,7 @@ export async function GET(request: NextRequest) {
       type: 'precursor',
       direction: 'buy',
       period: '1d',
-      list,
+      list: listWithCredit,
       isMock: false,
       updatedAt: new Date().toISOString(),
       lastBatchTime,

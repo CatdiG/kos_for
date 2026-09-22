@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { fetchLatestDiscoverySnapshots } from '@/lib/supabase';
 import { InvestorRankingResponse, RankingItem } from '@/lib/types';
+import { mergeCreditStatusToRanking } from '@/lib/kisApi';
 
 // 🎯 [기능 추가 - 사용자 요청: "발굴 장마감" 탭] 매일 14:30(KST) cron(compute-discovery-postmarket)이
 // 미리 계산해 discovery_snapshots에 저장해둔 결과를 읽는다 - 종목당 최대 4회 KIS 호출이 필요한
@@ -56,6 +57,12 @@ export async function GET(request: NextRequest) {
       discoveryScore: r.discovery_score,
     }));
 
+    // 🚨 [버그 수정 - 사용자 지적: "장마감 후보군 신용데이터는 다 똑같은걸 쓸텐데 왜 신용이 되는지
+    // 안되는지 안뜨냐고"] 급등 장마감(postmarket, surging/route.ts)은 mergeCreditStatusToRanking으로
+    // kis_credits 테이블을 병합하는데 여기(발굴 장마감)만 그 호출이 아예 빠져있어서 isCreditAvailable이
+    // 항상 undefined였다 - 새 로직이 아니라 이미 있는 동일 공용 함수를 그대로 재사용한다(수칙 1-6).
+    const listWithCredit = await mergeCreditStatusToRanking(list);
+
     // 🎯 [기능 추가 - 수칙 1-5: 대체 데이터 출처일 명시] date가 오늘이 아니면(아직 오늘자 계산 전이라
     // 직전 거래일 결과를 그대로 보여주는 중이면) "(N/N 기준)"으로 며칠자인지 명확히 밝힌다 - 어제
     // 결과를 오늘 결과인 것처럼 속여 보여주지 않는다.
@@ -71,7 +78,7 @@ export async function GET(request: NextRequest) {
       type: 'discovery',
       direction: 'buy',
       period: '1d',
-      list,
+      list: listWithCredit,
       isMock: false,
       updatedAt: new Date().toISOString(),
       lastBatchTime,

@@ -2,7 +2,7 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { InvestorTrendDay, InvestorTrendResponse, KisTokenResponse, ProgramTradeIntradayPoint, ProgramTradeSummary, SupplySummary, TrendPeriod, InvestorRankingResponse, RankingItem, RankingDirection, RankingPeriod, RankingType, OverlapInvestorRank, MarketType, SurgingRankItem, ScoreBreakdown, SurgingMode, isEtfOrEtn, IntradayCandlePoint, IntradayPivotFibonacciLevels, IntradayChartResponse, IndexTrendResponse, IndexTrendDay, StockBadgeItem, StockBadgeSummaryResponse, VwapReclaimSignal, PivotReclaimSignal, PivotLevelSignal } from './types';
+import { InvestorTrendDay, InvestorTrendResponse, KisTokenResponse, ProgramTradeIntradayPoint, ProgramTradeSummary, SupplySummary, TrendPeriod, InvestorRankingResponse, RankingItem, RankingDirection, RankingPeriod, RankingType, OverlapInvestorRank, MarketType, SurgingRankItem, ScoreBreakdown, SurgingMode, isEtfOrEtn, IntradayCandlePoint, IntradayPivotFibonacciLevels, IntradayChartResponse, IndexTrendResponse, IndexTrendDay, StockBadgeItem, StockBadgeSummaryResponse, VwapReclaimSignal, PivotReclaimSignal, PivotLevelSignal, PriceLegSignal } from './types';
 import { getStockName, resolveStockPriceAndChange, updateRuntimeStockPrice, registerRuntimeStockName, resolveMarketType, computeUnifiedStatusBadge, getSettledAsOfDateLabel, getKrxEstimateSlotInfo, findSplitSafeStartIndex, roundToKrxTick, computeRecentVolumeRatio } from './mockData';
 import { TOP_300_STOCKS } from './stockUniverse300';
 import { fetchTokenFromSupabase, fetchCreditBatchFromSupabase, saveCreditBatchToSupabase, CreditBatchRow, fetchIntraday3mCandlesFromSupabase, fetchFreshIntraday3mCandlesFromSupabase, saveIntraday3mCandlesToSupabase, isSymbolInWsWatchlist, fetchConsecutiveOverlapWatch, upsertConsecutiveOverlapWatch, fetchDailyOverlapFirstSeen, insertDailyOverlapFirstSeenIfMissing, fetchLatestActiveBeforeDate, upsertSharedRankCache, fetchSharedRankCacheBatch, fetchWatchSignalState, upsertWatchSignalState, logReclaimSignalEvent, updateReclaimSignalOutcome } from './supabase';
@@ -4898,6 +4898,13 @@ export async function fetchKisPostMarketCandidates(market: MarketType = 'ALL'): 
 const DISCOVERY_ENRICH_LIMIT = 40; // 넓은 seed 풀 중 값비싼 종목별 조회 대상으로 삼는 상위 개수(거래대금 기준)
 const DISCOVERY_ENRICH_CHUNK_SIZE = 3;
 const DISCOVERY_ENRICH_DELAY_MS = 900;
+// 🚨 [기능 재설계 - 사용자 지적: "발굴인데 너무 급등한 애들이 1등을 해서 고쳐야 한다고 생각했어. 걔네들은
+// 급등으로 빠져야지"] "전조 장마감"이 이미 갖고 있던 하드 필터(PRECURSOR_MAX_TODAY_CHANGE_PCT=8, 아래
+// 참고)와 동일 개념(수칙 1-6)을 발굴에도 적용한다 - 전조는 "거의 안 움직인 것"만 남기는 엄격한 기준이라
+// 발굴엔 너무 낮으므로, 사용자가 직접 확정한 더 느슨한 값(VI 발동 기준선 근처)을 쓴다. seed 풀 단계
+// (거래대금 top-N으로 자르기 전)에서 걸러야, 이미 극단적으로 급등해 거래대금이 가장 큰 종목들이 top-N
+// 슬롯을 먼저 차지해 진짜 발굴 후보를 밀어내는 문제까지 함께 해결된다.
+const DISCOVERY_MAX_TODAY_CHANGE_PCT = 15; // 오늘 등락률이 이보다 크면 "이미 급등" - 발굴 후보에서 제외(급등 탭에서 보게 됨)
 
 /** 등락률순위/거래량·거래대금순위 TR을 여러 정렬 기준으로 반복 호출해 넓은 후보군을 모은다(실측: scratch/diagnose_discovery_universe.js). */
 async function fetchKisDiscoverySeedPool(market: MarketType): Promise<RankingItem[]> {
@@ -5048,6 +5055,7 @@ async function enrichDiscoveryCandidate(item: RankingItem): Promise<RankingItem>
     let rawVolumeSurgeRatio: number | undefined; // 거래량(주식 수) 배율
     // 5) 최근 저점보다 높은 저점 - 최근 5거래일 최저가가 그 이전 5거래일 최저가보다 높으면 상승 저점 패턴
     let higherLowPattern: boolean | undefined;
+    let reactivationRatio: number | undefined;
     if (bars && bars.length > 0) {
       const priorBars = bars.filter((b) => b.date !== undefined).slice(-21, -1); // 오늘 제외 최근 20개
       if (priorBars.length >= 10) {
@@ -5064,6 +5072,19 @@ async function enrichDiscoveryCandidate(item: RankingItem): Promise<RankingItem>
         const recentLow = Math.min(...recentWindow.map((b) => b.low));
         const priorLow = Math.min(...priorWindow.map((b) => b.low));
         higherLowPattern = recentLow > priorLow;
+      }
+      // 6) 재활성화 - 최근 10거래일(오늘 제외) 평균 거래량이 그 이전 10거래일보다 더 조용했는데, 오늘
+      // 그 "조용했던 최근" 평균 대비 거래량이 크게 튀었는지("한동안 잠잠하다 갑자기 깨어남" 패턴). 이미
+      // 거래가 꾸준히 활발했던 종목(조용해진 적이 없음)은 애초에 "재활성화"라고 부를 게 없으므로 undefined.
+      if (excludingToday.length >= 20) {
+        const last10 = excludingToday.slice(-10);
+        const prior10 = excludingToday.slice(-20, -10);
+        const last10AvgVolume = last10.reduce((sum, b) => sum + b.volume, 0) / last10.length;
+        const prior10AvgVolume = prior10.reduce((sum, b) => sum + b.volume, 0) / prior10.length;
+        const wasQuieter = prior10AvgVolume > 0 && last10AvgVolume < prior10AvgVolume;
+        if (wasQuieter && last10AvgVolume > 0) {
+          reactivationRatio = Number(((item.volume || 0) / last10AvgVolume).toFixed(2));
+        }
       }
     }
 
@@ -5090,6 +5111,7 @@ async function enrichDiscoveryCandidate(item: RankingItem): Promise<RankingItem>
       volumeSurgeRatio,
       rawVolumeSurgeRatio,
       higherLowPattern,
+      reactivationRatio,
       afternoonVolumeRatioPct,
       foreignAbsorptionQty: estimate?.foreignQty,
       organAbsorptionQty: estimate?.organQty,
@@ -5109,8 +5131,16 @@ export async function fetchKisDiscoveryCandidates(market: MarketType = 'ALL'): P
     return { type: 'discovery', direction: 'buy', period: '1d', list: [], isMock: false, updatedAt: new Date().toISOString(), lastBatchTime: dateLabel };
   }
 
+  // 🚨 [기능 재설계 - 사용자 지적: "너무 급등한 애들이 1등을 해서... 걔네들은 급등으로 빠져야지"] 거래대금
+  // 상위 N개로 자르기 "전에" 먼저 걸러낸다 - 이미 극단적으로 급등한 종목은 거래대금도 가장 큰 경우가
+  // 많아서, top-N 슬라이스 이후에만 걸러내면 그 슬롯을 먼저 차지해 진짜 발굴 후보가 애초에 enrichment
+  // 대상에도 못 들어가는 문제가 있었다.
+  const beforeSurgeFilterCount = seedPool.length;
+  const nonSurgedSeedPool = seedPool.filter((item) => Math.abs(item.changeRate) <= DISCOVERY_MAX_TODAY_CHANGE_PCT);
+  console.log(`[발굴 장마감 급등 제외 필터] 오늘 등락률 ±${DISCOVERY_MAX_TODAY_CHANGE_PCT}% 초과 제외: ${beforeSurgeFilterCount}개 -> ${nonSurgedSeedPool.length}개`);
+
   // 2. 값비싼 종목별 조회는 비용이 커서(종목당 최대 4회 KIS 호출) 거래대금 상위 N개로 제한한다.
-  const candidates = [...seedPool].sort((a, b) => (b.amountEok || 0) - (a.amountEok || 0)).slice(0, DISCOVERY_ENRICH_LIMIT);
+  const candidates = [...nonSurgedSeedPool].sort((a, b) => (b.amountEok || 0) - (a.amountEok || 0)).slice(0, DISCOVERY_ENRICH_LIMIT);
 
   // 3. 시장 지수(KOSPI/KOSDAQ) 등락률 - 종목 전체가 공유하므로 딱 2회만 호출
   const [kospiIdx, kosdaqIdx] = await Promise.all([
@@ -5142,15 +5172,17 @@ export async function fetchKisDiscoveryCandidates(market: MarketType = 'ALL'): P
   const filtered = enriched.filter((item) => item.absorptionBadge !== '외국인·기관 매도 우위');
   console.log(`[발굴 장마감 수급 필터] 외국인+기관 동시 순매도 제외: ${beforeFilterCount}개 -> ${filtered.length}개`);
 
-  // 6. 종합 점수 - 사용자가 직접 확정한 8개 조건 배점표(합계 100점)를 그대로 절대 점수로 매긴다.
-  // 이전엔 후보군 내 백분위 상대평가였는데, 그 방식은 "외국인·기관 매도 우위"인 종목도 다른 4개 지표가
-  // 세면 percentile 평균으로 상쇄돼 1위까지 오르는 문제가 실측으로 확인됐다(비츠로테크 사례, 2026-09-18).
-  // 절대 점수제는 조건을 못 채우면 그 항목이 0점으로 확실히 깎여서 이 문제가 구조적으로 사라진다.
-  // 배점: 거래대금 3배+(15)·거래량 3배+(5)·종가 고가 90%+(10)·저점 상승(15)·오후 매수세(15)·
-  // 상대강도(15)·외국인 순매수(12)·기관 순매수(13) = 100점. "당일 신규 뉴스/공시"는 KIS API에 없는
-  // DART 공시 연동이 필요해 이번엔 제외했다(사용자와 합의 - 나중에 별도 데이터소스 연동 후 추가).
-  // 배율/비율형 조건은 "이상"을 완전히 못 채워도 부분점수를 주는 선형 램프로 구현했다(임계값 코앞에서
-  // 0점으로 뚝 떨어지는 절벽 방지) - 값이 시작점 이하면 0점, 목표치 이상이면 만점으로 캡핑한다.
+  // 6. 종합 점수 - 사용자가 직접 확정한 배점표(합계 100점)를 그대로 절대 점수로 매긴다.
+  // 🚨 [기능 재설계 - 사용자 지적: "발굴인데 너무 급등한 애들이 1등을 해서... 미급등성+재활성화"] 기존
+  // 8개 조건(거래대금15·거래량5·종가고가10·저점상승15·오후매수세15·상대강도15·외국인12·기관13)을
+  // 사용자가 직접 재배점했다: 거래대금 배율(20=거래대금+거래량 합산)·오후 매수세(15)·눌림 저항=종가/
+  // 고가(15)·상대강도(10)·외국인·기관 수급(15, 둘을 하나로 합침)·최근 저점 상승(10)·미급등성(10, 신규)·
+  // 재활성화(5, 신규) = 100점. 이전엔 후보군 내 백분위 상대평가였는데, 그 방식은 "외국인·기관 매도
+  // 우위"인 종목도 다른 지표가 세면 percentile 평균으로 상쇄돼 1위까지 오르는 문제가 실측으로 확인됐다
+  // (비츠로테크 사례, 2026-09-18). 절대 점수제는 조건을 못 채우면 그 항목이 0점으로 확실히 깎여서 이
+  // 문제가 구조적으로 사라진다. 배율/비율형 조건은 "이상"을 완전히 못 채워도 부분점수를 주는 선형
+  // 램프로 구현했다(임계값 코앞에서 0점으로 뚝 떨어지는 절벽 방지) - 값이 시작점 이하면 0점, 목표치
+  // 이상이면 만점으로 캡핑한다.
   const ramp = (value: number | undefined, from: number, to: number, maxScore: number): number => {
     if (value === undefined) return 0;
     if (value <= from) return 0;
@@ -5159,15 +5191,20 @@ export async function fetchKisDiscoveryCandidates(market: MarketType = 'ALL'): P
   };
 
   filtered.forEach((item) => {
-    const amountSurgeScore = ramp(item.volumeSurgeRatio, 1, 3, 15); // 거래대금 평소 대비 3배 이상
-    const rawVolumeSurgeScore = ramp(item.rawVolumeSurgeRatio, 1, 3, 5); // 거래량 평소 대비 3배 이상
-    const closeToHighScore = ramp(item.closeToHighRatioPct, 80, 90, 10); // 종가가 고가의 90% 이상
-    const higherLowScore = item.higherLowPattern ? 15 : 0; // 최근 저점보다 높은 저점
-    const afternoonScore = ramp(item.afternoonVolumeRatioPct, 23, 40, 15); // 장 막판 거래량 증가(23%=시간 비례 균등 기준선)
-    const relativeScore = ramp(item.relativeStrengthPct, 0, 5, 15); // 시장 대비 강함
-    const foreignScore = (item.foreignAbsorptionQty || 0) > 0 ? 12 : 0; // 외국인 순매수
-    const organScore = (item.organAbsorptionQty || 0) > 0 ? 13 : 0; // 기관 순매수
-    item.discoveryScore = Number((amountSurgeScore + rawVolumeSurgeScore + closeToHighScore + higherLowScore + afternoonScore + relativeScore + foreignScore + organScore).toFixed(1));
+    // 거래대금 배율(20) - 거래대금(15)·거래량(5)은 상관관계가 높은 사실상 같은 신호라 한 항목으로 합산.
+    const amountSurgeScore = ramp(item.volumeSurgeRatio, 1, 3, 15) + ramp(item.rawVolumeSurgeRatio, 1, 3, 5);
+    const afternoonScore = ramp(item.afternoonVolumeRatioPct, 23, 40, 15); // 오후 매수세(23%=시간 비례 균등 기준선)
+    const closeToHighScore = ramp(item.closeToHighRatioPct, 80, 90, 15); // 눌림 저항 - 종가가 고가의 90% 이상
+    const relativeScore = ramp(item.relativeStrengthPct, 0, 5, 10); // 상대강도 - 시장 대비 강함
+    // 외국인·기관 수급(15) - absorptionDirection(위 매집 주체 판정과 동일 출처, 수칙 1-6)을 그대로 재사용
+    // 해서 둘 다 매수=15, 한쪽만 매수=8(절반 정도), 둘 다 매도(이미 필터에서 제외됨) 또는 데이터 없음=0.
+    const supplyScore = item.absorptionDirection === 'both' ? 15 : (item.absorptionDirection === 'foreign' || item.absorptionDirection === 'organ') ? 8 : 0;
+    const higherLowScore = item.higherLowPattern ? 10 : 0; // 최근 저점 상승
+    // 미급등성(10) - 이미 DISCOVERY_MAX_TODAY_CHANGE_PCT(15%) 초과는 seed 단계에서 걸러졌으므로, 그
+    // 기준선에 가까울수록(많이 오를수록) 점수가 깎이고 안 올랐거나(0%) 내린 종목일수록 만점에 가깝다.
+    const unSurgedScore = ramp(DISCOVERY_MAX_TODAY_CHANGE_PCT - Math.max(item.changeRate, 0), 0, DISCOVERY_MAX_TODAY_CHANGE_PCT, 10);
+    const reactivationScore = ramp(item.reactivationRatio, 2, 5, 5); // 재활성화 - 조용했던 최근 대비 오늘 거래량 배율
+    item.discoveryScore = Number((amountSurgeScore + afternoonScore + closeToHighScore + relativeScore + supplyScore + higherLowScore + unSurgedScore + reactivationScore).toFixed(1));
   });
 
   filtered.sort((a, b) => (b.discoveryScore || 0) - (a.discoveryScore || 0));
@@ -6537,6 +6574,12 @@ interface VwapWatchState {
 // 종목별 최근 표본 이력(감시가 시작된 시점부터 누적) - 프로세스 전역 공유(getGlobalMap, 수칙 1-6).
 const vwapWatchHistory = getGlobalMap<string, VwapWatchState>('vwapWatchHistory');
 const VWAP_WATCH_MAX_SAMPLES = 20; // 15초 주기 기준 대략 5분 치 이력
+// 🚨 [버그 수정 - 사용자 지적: "박스구간 5분 장난해?"] 피봇(R1/R2) 박스 판정은 VWAP과 달리 몇 시간짜리
+// 관찰 구간이 필요해서(firstBrokenTs 기반, 아래 computePivotLevelSignal 참고) VWAP_WATCH_MAX_SAMPLES를
+// 그대로 재사용하면 안 된다 - 별도 상한을 둔다. 15초 주기로 하루 장중(09:00~15:30, 약 6.5시간)을 넉넉히
+// 덮고도 남는 값(약 16시간 분량)이며, 실제 관찰 구간 길이는 여전히 firstBrokenTs가 결정한다 - 이건 그저
+// 메모리 무한 증가를 막는 방어용 상한일 뿐 설계 창(window) 크기가 아니다.
+const PIVOT_WATCH_MAX_SAMPLES = 4000;
 
 // 🚨 [아키텍처 개선 - 사용자 질문: "다른 방법은 없어?"] VWAP 감시와 피봇 감시가 각자 이 함수를
 // 독립적으로 호출해서, 두 감시를 동시에 켜면 같은 종목의 같은 순간 현재가를 KIS에 두 번 물어보는
@@ -7013,6 +7056,82 @@ interface PivotSample {
   cumVol: number;
 }
 
+// 🚨 [재설계 - 사용자 지적: "저렇게 박스를 하는게 내가 3분봉 보고 매매에 대해 도움이 되나? 나는 내
+// 매매에 도움이 되는 박스를 형성에서 거기에 맞게 뱃지를먹여서 박스권 하락, 박스권 돌파 이런걸
+// 원했던건데... 순위표 배지로"] R1/R2 선 대비 박스 판정(옛 BOX_RANGE_THRESHOLD_PCT/BOX_MIN_SAMPLES/
+// firstBrokenTs 기반, computePivotLevelSignal 안에 있었음)은 완전히 폐기한다 - 레벨(R1/R2)마다 따로
+// 판정해서 화면에 "R1 돌파박스구간"처럼 나왔는데, 사용자가 실제로 원한 건 종목 하나에 대해 "지금 박스권
+// 유지/돌파/하락 중" 딱 하나의 상태였다. RankingStockDetailChart.tsx(3분봉 차트)가 쓰는
+// detectChartLegsInDay와 동일한 알고리즘(수칙 1-6 - 박스는 방향성 필터로 추세와 구분, 박스 아닌 구간은
+// 상승/하락으로 채움)을, 캔들이 아니라 이미 이 감시 루프가 15초마다 모으고 있는 실시간 가격 표본
+// (PivotSample)에 적용한다 - 새 KIS 호출 없이(수칙 1-3) 기존 인프라 그대로 재사용.
+const PRICE_LEG_RANGE_THRESHOLD_PCT = 2.0; // RankingStockDetailChart.tsx의 BOX_DETECT_RANGE_THRESHOLD_PCT와 동일(수칙 1-6, 미검증 휴리스틱 - 수칙 1-7)
+const PRICE_LEG_DIRECTIONAL_RATIO_MAX = 0.5; // 동일 파일의 BOX_DIRECTIONAL_RATIO_MAX와 동일
+const PRICE_LEG_MIN_SAMPLES = 60; // 15초×60=15분 - 차트의 BOX_DETECT_MIN_CANDLES(3분×5=15분)와 동일 기준
+
+interface PriceLeg {
+  type: 'box' | 'up' | 'down';
+  high: number;
+  low: number;
+  startIdx: number;
+  endIdx: number;
+}
+
+// 실시간 가격 표본(samples, 오름차순)을 훑어 박스/상승/하락 구간으로 빈틈없이 나눈다 - 개별 표본은
+// 캔들과 달리 시가/종가 구분이 없는 점(点)이라 몸통(body) 개념 자체가 없고, 표본 가격을 그대로 쓰면
+// 캔들의 "꼬리 문제"도 원천적으로 없다.
+function detectPriceLegsFromSamples(samples: PivotSample[]): PriceLeg[] {
+  const legs: PriceLeg[] = [];
+  if (!samples || samples.length === 0) return legs;
+  const boxes: Array<{ high: number; low: number; startIdx: number; endIdx: number }> = [];
+  let start = 0;
+  let hi = samples[0].price;
+  let lo = samples[0].price;
+  const tryPushBox = (s: number, e: number, h: number, l: number) => {
+    if (e - s + 1 < PRICE_LEG_MIN_SAMPLES) return;
+    const range = h - l;
+    const netMove = Math.abs(samples[e].price - samples[s].price);
+    if (range > 0 && netMove / range > PRICE_LEG_DIRECTIONAL_RATIO_MAX) return; // 왔다갔다가 아니라 한 방향으로 쭉 간 구간
+    boxes.push({ high: h, low: l, startIdx: s, endIdx: e });
+  };
+  for (let i = 1; i < samples.length; i++) {
+    const nextHi = Math.max(hi, samples[i].price);
+    const nextLo = Math.min(lo, samples[i].price);
+    const mid = (nextHi + nextLo) / 2;
+    const rangePct = mid > 0 ? ((nextHi - nextLo) / mid) * 100 : 0;
+    if (rangePct <= PRICE_LEG_RANGE_THRESHOLD_PCT) {
+      hi = nextHi;
+      lo = nextLo;
+      continue;
+    }
+    tryPushBox(start, i - 1, hi, lo);
+    start = i;
+    hi = samples[i].price;
+    lo = samples[i].price;
+  }
+  tryPushBox(start, samples.length - 1, hi, lo);
+
+  // 박스 사이(또는 앞뒤) 빈틈을 상승/하락 추세 구간으로 채워서 표본 전체가 항상 셋 중 하나로 분류되게 한다.
+  let cursor = 0;
+  const pushTrendLeg = (s: number, e: number) => {
+    if (e < s) return;
+    let h = samples[s].price;
+    let l = samples[s].price;
+    for (let k = s + 1; k <= e; k++) {
+      h = Math.max(h, samples[k].price);
+      l = Math.min(l, samples[k].price);
+    }
+    legs.push({ type: samples[e].price >= samples[s].price ? 'up' : 'down', high: h, low: l, startIdx: s, endIdx: e });
+  };
+  for (const box of boxes) {
+    if (box.startIdx > cursor) pushTrendLeg(cursor, box.startIdx - 1);
+    legs.push({ type: 'box', high: box.high, low: box.low, startIdx: box.startIdx, endIdx: box.endIdx });
+    cursor = box.endIdx + 1;
+  }
+  if (cursor <= samples.length - 1) pushTrendLeg(cursor, samples.length - 1);
+  return legs;
+}
+
 // 종목별 R1/R2 값 - 전일 일봉이 바뀌지 않는 한(즉 오늘 하루 종일) 그대로 재사용(프로세스 전역, 수칙 1-6).
 const pivotLevelsCache = getGlobalMap<string, { dateStr: string; levels: PivotLevels }>('pivotLevelsCache');
 
@@ -7083,6 +7202,9 @@ interface PivotLevelState {
   wasApproaching: boolean; // VWAP과 동일(수칙 1-6) - reclaim_signal_events rising edge 기록용
   wasSellPressure: boolean;
   pendingApproachEventId: number | null; // VWAP과 동일(수칙 1-6) - outcome UPDATE 대상 id
+  // 🎯 [기능 추가 - 사용자 지적: "돌파재시도 왜 몇번했는지 안알려줘?"] VWAP의 crossCount와 동일한
+  // 개념(수칙 1-6) - 감시 시작 후 below→above 전환 누적 횟수. 진짜 전환일 때만 증가.
+  crossCount: number;
 }
 
 interface PivotWatchState {
@@ -7120,7 +7242,7 @@ const pivotWatchHistory = getGlobalMap<string, PivotWatchState>('pivotWatchHisto
 function computePivotLevelSignal(samples: PivotSample[], levelState: PivotLevelState, target: number, symbol: string, levelType: 'r1' | 'r2'): PivotLevelSignal {
   const hadPriorBreak = levelState.hasBroken && levelState.hasBeenBelowAfterBreak;
   if (samples.length < 1 || !levelState.hasBroken) {
-    return { reclaimed: false, holding: false, elapsedMs: null, approaching: false, sellPressureWarning: false, volSurge: false, hadPriorBreak };
+    return { reclaimed: false, holding: false, elapsedMs: null, approaching: false, sellPressureWarning: false, volSurge: false, hadPriorBreak, crossCount: levelState.crossCount };
   }
 
   const isAbove = (s: PivotSample) => s.price > target;
@@ -7160,6 +7282,7 @@ function computePivotLevelSignal(samples: PivotSample[], levelState: PivotLevelS
     sellPressureWarning: approach.sellPressureWarning,
     volSurge: freshness.volSurge,
     hadPriorBreak,
+    crossCount: levelState.crossCount,
   };
 }
 
@@ -7171,8 +7294,8 @@ async function computePivotSignalFromLive(
   live: { price: number; cumVol: number; cumVal: number } | null,
   levels: PivotLevels | null
 ): Promise<PivotReclaimSignal> {
-  const emptyLevel: PivotLevelSignal = { reclaimed: false, holding: false, elapsedMs: null, approaching: false, sellPressureWarning: false, volSurge: false, hadPriorBreak: false };
-  const fallback: PivotReclaimSignal = { symbol, r1: emptyLevel, r2: emptyLevel, insufficientData: true };
+  const emptyLevel: PivotLevelSignal = { reclaimed: false, holding: false, elapsedMs: null, approaching: false, sellPressureWarning: false, volSurge: false, hadPriorBreak: false, crossCount: 0 };
+  const fallback: PivotReclaimSignal = { symbol, r1: emptyLevel, r2: emptyLevel, insufficientData: true, priceLeg: null };
   if (!live || !levels) return fallback;
 
   const todayStr = getKstTodayStr();
@@ -7187,8 +7310,8 @@ async function computePivotSignalFromLive(
     state = {
       dateStr: todayStr,
       samples: [],
-      r1: { hasBroken: persisted?.pivotR1HasBroken ?? false, hasBeenBelowAfterBreak: persisted?.pivotR1HasBeenBelowAfterBreak ?? false, wasAbove: null, breakoutTs: null, wasApproaching: false, wasSellPressure: false, pendingApproachEventId: null },
-      r2: { hasBroken: persisted?.pivotR2HasBroken ?? false, hasBeenBelowAfterBreak: persisted?.pivotR2HasBeenBelowAfterBreak ?? false, wasAbove: null, breakoutTs: null, wasApproaching: false, wasSellPressure: false, pendingApproachEventId: null },
+      r1: { hasBroken: persisted?.pivotR1HasBroken ?? false, hasBeenBelowAfterBreak: persisted?.pivotR1HasBeenBelowAfterBreak ?? false, wasAbove: null, breakoutTs: null, wasApproaching: false, wasSellPressure: false, pendingApproachEventId: null, crossCount: persisted?.pivotR1CrossCount ?? 0 },
+      r2: { hasBroken: persisted?.pivotR2HasBroken ?? false, hasBeenBelowAfterBreak: persisted?.pivotR2HasBeenBelowAfterBreak ?? false, wasAbove: null, breakoutTs: null, wasApproaching: false, wasSellPressure: false, pendingApproachEventId: null, crossCount: persisted?.pivotR2CrossCount ?? 0 },
     };
   }
 
@@ -7196,14 +7319,20 @@ async function computePivotSignalFromLive(
   if (!lastStoredSample || live.cumVol > lastStoredSample.cumVol) {
     const prevR1Broken = state.r1.hasBroken;
     const prevR1Below = state.r1.hasBeenBelowAfterBreak;
+    const prevR1Cross = state.r1.crossCount;
     const prevR2Broken = state.r2.hasBroken;
     const prevR2Below = state.r2.hasBeenBelowAfterBreak;
+    const prevR2Cross = state.r2.crossCount;
     const updateLevelState = (levelState: PivotLevelState, target: number) => {
       const isAboveNow = live.price > target;
       // VWAP과 동일한 버그 수정(수칙 1-6, 위 6749번째 줄 근처 주석 참고) - wasAbove가 null(이 프로세스
       // 에서 처음 관측하는데 이미 위인 경우)이어도 breakoutTs를 지금 시각으로 잡아 "확인불가"에 갇히지
       // 않게 한다. hasBroken은 원래대로 무조건 갱신.
       const isFreshAboveObservation = (levelState.wasAbove === false || levelState.wasAbove === null) && isAboveNow;
+      // 🎯 [기능 추가 - 사용자 지적: "돌파재시도 왜 몇번했는지 안알려줘?"] VWAP과 동일(수칙 1-6) -
+      // "진짜 전환"(직전 관측이 확실히 아래였다가 지금 위로)일 때만 증가시킨다. wasAbove===null(이
+      // 프로세스에서 처음 관측)인 경우는 전환이 아니라 "원래 위였는지 모름"이라 세지 않는다.
+      if (levelState.wasAbove === false && isAboveNow) levelState.crossCount++;
       if (isAboveNow) {
         levelState.hasBroken = true;
         if (isFreshAboveObservation) levelState.breakoutTs = Date.now(); // 실시간으로 직접 관측한 재돌파 순간
@@ -7216,19 +7345,24 @@ async function computePivotSignalFromLive(
     updateLevelState(state.r2, levels.r2);
 
     state.samples.push({ ts: Date.now(), price: live.price, cumVol: live.cumVol });
-    if (state.samples.length > VWAP_WATCH_MAX_SAMPLES) state.samples.shift();
+    // 🚨 [버그 수정 - 사용자 지적: "박스구간 5분 장난해?"] VWAP_WATCH_MAX_SAMPLES(5분)로 캡핑하면
+    // firstBrokenTs 기반 박스 관찰 구간이 아무리 늘어나려 해도 원본 표본 자체가 5분치밖에 안 남아있어
+    // 무의미했다 - 피봇 전용 상한(PIVOT_WATCH_MAX_SAMPLES, 위 6539번째 줄 근처)을 쓴다.
+    if (state.samples.length > PIVOT_WATCH_MAX_SAMPLES) state.samples.shift();
     pivotWatchHistory.set(symbol, state);
 
     // VWAP 감시와 동일하게, 플래그가 실제로 바뀐 순간에만 영구 저장(fire-and-forget).
     if (
-      state.r1.hasBroken !== prevR1Broken || state.r1.hasBeenBelowAfterBreak !== prevR1Below ||
-      state.r2.hasBroken !== prevR2Broken || state.r2.hasBeenBelowAfterBreak !== prevR2Below
+      state.r1.hasBroken !== prevR1Broken || state.r1.hasBeenBelowAfterBreak !== prevR1Below || state.r1.crossCount !== prevR1Cross ||
+      state.r2.hasBroken !== prevR2Broken || state.r2.hasBeenBelowAfterBreak !== prevR2Below || state.r2.crossCount !== prevR2Cross
     ) {
       upsertWatchSignalState(todayStr, symbol, {
         pivotR1HasBroken: state.r1.hasBroken,
         pivotR1HasBeenBelowAfterBreak: state.r1.hasBeenBelowAfterBreak,
         pivotR2HasBroken: state.r2.hasBroken,
         pivotR2HasBeenBelowAfterBreak: state.r2.hasBeenBelowAfterBreak,
+        pivotR1CrossCount: state.r1.crossCount,
+        pivotR2CrossCount: state.r2.crossCount,
       }).catch(() => {});
     }
   }
@@ -7239,11 +7373,42 @@ async function computePivotSignalFromLive(
   // 0개(현재가 조회 자체 실패 등 - live가 null이면 위에서 이미 fallback으로 빠짐)일 때만 막는다.
   if (state.samples.length < 1) return { ...fallback, insufficientData: true };
 
+  // 🎯 [기능 추가 - 사용자 요청: "박스권 하락, 박스권 돌파 이런걸 원했던건데... 순위표 배지로"] R1/R2와
+  // 무관하게, 이 종목의 실시간 표본 전체를 박스/상승/하락 구간으로 나누고 그중 "가장 최근" 구간(=지금
+  // 상태)만 순위표 배지용으로 뽑는다.
+  const legs = detectPriceLegsFromSamples(state.samples);
+  const lastLeg = legs.length > 0 ? legs[legs.length - 1] : null;
+  // 🚨 [버그 수정 - 실측: dev 서버 재시작 직후 모든 종목이 표본 1개(0%)인데도 전부 "박스권재돌파(+0%)"로
+  // 동일하게 뜸] pushTrendLeg는 표본이 1개(start===end)여도 "종료가 >= 시작가"가 항상 참(같은 값)이라
+  // 무조건 'up'으로 확정해버렸다 - 방금 감시를 시작해서 아직 표본이 거의 없는 상태를 "상승 중"이라고
+  // 확신하는 건 명백한 오판이다. 박스는 이미 PRICE_LEG_MIN_SAMPLES(15분)를 넘어야만 만들어지지만,
+  // 추세(상승/하락) leg에는 최소 표본 수 제한이 없었던 게 근본 원인 - 최소 3개(약 30~45초, 기존
+  // BOX_MIN_SAMPLES와 동일한 근거)는 넘어야 방향을 확정한다.
+  const PRICE_LEG_MIN_TREND_SAMPLES = 3;
+  const currentLeg = lastLeg && (lastLeg.type === 'box' || lastLeg.endIdx - lastLeg.startIdx + 1 >= PRICE_LEG_MIN_TREND_SAMPLES) ? lastLeg : null;
+  const priceLeg: PriceLegSignal | null = currentLeg ? (() => {
+    const startSample = state!.samples[currentLeg.startIdx];
+    const endSample = state!.samples[currentLeg.endIdx];
+    const mid = (currentLeg.high + currentLeg.low) / 2;
+    const changePct = currentLeg.type === 'box'
+      ? (mid > 0 ? Number((((currentLeg.high - currentLeg.low) / mid) * 100).toFixed(2)) : 0)
+      : (startSample.price > 0 ? Number((((endSample.price - startSample.price) / startSample.price) * 100).toFixed(2)) : 0);
+    return {
+      type: currentLeg.type,
+      high: currentLeg.high,
+      low: currentLeg.low,
+      changePct,
+      startTs: startSample.ts,
+      durationMs: endSample.ts - startSample.ts,
+    };
+  })() : null;
+
   return {
     symbol,
     r1: computePivotLevelSignal(state.samples, state.r1, levels.r1, symbol, 'r1'),
     r2: computePivotLevelSignal(state.samples, state.r2, levels.r2, symbol, 'r2'),
     insufficientData: false,
+    priceLeg,
   };
 }
 

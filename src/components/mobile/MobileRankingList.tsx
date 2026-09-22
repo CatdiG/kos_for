@@ -208,7 +208,9 @@ function RankingCard({ item, activeTab, overlapMode, quietAccumFilter, pivotSign
         {item.rank}
       </div>
       <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-1.5">
+        {/* 🚨 [버그 수정 - 사용자 지적: "뱃지 겹치잖아. 안겹치게 예쁘게 만들어"] flex-wrap이 없어서
+            종목명+코드+별+방패+감시신호 배지가 넘치면 줄바꿈 없이 오른쪽 가격 영역과 겹쳤다. */}
+        <div className="flex items-center gap-1.5 flex-wrap">
           <span className="text-sm font-bold text-slate-900 dark:text-white truncate">{item.name}</span>
           <span className="text-[10px] font-mono text-slate-400 shrink-0">{item.symbol}</span>
           {/* 🚨 [기능 추가 - 데스크톱과 동일(수칙 1-6), 사용자 지적: "모바일도 데스크탑이랑 같아야지"]
@@ -234,6 +236,41 @@ function RankingCard({ item, activeTab, overlapMode, quietAccumFilter, pivotSign
           )}
           {/* 🎯 [기능 추가 - 데스크톱과 동일] R2가 걸려있으면 R2를(더 강한 신호), 아니면 R1을 표시. */}
           {pivotSignal && (() => {
+            // 🚨 [재설계 - 데스크톱과 동일(수칙 1-6), 사용자 지적: "박스권 하락, 박스권 돌파 이런걸
+            // 원했던건데... 순위표 배지로"] R1/R2와 무관한 순수 가격 흐름 신호(priceLeg)를 최우선으로.
+            if (pivotSignal.priceLeg?.type === 'up') {
+              return (
+                <span
+                  className="text-[9px] px-1 py-0.2 rounded font-bold shrink-0 border bg-blue-50 dark:bg-blue-950/50 text-blue-600 dark:text-blue-400 border-blue-200 dark:border-blue-800/60 flex items-center gap-0.5"
+                  title="순수 가격 흐름만으로 판단: 박스권을 재돌파하며 상승 중입니다 - R1/R2 여부와 무관"
+                >
+                  <Target className="w-2.5 h-2.5" />
+                  박스권재돌파(+{pivotSignal.priceLeg.changePct}%)
+                </span>
+              );
+            }
+            if (pivotSignal.priceLeg?.type === 'down') {
+              return (
+                <span
+                  className="text-[9px] px-1 py-0.2 rounded font-bold shrink-0 border bg-purple-50 dark:bg-purple-950/50 text-purple-600 dark:text-purple-400 border-purple-200 dark:border-purple-800/60 flex items-center gap-0.5"
+                  title="순수 가격 흐름만으로 판단: 고점을 찍고 하락 중입니다 - R1/R2 여부와 무관"
+                >
+                  <Target className="w-2.5 h-2.5" />
+                  박스권 하락({pivotSignal.priceLeg.changePct}%)
+                </span>
+              );
+            }
+            if (pivotSignal.priceLeg?.type === 'box') {
+              return (
+                <span
+                  className="text-[9px] px-1 py-0.2 rounded font-bold shrink-0 border bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-400 border-amber-200 dark:border-amber-800/60 flex items-center gap-0.5"
+                  title="순수 가격 흐름만으로 판단: 최근 고점·저점이 반복해서 좁은 범위 안에 갇혀 횡보 중입니다 - R1/R2 여부와 무관"
+                >
+                  <Target className="w-2.5 h-2.5" />
+                  박스권 유지(±{(pivotSignal.priceLeg.changePct / 2).toFixed(2)}%)
+                </span>
+              );
+            }
             // 🚨 [버그 수정 - 사용자 지적: "성호전자 왜 r2 뚫엇는데 r1완료라고만 뜸?"] holding도 포함.
             const level: 'R2' | 'R1' | null =
               pivotSignal.r2.approaching || pivotSignal.r2.reclaimed || pivotSignal.r2.holding ? 'R2'
@@ -244,6 +281,15 @@ function RankingCard({ item, activeTab, overlapMode, quietAccumFilter, pivotSign
               : pivotSignal.r1.hadPriorBreak ? 'R1' : null;
             if (!level) return null;
             const sig = level === 'R2' ? pivotSignal.r2 : pivotSignal.r1;
+            // 🎯 [기능 추가 - 사용자 지적: "돌파재시도 왜 몇번했는지 안알려줘?", 데스크톱과 동일(수칙 1-6)]
+            // 🚨 [버그 수정 - 사용자 지적: "뱃지 겹치잖아", 데스크톱과 동일(수칙 1-6)] 배지 문구 안에
+            // 이어 붙이지 않고 별도 작은 텍스트로 분리해서 flex-wrap이 필요할 때 줄바꿈하게 한다.
+            const crossLabel = sig.crossCount >= 2 ? `${sig.crossCount}번째 시도` : '';
+            const crossLabelSpan = crossLabel ? (
+              <span className="text-[8px] text-slate-400 dark:text-slate-500 font-normal shrink-0">
+                {crossLabel}
+              </span>
+            ) : null;
             if (sig.approaching) {
               return (
                 <span
@@ -255,7 +301,7 @@ function RankingCard({ item, activeTab, overlapMode, quietAccumFilter, pivotSign
                 </span>
               );
             }
-            {/* 🎯 [기능 추가 - 데스크톱과 동일(수칙 1-6)] 거래량은 늘었지만 매도 우위라 임박에서 제외됨. */}
+            // 🎯 [기능 추가 - 데스크톱과 동일(수칙 1-6)] 거래량은 늘었지만 매도 우위라 임박에서 제외됨.
             if (sig.sellPressureWarning) {
               return (
                 <span
@@ -267,53 +313,63 @@ function RankingCard({ item, activeTab, overlapMode, quietAccumFilter, pivotSign
                 </span>
               );
             }
-            {/* 🎯 [기능 추가 - 데스크톱과 동일(수칙 1-6)] 처음 뚫은 뒤 한 번도 안 내려가고 계속 유지 중. */}
+            // 🎯 [기능 추가 - 데스크톱과 동일(수칙 1-6)] 처음 뚫은 뒤 한 번도 안 내려가고 계속 유지 중.
             if (sig.holding && sig.elapsedMs != null) {
-              const info = computeReclaimFreshnessInfo(sig.elapsedMs, 0);
+              const info = computeReclaimFreshnessInfo(sig.elapsedMs, sig.crossCount);
               return (
-                <span
-                  className="text-[9px] px-1 py-0.2 rounded font-bold shrink-0 border bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 border-indigo-200 dark:border-indigo-800/60 flex items-center gap-0.5"
-                  title={`${level}을(를) 뚫은 뒤 한 번도 내려오지 않고 ${info.elapsedLabel}째 유지 중입니다(아직 눌림 후 재돌파 이력은 없음)${sig.volSurge ? ' - 거래량 속도도 여전히 높습니다' : ''}`}
-                >
-                  <Target className="w-2.5 h-2.5" />
-                  {level} 돌파유지({info.elapsedLabel}){sig.volSurge ? '·거래량↑' : ''}
-                </span>
+                <>
+                  <span
+                    className="text-[9px] px-1 py-0.2 rounded font-bold shrink-0 border bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 border-indigo-200 dark:border-indigo-800/60 flex items-center gap-0.5"
+                    title={`${level}을(를) 뚫은 뒤 한 번도 내려오지 않고 ${info.elapsedLabel}째 유지 중입니다(아직 눌림 후 재돌파 이력은 없음)${sig.volSurge ? ' - 거래량 속도도 여전히 높습니다' : ''} - 오늘 ${level} 돌파 시도 ${sig.crossCount}번째`}
+                  >
+                    <Target className="w-2.5 h-2.5" />
+                    {level} 돌파유지({info.elapsedLabel}){sig.volSurge ? '·거래량↑' : ''}
+                  </span>
+                  {crossLabelSpan}
+                </>
               );
             }
             if (sig.reclaimed && sig.elapsedMs != null) {
-              const info = computeReclaimFreshnessInfo(sig.elapsedMs, 0); // 피봇은 crossCount 미추적
+              const info = computeReclaimFreshnessInfo(sig.elapsedMs, sig.crossCount);
               if (info.tier === 'justConfirmed') {
                 return (
-                  <span
-                    className="text-[9px] px-1 py-0.2 rounded font-bold shrink-0 border bg-purple-50/60 dark:bg-purple-950/30 text-purple-400 dark:text-purple-500 border-purple-100 dark:border-purple-900/60 flex items-center gap-0.5"
-                    title={`방금(${info.elapsedLabel} 전) ${level}을(를) 재돌파했습니다 - 아직 힘을 확인하는 중입니다(신뢰도 낮음)`}
-                  >
-                    <Target className="w-2.5 h-2.5" />
-                    {level} 재돌파 확인
-                  </span>
+                  <>
+                    <span
+                      className="text-[9px] px-1 py-0.2 rounded font-bold shrink-0 border bg-purple-50/60 dark:bg-purple-950/30 text-purple-400 dark:text-purple-500 border-purple-100 dark:border-purple-900/60 flex items-center gap-0.5"
+                      title={`방금(${info.elapsedLabel} 전) ${level}을(를) 재돌파했습니다 - 아직 힘을 확인하는 중입니다(신뢰도 낮음) - 오늘 ${level} 돌파 시도 ${sig.crossCount}번째`}
+                    >
+                      <Target className="w-2.5 h-2.5" />
+                      {level} 재돌파 확인
+                    </span>
+                    {crossLabelSpan}
+                  </>
                 );
               }
               const staleClass = info.tier === 'established'
                 ? 'bg-slate-50 dark:bg-slate-900/60 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-slate-700/60'
                 : 'bg-purple-50 dark:bg-purple-950/60 text-purple-600 dark:text-purple-400 border-purple-200 dark:border-purple-800/60';
               return (
-                <span
-                  className={`text-[9px] px-1 py-0.2 rounded font-bold shrink-0 border flex items-center gap-0.5 ${staleClass}`}
-                  title={`${info.elapsedLabel} 전 ${level}을(를) 재돌파해 계속 유지 중입니다${sig.volSurge ? ' - 거래량 속도도 여전히 높습니다' : ''}(참고용)`}
-                >
-                  <Target className="w-2.5 h-2.5" />
-                  {level} 완료({info.elapsedLabel}){sig.volSurge ? '·거래량↑' : ''}
-                </span>
+                <>
+                  <span
+                    className={`text-[9px] px-1 py-0.2 rounded font-bold shrink-0 border flex items-center gap-0.5 ${staleClass}`}
+                    title={`${info.elapsedLabel} 전 ${level}을(를) 재돌파해 계속 유지 중입니다${sig.volSurge ? ' - 거래량 속도도 여전히 높습니다' : ''}(참고용) - 오늘 ${level} 돌파 시도 ${sig.crossCount}번째`}
+                  >
+                    <Target className="w-2.5 h-2.5" />
+                    {level} 완료({info.elapsedLabel}){sig.volSurge ? '·거래량↑' : ''}
+                  </span>
+                  {crossLabelSpan}
+                </>
               );
             }
+            // 🎯 [기능 재설계 - 사용자 요청: "박스구간 뚫고 내려오면 돌파후하락", 데스크톱과 동일(수칙 1-6)]
             if (sig.hadPriorBreak) {
               return (
                 <span
                   className="text-[9px] px-1 py-0.2 rounded font-bold shrink-0 border bg-slate-50 dark:bg-slate-900/60 text-slate-400 dark:text-slate-500 border-slate-200 dark:border-slate-700/60 flex items-center gap-0.5 opacity-70"
-                  title={`오늘 이미 ${level}을(를) 뚫었다가 다시 아래로 내려간 이력이 있습니다(현재는 재접근 신호 없음, 대기 중)`}
+                  title={`오늘 ${level}을(를) 뚫었다가(박스권에 갇혀 있었을 수도 있음) 다시 아래로 내려갔습니다(현재는 재접근 신호 없음, 대기 중)`}
                 >
                   <Target className="w-2.5 h-2.5" />
-                  {level} 이전이력(대기)
+                  {level} 돌파후하락
                 </span>
               );
             }
@@ -710,12 +766,18 @@ export default function MobileRankingList() {
     if (pLevel?.approaching) {
       pPriority = 5;
     } else if ((pLevel?.reclaimed || pLevel?.holding) && pLevel.elapsedMs != null) {
-      const info = computeReclaimFreshnessInfo(pLevel.elapsedMs, 0); // 피봇은 crossCount 미추적
+      // 🎯 [기능 추가 - 사용자 지적: "돌파재시도 왜 몇번했는지 안알려줘?", 데스크톱과 동일(수칙 1-6)]
+      const info = computeReclaimFreshnessInfo(pLevel.elapsedMs, pLevel.crossCount);
       pPriority = info.priority;
       pElapsed = pLevel.elapsedMs;
     } else if (pLevel?.hadPriorBreak) {
       pPriority = 1;
     }
+
+    // 🚨 [재설계 - 데스크톱과 동일(수칙 1-6), 사용자 지적: "박스권 하락, 박스권 돌파 이런걸
+    // 원했던건데... 순위표 배지로"] R1/R2와 무관한 순수 가격 흐름 신호(priceLeg)도 정렬에 반영.
+    const priceLegPriority = p?.priceLeg?.type === 'up' ? 4 : p?.priceLeg?.type === 'down' ? 3 : p?.priceLeg?.type === 'box' ? 2 : 0;
+    pPriority = Math.max(pPriority, priceLegPriority);
 
     const v = vwapWatchActive ? vwapReclaimMap!.get(item.symbol) : undefined;
     const vwapBonus = !!(v?.reclaimed || v?.approaching); // "VWAP도 같이 회복 중" - 가산점(동점 타이브레이커)만.

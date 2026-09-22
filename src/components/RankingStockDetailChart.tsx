@@ -147,6 +147,9 @@ export default function RankingStockDetailChart({
   const [show3mVolumeProfile, setShow3mVolumeProfile] = useState(false);
   // VWAP 선 + ±1·2σ 밴드를 하나로 묶어서 켜고 끈다(버튼도 하나로 통합됨).
   const [show3mVWAP, setShow3mVWAP] = useState(true);
+  // 🎯 [기능 추가 - 사용자 요청: "박스 구간이 어떻게 형성되는지 토글로 만들어서 보이게 해줘"] 기본은
+  // 꺼둔다 - 실시간 감시(reclaim-watch) API를 추가로 호출해야 해서 매물대와 동일하게 필요할 때만 켠다.
+  const [show3mBoxRange, setShow3mBoxRange] = useState(false);
 
   // Hover Crosshair Horizontal Price Line State (Snaps to OHLC: High, Open, Close, Low)
   const [hoverPriceInfo, setHoverPriceInfo] = useState<{ y: number; price: number; label?: string } | null>(null);
@@ -237,6 +240,13 @@ export default function RankingStockDetailChart({
     refetchInterval: activeTab === '3m' && isMarketOpen ? 30 * 1000 : false,
     refetchOnMount: false,
   });
+
+  // 🚨 [재설계 - 사용자 지적: "니가 만든 박스권이랑 같은지 비교 분석해봐"] 예전엔 실시간 감시(R1/R2
+  // 재돌파) 서버 상태를 15초마다 따로 불러와 그 판정을 그대로 시각화했다 - 하지만 그 판정 자체가
+  // "돌파 시각 고정 + 15초 틱 기준"이라 사용자가 원하는 "3분봉 기준으로 실제 가격 움직임을 보고 동적으로
+  // 찾는 박스"와 다른 개념이었다(위 detectPriceBox 주석 참고). 이제 이미 화면에 있는 3분봉 캔들
+  // (candles3m)에서 클라이언트가 직접 계산하므로 별도 API 호출이 전혀 필요 없다(수칙 1-3 - 안 쓰는 KIS
+  // 호출 제거).
 
   const data = isPropDataMatching ? propData : queryResult.data;
   const isLoading = propIsLoading !== undefined
@@ -755,6 +765,149 @@ function computeDefault3mZoomRange(candles: any[]): { start: number; end: number
   return { start: candles.length - windowSize, end: candles.length };
 }
 
+// 🚨 [재설계 2차 - 사용자 지적: "박스구간 너무 안보여... 당일 09:00부터 현재까지의 3분봉 가격 움직임을
+// 기준으로 동적으로 탐지해줘... 당일에 박스가 여러 번 형성될 수 있으니 여러 개를 모두 표시하고, 각각
+// 다른 색으로 구분해서 보여줘"] 1차 재설계(detectPriceBox, 단일 박스)는 "가장 최근 봉에서 과거로
+// 넓혀가며 찾기"까지는 맞았지만 (1) 하루에 하나만 찾고 (2) 5거래일치 전체 caldles3m을 대상으로 해서
+// 어제 데이터까지 섞일 수 있었다 - 이제 당일 캔들만 대상으로, 하루 안에서 왼쪽(09:00)부터 오른쪽(지금)
+// 으로 훑으며 임계값을 넘을 때마다 그때까지의 구간을 박스 하나로 확정하고 새 박스를 다시 시작한다 -
+// 하루에 여러 개의 독립된 박스가 순서대로 나올 수 있다. 확정 로직은 여전히 그리디 단조 확장(고가는
+// 넓힐수록만 커지고 저가는 넓힐수록만 작아짐)이라 각 박스 내부에서는 여전히 "그 구간에서 실제로 가장
+// 좁게 유지된 범위"를 정확히 잡는다.
+const BOX_DETECT_RANGE_THRESHOLD_PCT = 2.0; // 3분봉 고가/저가 기준이라 15초 틱 때보다 변동폭이 커서
+// 기존 1.2%보다 완화했다 - 아직 실측 백테스트로 검증한 값은 아니다(수칙 1-7).
+const BOX_DETECT_MIN_CANDLES = 5; // 3분×5=15분 미만인 구간은 "그냥 잠깐 멈춘 것"과 구분이 안 돼 박스로 치지 않는다.
+// 🎯 [기능 추가 - 사용자 요청: "각각 다른 색으로 구분해서 차트에 보여줘"] 하루에 여러 박스가 나올 수
+// 있으므로, 발견 순서대로 이 팔레트를 순환시켜 서로 다른 색을 준다.
+// 🚨 [색상 재배정 - 사용자 요청: "파란색은 박스권재돌파, 보라색은 R2돌파 후 하락"] 파랑·보라를 추세
+// 구간(상승/하락) 전용 색으로 빼고, 박스 팔레트에서는 제외해서 서로 헷갈리지 않게 한다.
+const BOX_COLOR_PALETTE = ['#f59e0b', '#10b981', '#eab308', '#f43f5e', '#14b8a6', '#ec4899'];
+const TREND_UP_COLOR = '#3b82f6'; // 파랑 - "박스권재돌파"(상승 추세)
+const TREND_DOWN_COLOR = '#a855f7'; // 보라 - "R2돌파 후 하락"(하락 추세, 실제 R2 선과 무관하게 순수 가격
+// 흐름만으로 판단한다 - 사용자 확인: "순수 가격 흐름만으로")
+
+// 캔들의 date(YYYYMMDD)+rawTime(HHMMSS)을 실제 절대 시각(epoch ms)으로 바꾼다 - Date.UTC로 "KST를
+// UTC로 환산"(KST - 9시간)해서 브라우저 타임존과 무관하게 항상 같은 값이 나오게 한다(실측: new
+// Date(y,mo,d,h,mi,s)는 브라우저 로컬 타임존으로 해석돼 박스 폭이 어긋나던 과거 버그, 수칙 1-6 재사용).
+function candleEpochMs(c: any): number {
+  if (!c?.date || !c?.rawTime) return 0;
+  const y = parseInt(c.date.slice(0, 4), 10);
+  const mo = parseInt(c.date.slice(4, 6), 10) - 1;
+  const d = parseInt(c.date.slice(6, 8), 10);
+  const h = parseInt(c.rawTime.slice(0, 2), 10);
+  const mi = parseInt(c.rawTime.slice(2, 4), 10);
+  const s = parseInt(c.rawTime.slice(4, 6), 10);
+  return Date.UTC(y, mo, d, h - 9, mi, s);
+}
+
+interface DetectedPriceBox {
+  high: number;
+  low: number;
+  startIdx: number; // candles 배열(전달받은 것) 기준 인덱스
+  endIdx: number;
+}
+
+// 🚨 [버그 수정 - 사용자 지적: "보라박스랑 빨간박스 초록박스 왜 저렇게 나눠놓은거야? 기준이 뭐야?
+// 그들끼리 비슷한데?"] 실측(지엔씨에너지): 보라 56,300~57,400 / 빨강 55,900~56,900 / 초록
+// 56,200~57,200원 - 세 구간이 가격대로 상당히 겹치는데도 별개 박스로 쪼개졌다. 원인은 고가/저가
+// (꼬리 포함 캔들 전체 범위)로 레인지%를 계산했기 때문 - 캔들 하나가 위아래로 살짝 삐져나온 꼬리만
+// 있어도 그 순간 임계값을 넘겨 박스를 강제로 끊고 새로 시작했다. 몸통(시가~종가 중 큰/작은 값)
+// 기준으로 바꾸면 순간적인 꼬리 때문에 계속 이어지던 박스가 부러지지 않는다 - "박스"는 가격이 실제로
+// 반복해서 종가를 형성한 구간을 뜻하고, 잠깐 튀어나온 꼬리는 캔들 자체에서 그대로 보이므로 정보 손실도
+// 없다.
+function candleBodyHigh(c: any): number {
+  return Math.max(c.openPrice, c.closePrice);
+}
+function candleBodyLow(c: any): number {
+  return Math.min(c.openPrice, c.closePrice);
+}
+
+// 🚨 [버그 수정 - 사용자 지적: "얘네는 올라가는중인데 박스권이라고 말하기 뭐하지않아?"] 예전엔 "전체
+// 레인지%가 임계값 이내"만 확인했다 - 그런데 완만하게 계속 오르기만(또는 내리기만) 하는 구간도 짧게
+// 잘라보면 레인지%가 작게 나올 수 있어서, 실제로는 계속 한 방향으로 움직이고 있는데 "박스"로 잘못
+// 잡혔다(실측: 09:42~10:18 우상향 구간). "박스"는 가격이 오르내리며 제자리를 맴도는 것이어야 하므로,
+// 구간 시작가 대비 순이동폭이 전체 레인지의 절반을 넘으면(왔다갔다가 아니라 한 방향으로 쭉 갔으면)
+// 박스로 인정하지 않는다 - 아직 실측 백테스트로 검증한 비율은 아니다(수칙 1-7).
+const BOX_DIRECTIONAL_RATIO_MAX = 0.5;
+
+function isRangingNotTrending(candles: any[], startIdx: number, endIdx: number, hi: number, lo: number): boolean {
+  const range = hi - lo;
+  if (range <= 0) return true;
+  const netMove = Math.abs(candles[endIdx].closePrice - candles[startIdx].openPrice);
+  return netMove / range <= BOX_DIRECTIONAL_RATIO_MAX;
+}
+
+// 당일 캔들(오름차순, 09:00이 [0])을 왼쪽에서 오른쪽으로 한 번 훑으면서, 누적 레인지%가 임계값을
+// 넘는 순간마다 그 직전까지를 박스 후보로 확정 시도하고(방향성 필터 통과해야 실제 박스로 인정) 새
+// 박스를 그 캔들부터 다시 시작한다 - 하루 안에 독립된 박스가 여러 개 나올 수 있다(사용자 요청).
+function detectPriceBoxesInDay(candles: any[]): DetectedPriceBox[] {
+  const boxes: DetectedPriceBox[] = [];
+  if (!candles || candles.length < BOX_DETECT_MIN_CANDLES) return boxes;
+  let start = 0;
+  let hi = candleBodyHigh(candles[0]);
+  let lo = candleBodyLow(candles[0]);
+  for (let i = 1; i < candles.length; i++) {
+    const nextHi = Math.max(hi, candleBodyHigh(candles[i]));
+    const nextLo = Math.min(lo, candleBodyLow(candles[i]));
+    const mid = (nextHi + nextLo) / 2;
+    const rangePct = mid > 0 ? ((nextHi - nextLo) / mid) * 100 : 0;
+    if (rangePct <= BOX_DETECT_RANGE_THRESHOLD_PCT) {
+      hi = nextHi;
+      lo = nextLo;
+      continue;
+    }
+    if (i - start >= BOX_DETECT_MIN_CANDLES && isRangingNotTrending(candles, start, i - 1, hi, lo)) {
+      boxes.push({ high: hi, low: lo, startIdx: start, endIdx: i - 1 });
+    }
+    start = i;
+    hi = candleBodyHigh(candles[i]);
+    lo = candleBodyLow(candles[i]);
+  }
+  if (candles.length - start >= BOX_DETECT_MIN_CANDLES && isRangingNotTrending(candles, start, candles.length - 1, hi, lo)) {
+    boxes.push({ high: hi, low: lo, startIdx: start, endIdx: candles.length - 1 });
+  }
+  return boxes;
+}
+
+interface ChartLeg {
+  type: 'box' | 'up' | 'down';
+  startIdx: number;
+  endIdx: number;
+  high: number;
+  low: number;
+}
+
+// 🎯 [기능 추가 - 사용자 요청: "박스를 없애고 파란색은 박스권재돌파, 보라색은 R2돌파 후 하락으로 보다가
+// 보라색 이후부터 박스를 만들어 내야 하는거 아님????? 저래야 내가 확실하게 단타를 어떻게 칠지 알거
+// 아냐"] 박스가 아닌 구간(위 detectPriceBoxesInDay가 방향성 필터로 걸러낸 구간, 즉 박스들 "사이의
+// 빈틈")을 그냥 안 보여주지 않고 상승/하락 추세 구간으로 채워서, 하루 전체가 항상 박스 아니면 추세
+// 둘 중 하나로 빈틈없이 분류되게 한다 - 박스 탐지 자체는 그대로 두고(이미 방향성 필터로 "올라가는 중인데
+// 박스"라고 안 잡히게 고쳤다), 그 나머지 구간의 시작가 대비 종가로 상승/하락만 판정한다.
+function detectChartLegsInDay(candles: any[]): ChartLeg[] {
+  const legs: ChartLeg[] = [];
+  if (!candles || candles.length === 0) return legs;
+  const boxes = detectPriceBoxesInDay(candles);
+  const pushTrendLeg = (s: number, e: number) => {
+    if (e < s) return;
+    let hi = candleBodyHigh(candles[s]);
+    let lo = candleBodyLow(candles[s]);
+    for (let k = s + 1; k <= e; k++) {
+      hi = Math.max(hi, candleBodyHigh(candles[k]));
+      lo = Math.min(lo, candleBodyLow(candles[k]));
+    }
+    const type: 'up' | 'down' = candles[e].closePrice >= candles[s].openPrice ? 'up' : 'down';
+    legs.push({ type, startIdx: s, endIdx: e, high: hi, low: lo });
+  };
+  let cursor = 0;
+  for (const box of boxes) {
+    if (box.startIdx > cursor) pushTrendLeg(cursor, box.startIdx - 1);
+    legs.push({ type: 'box', startIdx: box.startIdx, endIdx: box.endIdx, high: box.high, low: box.low });
+    cursor = box.endIdx + 1;
+  }
+  if (cursor <= candles.length - 1) pushTrendLeg(cursor, candles.length - 1);
+  return legs;
+}
+
   // 3-Minute Candlestick + Pivot R1 Target Tight Domain Computation (하단: 최저가 - 2틱, 상단: R1 + 2틱)
   const candles3m = intraday3mQuery.data?.candles || [];
   const levels3m = intraday3mQuery.data?.levels;
@@ -789,6 +942,68 @@ function computeDefault3mZoomRange(candles: any[]): { start: number; end: number
     const end = Math.max(start + 1, Math.min(candle3mZoomRange.end, candles3m.length));
     return candles3m.slice(start, end);
   }, [candles3m, candle3mZoomRange]);
+
+  // 🚨 [재설계 2차 - 사용자 요청: "당일 09:00부터 현재까지의 3분봉 가격 움직임을 기준으로 동적으로
+  // 탐지해줘"] candles3m은 "최근 5거래일+오늘"이 이어붙은 배열이라, 박스 탐지 대상을 마지막 캔들의
+  // date와 같은 캔들들(=오늘 것)만으로 제한한다 - 어제 이전 가격이 섞여 들어가지 않는다.
+  const { todayCandles3m, todayStartGlobalIdx } = React.useMemo(() => {
+    if (candles3m.length === 0) return { todayCandles3m: [] as any[], todayStartGlobalIdx: 0 };
+    const lastDate = candles3m[candles3m.length - 1]?.date;
+    let idx = candles3m.length - 1;
+    while (idx > 0 && candles3m[idx - 1]?.date === lastDate) idx--;
+    return { todayCandles3m: candles3m.slice(idx), todayStartGlobalIdx: idx };
+  }, [candles3m]);
+
+  // 🎯 [재설계 3차 - 사용자 요청: "박스를 없애고 파란색은 박스권재돌파 보라색은 r2돌파 후 하락으로
+  // 보다가 보라색 이후부터 박스를 만들어 내야하는거아님?"] detectChartLegsInDay가 하루 전체를 박스/
+  // 상승/하락 세 종류로 빈틈없이 나눈다 - 각 leg의 인덱스는 todayCandles3m(오늘 것만) 기준이므로 전체
+  // candles3m 기준 전역 인덱스로 변환하고, 타입별 색을 배정한다(박스는 팔레트 순환, 상승/하락은 고정
+  // 파랑/보라).
+  const detectedLegs3m = React.useMemo(() => {
+    if (!show3mBoxRange) return [];
+    let boxColorIdx = 0;
+    return detectChartLegsInDay(todayCandles3m).map((leg) => {
+      const color = leg.type === 'up' ? TREND_UP_COLOR : leg.type === 'down' ? TREND_DOWN_COLOR : BOX_COLOR_PALETTE[boxColorIdx++ % BOX_COLOR_PALETTE.length];
+      return {
+        ...leg,
+        startIdx: leg.startIdx + todayStartGlobalIdx,
+        endIdx: leg.endIdx + todayStartGlobalIdx,
+        color,
+      };
+    });
+  }, [show3mBoxRange, todayCandles3m, todayStartGlobalIdx]);
+
+  // 🎯 [기능 추가 - 사용자 요청: "박스 상단 / 박스 하단 / 현재 박스 형성 시작 시점 / 지속시간을
+  // 표시해줘"] 위 사각형들과 별개로, 토글 옆에 텍스트로도 구간마다 값을 그대로 보여준다 - 박스는
+  // 레인지%, 상승/하락은 시작가→종료가 변동률을 보여준다.
+  const legInfoList3m = React.useMemo(() => {
+    return detectedLegs3m.map((leg) => {
+      const startCandle = candles3m[leg.startIdx];
+      const endCandle = candles3m[leg.endIdx];
+      if (!startCandle || !endCandle) return null;
+      const startMs = candleEpochMs(startCandle);
+      const endMs = candleEpochMs(endCandle);
+      const durationMin = Math.max(0, Math.round((endMs - startMs) / 60000));
+      const durationLabel = durationMin >= 60 ? `${Math.floor(durationMin / 60)}시간 ${durationMin % 60}분` : `${durationMin}분`;
+      const endTimeLabel = leg.endIdx === candles3m.length - 1 ? '현재' : (endCandle.time || endCandle.formattedTime || '');
+      const startTimeLabel = startCandle.time || startCandle.formattedTime || '';
+      if (leg.type === 'box') {
+        const mid = (leg.high + leg.low) / 2;
+        const rangePct = mid > 0 ? (((leg.high - leg.low) / mid) * 100).toFixed(2) : '0';
+        return {
+          typeLabel: '박스',
+          text: `${leg.low.toLocaleString()}~${leg.high.toLocaleString()}원 (${rangePct}%) · ${startTimeLabel}~${endTimeLabel} (${durationLabel})`,
+          color: leg.color,
+        };
+      }
+      const changePct = startCandle.openPrice > 0 ? (((endCandle.closePrice - startCandle.openPrice) / startCandle.openPrice) * 100).toFixed(2) : '0';
+      return {
+        typeLabel: leg.type === 'up' ? '박스권재돌파' : 'R2돌파 후 하락',
+        text: `${startCandle.openPrice.toLocaleString()}→${endCandle.closePrice.toLocaleString()}원 (${leg.type === 'up' ? '+' : ''}${changePct}%) · ${startTimeLabel}~${endTimeLabel} (${durationLabel})`,
+        color: leg.color,
+      };
+    }).filter((b): b is NonNullable<typeof b> => b !== null);
+  }, [detectedLegs3m, candles3m]);
 
   // 🎯 [기능 추가 - 사용자 요청: "3분봉도 거래대금 차트 추가"] 3분봉 원본엔 거래대금 필드가 없어서
   // 일봉과 동일한 근사식(종가 × 그 봉의 거래량, 수칙 1-6)으로 봉 하나하나에 값을 붙인다 - 3분이라는
@@ -1458,6 +1673,36 @@ function computeDefault3mZoomRange(candles: any[]): { start: number; end: number
             >
               VWAP(±1·2σ)
             </button>
+            {/* 🎯 [기능 추가 - 사용자 요청: "박스 구간이 어떻게 형성되는지 토글로 만들어서 보이게 해줘.
+                색깔은 단기과열(세력매집)의 박스 색인데 조금더 투명하게"] mockData.ts의 "🔥 단기과열
+                (세력매집)" 배지가 쓰는 amber 색 계열을 그대로 재사용한다(수칙 1-6, 새 색 지정 안 함) -
+                버튼 자체는 다른 토글과 통일된 진하기로 두고, 실제 차트 위 사각형만 더 옅게(opacity 낮춤). */}
+            <button
+              type="button"
+              onClick={() => setShow3mBoxRange(!show3mBoxRange)}
+              className={`px-1.5 py-0.5 rounded font-bold border transition cursor-pointer ${
+                show3mBoxRange ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/30' : 'bg-slate-50 text-slate-400 border-slate-200 opacity-50'
+              }`}
+              title="3분봉 하루 전체를 박스(횡보) / 박스권재돌파(상승) / R2돌파 후 하락 세 구간으로 실시간 동적 분류합니다(고정 시간 구간 아님)"
+            >
+              박스구간
+            </button>
+            {show3mBoxRange && legInfoList3m.length > 0 && (
+              <div className="flex items-center gap-1.5 flex-wrap">
+                {legInfoList3m.map((b, i) => (
+                  <span
+                    key={i}
+                    className="text-[9px] font-mono whitespace-nowrap px-1 py-0.5 rounded border"
+                    style={{ color: b.color, borderColor: `${b.color}55`, backgroundColor: `${b.color}14` }}
+                  >
+                    [{b.typeLabel}] {b.text}
+                  </span>
+                ))}
+              </div>
+            )}
+            {show3mBoxRange && legInfoList3m.length === 0 && (
+              <span className="text-[9px] text-slate-400">분류할 구간 없음</span>
+            )}
           </div>
         )}
 
@@ -1685,7 +1930,15 @@ function computeDefault3mZoomRange(candles: any[]): { start: number; end: number
                 onMouseLeave={() => setHoverPriceInfo(null)}
               >
                 <ResponsiveContainer width="100%" height={PRICE_CHART_CONFIG.containerHeight}>
-                  <ComposedChart syncId="stock-detail-chart" data={displayTrend} margin={PRICE_CHART_CONFIG.margin}>
+                  {/* 🚨 [버그 수정 - 사용자 지적: "일봉은 왜 안고쳐!!" / "일봉에 거래량, 거래대금은 왜
+                      혼자 따로노는데?"] 아래 일별 거래량·거래대금 패널(2199번째 줄)은 오른쪽에 거래대금
+                      보조축(YAxis width=44)이 붙어서 margin.right(15)+보조축(44)=59px가 실제 플롯
+                      오른쪽에서 빠진다. 이 가격 차트와 그 아래 4대주체 수급 차트는 보조축이 없어
+                      margin.right=15만 빼왔다 - 같은 syncId로 정렬돼도 거래량·거래대금 패널만 실제
+                      플롯 오른쪽 경계가 44px 더 안쪽(왼쪽)으로 어긋나 "혼자 따로 노는" 것처럼 보였다.
+                      PRICE_CHART_CONFIG.margin은 IndexDetailChart/MobileStockDetailChart 등 다른
+                      화면과 공유하는 상수라 직접 바꾸지 않고, right만 이 차트 전용으로 덮어쓴다. */}
+                  <ComposedChart syncId="stock-detail-chart" data={displayTrend} margin={{ ...PRICE_CHART_CONFIG.margin, right: 59 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke={gridColor} opacity={0.7} />
                     <XAxis dataKey="formattedDate" hide={true} />
                     {/* 🚨 버그 수정: allowDataOverflow 미지정(기본값 false) 상태였는데, Recharts는 allowDataOverflow가
@@ -1694,7 +1947,7 @@ function computeDefault3mZoomRange(candles: any[]): { start: number; end: number
                         제멋대로 늘어나 보였던 원인이 바로 이것. 3분봉 탭(1582번째 줄 YAxis)과 동일하게
                         allowDataOverflow={true}를 명시해 우리가 계산한 priceDomain을 그대로 고정하고, 그 범위를
                         벗어나는 기준선은(예: 120일선이 화면 밖으로 멀리 떨어진 경우) 그냥 안 그리도록 했다. */}
-                    <YAxis stroke={axisColor} tickFormatter={formatYPrice} tick={{ fontSize: 10 }} width={68} domain={priceDomain} ticks={priceTicks} allowDataOverflow={true} />
+                    <YAxis stroke={axisColor} tickFormatter={formatYPrice} tick={{ fontSize: 10 }} width={48} domain={priceDomain} ticks={priceTicks} allowDataOverflow={true} />
                     <Tooltip content={<CustomCandleTooltip />} cursor={{ stroke: '#94a3b8', strokeWidth: 1, strokeDasharray: '3 3' }} />
                     <Bar dataKey="closePrice" name="캔들스틱" shape={(props: any) => <CandlestickBar {...props} minPrice={minPrice} maxPrice={maxPrice} topPadding={PRICE_CHART_CONFIG.margin.top} plotHeight={PRICE_CHART_CONFIG.plotHeight} period={period} />} isAnimationActive={false} />
                     {showMA5 && <Line type="linear" dataKey="ma5" name="5일 이동평균" stroke="#f59e0b" strokeWidth={1.8} strokeDasharray="5 5" dot={false} activeDot={false} connectNulls={true} />}
@@ -1774,7 +2027,7 @@ function computeDefault3mZoomRange(candles: any[]): { start: number; end: number
 
                 {/* 매물대(가격대별 누적 거래량) 반투명 오버레이 - 새 서브플롯 없이 기존 캔들 차트 안에 겹쳐 그림 */}
                 {showVolumeProfile && volumeProfileBins.length > 0 && (
-                  <div className="absolute left-[68px] right-[15px] top-0 bottom-0 pointer-events-none">
+                  <div className="absolute left-[48px] right-[59px] top-0 bottom-0 pointer-events-none">
                     <svg width="100%" height="100%" style={{ overflow: 'visible' }}>
                       {volumeProfileBins.map((bin, i) => {
                         const topPadding = PRICE_CHART_CONFIG.margin.top;
@@ -1806,7 +2059,7 @@ function computeDefault3mZoomRange(candles: any[]): { start: number; end: number
                 {hoverPriceInfo && (
                   <div className="absolute inset-0 pointer-events-none z-30">
                     <div
-                      className="absolute left-[68px] right-[15px] border-b border-dashed border-[#94a3b8]"
+                      className="absolute left-[48px] right-[59px] border-b border-dashed border-[#94a3b8]"
                       style={{ top: `${hoverPriceInfo.y}px` }}
                     />
                     <div
@@ -1864,11 +2117,13 @@ function computeDefault3mZoomRange(candles: any[]): { start: number; end: number
               </div>
               <div className="w-full h-[76px] min-h-[76px] shrink-0 relative">
                 <ResponsiveContainer width="100%" height={76}>
-                  <ComposedChart syncId="stock-detail-chart" data={displayTrend} margin={{ top: 5, right: 15, left: -10, bottom: 0 }} barGap={0} barCategoryGap="18%">
+                  {/* 🚨 [버그 수정 - 사용자 지적: "일봉은 왜 안고쳐!!"] 위 가격 차트와 동일한 이유(수칙
+                      1-6) - 아래 거래량·거래대금 패널의 보조축(44px)만큼 margin.right를 59로 맞춘다. */}
+                  <ComposedChart syncId="stock-detail-chart" data={displayTrend} margin={{ top: 5, right: 59, left: -10, bottom: 0 }} barGap={0} barCategoryGap="18%">
                     <CartesianGrid strokeDasharray="3 3" stroke={gridColor} opacity={0.7} />
                     {/* 날짜축은 바로 아래 거래량 서브플롯에서 한 번만 표시 (중복 제거로 확보한 공간을 차트 높이에 재배분) */}
                     <XAxis dataKey="formattedDate" hide={true} />
-                    <YAxis stroke={axisColor} tickFormatter={formatYAmt} tick={{ fontSize: 9 }} width={68} domain={supplyDomain as any} />
+                    <YAxis stroke={axisColor} tickFormatter={formatYAmt} tick={{ fontSize: 9 }} width={48} domain={supplyDomain as any} />
                     <Tooltip content={<CustomSupplyTooltip />} cursor={{ fill: isDark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.04)' }} />
                     <ReferenceLine y={0} stroke={isDark ? '#475569' : '#94a3b8'} strokeWidth={1.5} />
                     {showForeign && <Bar dataKey="foreignNetBuyAmt" name="외국인" fill="#f97316" radius={[2, 2, 0, 0]} />}
@@ -1925,7 +2180,6 @@ function computeDefault3mZoomRange(candles: any[]): { start: number; end: number
                     거래대금
                   </span>
                 </div>
-                <span className="text-[9px] text-slate-400 font-mono">좌: 주 · 우: 억원</span>
               </div>
               {/* "20일 평균"과는 별개로, "이번 무브에서 거래량이 평소 대비 처음 급증(돌파)한 날"과 오늘
                   거래량을 직접 비교한다 - 방향(양봉/음봉) 매칭은 쓰지 않는다(사용자 지시: "같은봉 찾지
@@ -1946,7 +2200,7 @@ function computeDefault3mZoomRange(candles: any[]): { start: number; end: number
                   <ComposedChart syncId="stock-detail-chart" data={displayTrend} margin={{ top: 5, right: 15, left: -10, bottom: 0 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke={gridColor} opacity={0.7} />
                     <XAxis dataKey="formattedDate" stroke={axisColor} tick={{ fontSize: 9 }} />
-                    <YAxis yAxisId="vol" stroke={axisColor} tickFormatter={(v: number) => (v >= 100000000 ? `${Math.round(v / 100000000)}억` : v >= 10000 ? `${Math.round(v / 10000)}만` : v.toLocaleString())} tick={{ fontSize: 9 }} width={68} domain={[0, 'auto']} />
+                    <YAxis yAxisId="vol" stroke={axisColor} tickFormatter={(v: number) => (v >= 100000000 ? `${Math.round(v / 100000000)}억` : v >= 10000 ? `${Math.round(v / 10000)}만` : v.toLocaleString())} tick={{ fontSize: 9 }} width={48} domain={[0, 'auto']} />
                     {/* 🎯 [기능 추가 - 사용자 요청: "일봉에 거래대금 차트도 추가"] 거래량(주)과 거래대금(원)은
                         단위 스케일이 완전히 달라 같은 축을 쓰면 한쪽이 뭉개진다 - 보조(오른쪽) Y축을
                         새로 둬서 패널은 그대로, 축만 하나 더 쓴다. */}
@@ -2047,15 +2301,18 @@ function computeDefault3mZoomRange(candles: any[]): { start: number; end: number
                 ) : (
                   <ResponsiveContainer width="100%" height={220}>
                     {/* 🚨 [버그 수정 - 사용자 지적: "3분봉 차트랑 거래량, 거래대금 차트 위치가 안맞잖냐.
-                        같은거리에 딱 맞춰줘야지"] 아래 거래량·거래대금 패널(2333번째 줄)은 오른쪽에
-                        거래대금 보조축(YAxis width=40)이 추가로 붙어서 margin.right(75)+보조축(40)=115px를
-                        플롯 오른쪽에서 뺀다. 이 가격 차트는 보조축이 없어 margin.right=75만 빼서, 같은
-                        syncId로 정렬돼도 두 패널의 실제 플롯 폭(=캔들 위치)이 40px씩 어긋나 있었다.
-                        보조축 폭만큼 margin.right를 동일하게 115로 맞춰 두 패널의 플롯 오른쪽 경계를 맞춘다. */}
-                    <ComposedChart syncId="stock-3m-chart" data={visibleCandles3m} margin={{ top: 10, right: 115, left: -10, bottom: 0 }}>
+                        같은거리에 딱 맞춰줘야지" / "왼쪽오른쪽 빨간곳 표시된곳들"] 아래 거래량·거래대금
+                        패널(2596번째 줄)은 오른쪽에 거래대금 보조축(YAxis width=40)이 붙어서
+                        margin.right+보조축이 플롯 오른쪽에서 빠지는 폭이다. 이 가격 차트는 보조축이 없어
+                        margin.right만으로 그 폭을 맞춰야 두 패널의 실제 플롯 폭(=캔들 위치)이 어긋나지
+                        않는다 - 아래 패널을 margin.right 35+axis 40=75로 줄였으므로 여기도 75로 맞춘다
+                        (원래 115였던 건 아래 패널이 75+40이던 걸 맞추려 끌어올린 값이라, 아래를 줄이면
+                        여기도 같이 줄여야 정렬이 유지된다). YAxis width도 72→48로 줄여 "2.9만"처럼 실제
+                        필요한 폭만 쓰게 했다 - 왼쪽에 남던 빈 공간이 그만큼 줄어든다. */}
+                    <ComposedChart syncId="stock-3m-chart" data={visibleCandles3m} margin={{ top: 10, right: 75, left: -10, bottom: 0 }}>
                       <CartesianGrid strokeDasharray="3 3" stroke={gridColor} opacity={0.7} />
                       <XAxis dataKey="time" height={24} stroke={axisColor} tick={{ fontSize: 9 }} interval="preserveStartEnd" />
-                      <YAxis stroke={axisColor} tickFormatter={formatYPrice} tick={{ fontSize: 10 }} width={72} domain={intraday3mPriceAxis.priceDomain} allowDataOverflow={true} />
+                      <YAxis stroke={axisColor} tickFormatter={formatYPrice} tick={{ fontSize: 10 }} width={48} domain={intraday3mPriceAxis.priceDomain} allowDataOverflow={true} />
                       <Tooltip content={<CustomCandleTooltip />} />
 
                       {/* 피봇 수평선 (실선/점선) */}
@@ -2143,7 +2400,7 @@ function computeDefault3mZoomRange(candles: any[]): { start: number; end: number
                     🚨 위 ComposedChart margin.right를 115로 맞춘 것과 동일하게(수칙 1-6), 이 오버레이도
                     실제 플롯 오른쪽 경계(115px)에 맞춰야 매물대 막대가 캔들과 어긋나지 않는다. */}
                 {show3mVolumeProfile && volumeProfile3mBins.length > 0 && (
-                  <div className="absolute left-[72px] right-[115px] top-0 bottom-0 pointer-events-none">
+                  <div className="absolute left-[48px] right-[75px] top-0 bottom-0 pointer-events-none">
                     <svg width="100%" height="100%" style={{ overflow: 'visible' }}>
                       {volumeProfile3mBins.map((bin, i) => {
                         const { minPrice: iMin, maxPrice: iMax } = intraday3mPriceAxis;
@@ -2172,11 +2429,58 @@ function computeDefault3mZoomRange(candles: any[]): { start: number; end: number
                   </div>
                 )}
 
+                {/* 🎯 [재설계 3차 - 사용자 요청: "박스를 없애고 파란색은 박스권재돌파 보라색은 r2돌파 후
+                    하락으로 보다가 보라색 이후부터 박스를 만들어 내야하는거아님?"] detectedLegs3m가 하루
+                    전체를 박스/상승/하락 세 종류로 빈틈없이 나눈 결과를 각각 사각형으로 그린다 - 매물대
+                    오버레이와 동일 Y축 변환식(topPadding=10, plotHeight=186) 재사용. 박스는 점선 테두리,
+                    추세(상승/하락)는 실선 테두리로 구분해서 한눈에 성격이 다르다는 걸 알 수 있게 했다. */}
+                {show3mBoxRange && detectedLegs3m.length > 0 && (() => {
+                  const { minPrice: iMin, maxPrice: iMax } = intraday3mPriceAxis;
+                  if (iMax <= iMin || visibleCandles3m.length === 0 || candles3m.length === 0) return null;
+                  const topPadding = 10;
+                  const plotHeight = 186;
+                  const zoomOffset = candle3mZoomRange?.start ?? 0;
+                  const total = visibleCandles3m.length;
+                  return (
+                    <div className="absolute left-[48px] right-[75px] top-0 bottom-0 pointer-events-none">
+                      <svg width="100%" height="100%" style={{ overflow: 'visible' }}>
+                        {detectedLegs3m.map((leg, i) => {
+                          const startIdxInView = leg.startIdx - zoomOffset;
+                          const endIdxInView = leg.endIdx - zoomOffset;
+                          if (endIdxInView < 0 || startIdxInView >= total) return null; // 완전히 줌 밖으로 잘려나간 구간
+                          const clippedStart = Math.max(0, startIdxInView);
+                          const clippedEnd = Math.min(total - 1, endIdxInView);
+                          const yHigh = topPadding + (1 - (leg.high - iMin) / (iMax - iMin)) * plotHeight;
+                          const yLow = topPadding + (1 - (leg.low - iMin) / (iMax - iMin)) * plotHeight;
+                          const xPct = (clippedStart / total) * 100;
+                          const widthPct = Math.max(0.6, ((clippedEnd - clippedStart + 1) / total) * 100);
+                          return (
+                            <rect
+                              key={i}
+                              x={`${xPct}%`}
+                              y={Math.min(yHigh, yLow)}
+                              width={`${widthPct}%`}
+                              height={Math.max(1, Math.abs(yLow - yHigh))}
+                              fill={leg.color}
+                              opacity={0.22}
+                              stroke={leg.color}
+                              strokeOpacity={0.85}
+                              strokeWidth={1.5}
+                              strokeDasharray={leg.type === 'box' ? '4 2' : undefined}
+                              rx={2}
+                            />
+                          );
+                        })}
+                      </svg>
+                    </div>
+                  );
+                })()}
+
                 {/* Hover Dashed Crosshair */}
                 {hover3mPriceInfo && (
                   <div className="absolute inset-0 pointer-events-none z-30">
                     <div
-                      className="absolute left-[72px] right-[115px] border-b border-dashed border-[#94a3b8]"
+                      className="absolute left-[48px] right-[75px] border-b border-dashed border-[#94a3b8]"
                       style={{ top: `${hover3mPriceInfo.y}px` }}
                     />
                     <div
@@ -2279,7 +2583,6 @@ function computeDefault3mZoomRange(candles: any[]): { start: number; end: number
                     <svg width="12" height="6" className="inline-block shrink-0"><line x1="0" y1="3" x2="12" y2="3" stroke="#8b5cf6" strokeWidth="1.5" /></svg>
                     거래대금
                   </span>
-                  <span className="text-[9px] text-slate-400 font-mono">좌: 주 · 우: 억원</span>
                 </div>
               </div>
               <div
@@ -2295,10 +2598,16 @@ function computeDefault3mZoomRange(candles: any[]): { start: number; end: number
                   {/* 🎯 [기능 추가 - 확대/축소] 위 가격 차트와 "1:1 수직 정렬"이 목적이라(원래 주석), 줌 상태도
                       그대로 따라가야 어긋나지 않는다 - candles3m(전체)가 아니라 visibleCandles3m을 쓴다.
                       휠/드래그 핸들러도 위 가격 차트와 동일하게 달아서 어느 쪽에서 조작해도 같이 움직인다. */}
-                  <ComposedChart syncId="stock-3m-chart" data={visibleCandles3mWithAmount} margin={{ top: 5, right: 75, left: -10, bottom: 0 }}>
+                  {/* 🚨 [버그 수정 - 사용자 지적: "왼쪽오른쪽 빨간곳 표시된곳들" - 캔들/거래량 차트 좌우에
+                      빈 공간이 크게 남아있음] YAxis width=72는 "80만"처럼 실제로 필요한 폭(약 40px)보다
+                      훨씬 넓게 고정 할당돼 있었고, margin.right=75도 라벨 없이 보조축(거래대금, width=40)
+                      만 있는 이 차트엔 과했다 - 위 가격 차트와의 정렬은 (margin.right + 0) = (margin.right
+                      + amt축 width)로 유지되므로, 여기 margin.right를 35로 줄이면 가격 차트도 75(=35+40)로
+                      맞춰야 한다(아래 가격 차트 주석 참고). */}
+                  <ComposedChart syncId="stock-3m-chart" data={visibleCandles3mWithAmount} margin={{ top: 5, right: 35, left: -10, bottom: 0 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke={gridColor} opacity={0.7} />
                     <XAxis dataKey="time" stroke={axisColor} tick={{ fontSize: 9 }} interval="preserveStartEnd" />
-                    <YAxis yAxisId="vol" stroke={axisColor} tickFormatter={(v) => (v >= 10000 ? `${Math.round(v / 10000)}만` : v.toLocaleString())} tick={{ fontSize: 9 }} width={72} domain={[0, 'auto']} />
+                    <YAxis yAxisId="vol" stroke={axisColor} tickFormatter={(v) => (v >= 10000 ? `${Math.round(v / 10000)}만` : v.toLocaleString())} tick={{ fontSize: 9 }} width={44} domain={[0, 'auto']} />
                     {/* 🎯 [기능 추가 - 사용자 요청: "3분봉도 거래대금 차트 추가"] 일봉 패널과 동일하게
                         보조(오른쪽) Y축 하나만 추가 - 새 패널 없음. */}
                     <YAxis yAxisId="amt" orientation="right" stroke="#8b5cf6" tickFormatter={(v) => `${Math.round(v)}억`} tick={{ fontSize: 9 }} width={40} domain={[0, 'auto']} />

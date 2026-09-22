@@ -193,12 +193,33 @@ export interface PivotLevelSignal {
   volSurge: boolean; // 최근 60초(또는 돌파 이후 전체) 거래량 속도가 돌파 전 60초 평균보다 높음(롤링 재계산)
   hadPriorBreak: boolean; // 오늘 이 선을 뚫었다가 다시 밑으로 내려간 적 있음 - reclaimed/approaching이 둘 다
   // false여도 이 값이 true면 "이전 이력만 있음"(대기 중, VWAP의 hadPriorReclaim과 동일한 목적)
+  // 🎯 [기능 추가 - 사용자 지적: "돌파재시도 왜 몇번했는지 안알려줘?"] VWAP의 crossCount(감시 시작 후
+  // below→above 전환 누적 횟수)와 동일한 개념(수칙 1-6) - 오늘 이 선을 몇 번째 (재)돌파 시도 중인지.
+  crossCount: number;
 }
+
+// 🚨 [재설계 - 사용자 지적: "저렇게 박스를 하는게 내가 3분봉 보고 매매에 대해 도움이 되나? 나는 내
+// 매매에 도움이 되는 박스를 형성에서 거기에 맞게 뱃지를먹여서 박스권 하락, 박스권 돌파 이런걸
+// 원했던건데... 순위표 배지로"] 예전엔 이 값들이 PivotLevelSignal(R1/R2 레벨마다 따로) 안에
+// boxRangePct/inBox/boxHighPrice/boxLowPrice/boxStartTs로 흩어져 있었다 - R1/R2 돌파 여부와 무관하게
+// 종목 하나에 대해 "지금 박스/상승/하락 중 무엇인지" 딱 하나의 상태만 있으면 되므로, PivotReclaimSignal
+// 최상위로 옮기고 이름도 목적에 맞게 바꿨다(kisApi.ts의 detectPriceLegsFromSamples가 채움).
+export type PriceLegType = 'box' | 'up' | 'down';
+export interface PriceLegSignal {
+  type: PriceLegType; // 'box'=박스권 유지, 'up'=박스권재돌파(상승 추세), 'down'=R2돌파 후 하락(하락 추세)
+  high: number;
+  low: number;
+  changePct: number; // box: (고가-저가)/중간가 %, up/down: 구간 시작가 대비 현재가 변동률(부호 있음)
+  startTs: number; // 이 구간이 시작된 시각(epoch ms)
+  durationMs: number; // 시작부터 지금까지 지속 시간
+}
+
 export interface PivotReclaimSignal {
   symbol: string;
   r1: PivotLevelSignal;
   r2: PivotLevelSignal; // r2가 걸려있으면 r1은 이미 걸려있는 게 자연스러움(R2가 R1보다 위)
   insufficientData: boolean;
+  priceLeg: PriceLegSignal | null; // R1/R2와 무관한, 순수 가격 흐름 기반 현재 박스/추세 상태
 }
 
 // ============================================================================
@@ -366,7 +387,12 @@ export interface RankingItem {
   pullbackFromHighPct?: number;  // 당일 고가 등락률 - 현재 등락률 (%p) - 0에 가까울수록 고가권 유지
   closeToHighRatioPct?: number;  // 현재가 ÷ 당일 고가 * 100 (%) - "종가가 고가의 90% 이상" 채점용
   relativeStrengthPct?: number;  // 현재 등락률 - 소속 시장(KOSPI/KOSDAQ) 지수 등락률 (%p)
-  discoveryScore?: number;       // 사용자가 확정한 8개 조건 배점(합계 100점) 절대 점수 - 백분위 상대평가 아님
+  // 🎯 [기능 추가 - 사용자 요청: "발굴인데 너무 급등한 애들이 1등을 해서... 미급등성+재활성화"] 최근
+  // 10거래일(오늘 제외) 평균 거래량이 그 이전 10거래일보다 더 조용했던 종목에 한해서만 채워진다(그렇지
+  // 않으면 "한동안 잠잠하다 깨어남"이라 부를 수 없으므로 undefined) - 오늘 거래량이 그 "조용했던 최근
+  // 10일" 평균 대비 몇 배인지.
+  reactivationRatio?: number;
+  discoveryScore?: number;       // 사용자가 확정한 배점(합계 100점) 절대 점수 - 백분위 상대평가 아님
 
   // ============================================================================
   // 🎯 [기능 추가 - 사용자 요청: "전조 장마감" 탭] "발굴 장마감"이 이미 오른 종목을 고르는 반면, 이 탭은
