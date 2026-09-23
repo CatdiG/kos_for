@@ -88,7 +88,10 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
   // 교집합 탭 전용: 이격도 배지가 "단기과열"인 종목(세력매집/설거지주의 모두 포함)을 목록에서 제외해서
   // "지금 바로 진입 검토 가능한" 종목만 골라 보는 필터. 실제 매매 신호가 아니라 이격도 상태 기반 화면 필터일 뿐이다.
   const [entryReadyOnly, setEntryReadyOnly] = useState<boolean>(false);
-  const [surgingMode, setSurgingMode] = useState<SurgingMode>('fluctuation');
+  // 🚨 [기본값 변경 - 사용자 요청: "급등주탭이 눌리면 맨 앞에 있는 급등주 교집합이 제일 먼저 떠야지",
+  // 2026-09-23] activeTab 초기값이 이미 'surging'이라(위 73번 줄) 첫 로드 시 handleTabChange를 안 거치므로
+  // 여기 기본값도 같이 맞춰야 한다.
+  const [surgingMode, setSurgingMode] = useState<SurgingMode>('overlap');
   // 🎯 [기능 추가 - 사용자 요청: "탭을 왔다갔다 하면서 보는게 너무 귀찮은데... 셀렉터까지 원해"] 급등주
   // 교집합에서 등락률(3%+)·거래량·거래대금 중 몇 개 이상 겹쳐야 노출할지 선택 - 기본값 2는 기존 동작과
   // 동일해서 "처음 열릴 때는 기존 상태 유지"를 만족한다.
@@ -885,6 +888,17 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
         setOverlapLimit(50);
         setQuietAccumFilter(false);
       }
+      // 🚨 [기능 변경 - 사용자 요청: "급등주탭이 눌리면 맨 앞에 있는 급등주 교집합이 제일 먼저 떠야지",
+      // 2026-09-23] 서브모드 버튼 순서를 교집합-맨앞으로 바꿨으니(수칙 1-6 일관성), 급등주 탭에 새로
+      // 들어올 때도 기본값을 그 순서와 맞춘다.
+      if (newTab === 'surging') {
+        setSurgingMode('overlap');
+      }
+      // 🚨 [기능 변경 - 사용자 요청: "다른탭으로 이동할때 실시간 감시 토글버튼은 꺼줘", 2026-09-23] 예전엔
+      // 탭을 옮겨도 감시 모드가 유지되게 일부러 안 껐는데(아래 949번 줄 주석 참고), 이번 요청으로 반대로
+      // 바꾼다 - 탭 전환 시 무조건 끈다.
+      setVwapWatchEnabled(false);
+      setPivotWatchEnabled(false);
       // 급등주 교집합 "거래대금" 정렬을 켜둔 채로 다른 탭으로 넘어가면 그 탭엔 amountEok가 없거나
       // 의미가 달라서 정렬이 이상하게 보일 수 있어 정상 순서로 되돌린다.
       if (sortField === 'amountEok') {
@@ -946,9 +960,9 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
   };
 
   // Reset expanded accordion charts whenever ANY tab, sub-mode, badge, filter, or sorting condition changes
-  // 🚨 [기능 재설계] vwapWatchEnabled는 여기서 초기화하지 않는다 - 탭을 옮겨도 "감시 모드" 자체는 계속
-  // 켜진 채로 유지하고, react-query의 queryKey가 탭 정보를 포함하므로 감시 대상만 새 탭 목록으로 자동
-  // 전환된다(수동 리셋/토큰 관리 불필요 - 예전 온디맨드 버전의 경쟁 상태 버그가 구조적으로 없어짐).
+  // 🚨 [기능 변경 - 사용자 요청: "다른탭으로 이동할때 실시간 감시 토글버튼은 꺼줘", 2026-09-23] 예전엔
+  // vwapWatchEnabled를 탭 전환에도 유지했었는데(감시 모드가 계속 켜진 채로 새 탭 목록으로 자동 전환),
+  // 이번 요청으로 정반대로 바뀌었다 - 이제 handleTabChange에서 탭이 바뀔 때마다 명시적으로 끈다.
   useEffect(() => {
     setExpandedSymbols({});
   }, [activeTab, surgingMode, market, direction, period, overlapMode, overlapLimit, weights, creditOnly, entryReadyOnly, sortField, sortAsc, quietAccumFilter]);
@@ -1409,15 +1423,9 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
                   눌림후속
                 </button>
               </div>
-              {/* 🎯 [기능 추가 - 사용자 요청: "장마감 후보들은 언제 업데이트 되는거야? 마지막 업데이트
-                  시점이 언제인지 알려줘야 안헷갈릴거 같아 - 각자 토글 옆에"] 위 lastBatchTime/updatedAt을
-                  그대로 노출한다 - 발굴/전조는 미리 당겨둔 데이터라 토글을 누르기 전에도 바로 보이고,
-                  급등은 실제로 눌러서 조회한 뒤에만 뜬다(수칙 1-3, 안 물어본 값을 지어내지 않음). */}
-              <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[9px] text-slate-400 dark:text-slate-500 font-sans font-normal whitespace-nowrap">
-                {formatBatchLabel(postmarketBatchData) && <span>급등 {formatBatchLabel(postmarketBatchData)}</span>}
-                {formatBatchLabel(discoveryBatchData) && <span>발굴 {formatBatchLabel(discoveryBatchData)}</span>}
-                {formatBatchLabel(precursorBatchData) && <span>전조 {formatBatchLabel(precursorBatchData)}</span>}
-              </div>
+              {/* 🚨 [순서 변경 - 사용자 요청: "실시간 감시 토글을 앞에 3토글 옆에 붙이고 기준 라벨은
+                  뒤로 보내", 2026-09-23] 실시간 감시 버튼을 3개 서브모드 토글 바로 옆으로 옮기고,
+                  "발굴/전조 기준" 라벨은 그 뒤로 민다. */}
               {/* 🎯 [기능 추가 - 사용자 요청: "토글들 계속 껏다켰다 하기 너무 힘든데"] VWAP·피봇 감시 버튼
                   2개를 하나로 합쳤다(수칙 1-6, 급등주 탭과 동일한 핸들러 재사용). */}
               <button
@@ -1434,6 +1442,15 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
                 <span>{vwapWatchEnabled ? '실시간 감시 중' : '실시간 감시'}</span>
                 {vwapWatchEnabled && (vwapWatchFetching || pivotWatchFetching) && <RefreshCw className="w-3 h-3 animate-spin text-sky-100" />}
               </button>
+              {/* 🎯 [기능 추가 - 사용자 요청: "장마감 후보들은 언제 업데이트 되는거야? 마지막 업데이트
+                  시점이 언제인지 알려줘야 안헷갈릴거 같아 - 각자 토글 옆에"] 위 lastBatchTime/updatedAt을
+                  그대로 노출한다 - 발굴/전조는 미리 당겨둔 데이터라 토글을 누르기 전에도 바로 보이고,
+                  급등은 실제로 눌러서 조회한 뒤에만 뜬다(수칙 1-3, 안 물어본 값을 지어내지 않음). */}
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[9px] text-slate-400 dark:text-slate-500 font-sans font-normal whitespace-nowrap">
+                {formatBatchLabel(postmarketBatchData) && <span>급등 {formatBatchLabel(postmarketBatchData)}</span>}
+                {formatBatchLabel(discoveryBatchData) && <span>발굴 {formatBatchLabel(discoveryBatchData)}</span>}
+                {formatBatchLabel(precursorBatchData) && <span>전조 {formatBatchLabel(precursorBatchData)}</span>}
+              </div>
             </div>
           )}
 

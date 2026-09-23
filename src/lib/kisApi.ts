@@ -6538,7 +6538,23 @@ export async function fetchKis3mCandlesFullDay(
     // ========================================================================
     const PAST_TRADING_DAYS_TO_STITCH = 5; // 오늘 제외 최근 5거래일 - Supabase 병렬 조회라 지연 미미
     const datesToLoad = recentPastTradeDates.slice(-PAST_TRADING_DAYS_TO_STITCH);
-    const archivedDays = await Promise.all(datesToLoad.map((dt) => load3mCandlesFromDisk(symbol, dt)));
+    const archivedDaysRaw = await Promise.all(datesToLoad.map((dt) => load3mCandlesFromDisk(symbol, dt)));
+    // 🚨 [버그 수정 - 사용자 지적: "삼성전자 3분봉 또 왜저러는데"] 실측 확인(2026-09-23): Supabase
+    // intraday_3m_candles에 date="20260922" 키인데 내부 캔들은 실제로 09/18·09/21 데이터가 섞여
+    // 저장된 오염 행이 있었다(005930/000660/034020 3종목, 전부 2026-09-22 20:00:12 KST 애프터마켓
+    // 마감 경계에 저장됨 - 쓰기 단계의 근본 원인은 이번 진단 범위 밖). 저장 단계 버그가 또 재발해도
+    // 화면까지 새어나가지 않도록, 읽은 배치의 내부 date가 요청한 날짜와 실제로 일치하는 것만 신뢰한다
+    // (수칙 1-3 - 정합성 안 맞는 데이터는 그냥 버림, 가짜로 보정하지 않음).
+    const archivedDays = archivedDaysRaw.map((day, i) => {
+      if (!Array.isArray(day) || day.length === 0) return day;
+      const expectedDate = datesToLoad[i];
+      const mismatched = day.filter((c: any) => c.date !== expectedDate);
+      if (mismatched.length > 0) {
+        console.warn(`[3분봉 아카이브 정합성 오류] ${symbol} ${expectedDate} 요청했는데 내부에 다른 날짜 ${mismatched.length}/${day.length}건 섞여있어 이 배치 전체를 버림 (내부 날짜: ${[...new Set(day.map((c: any) => c.date))].join(',')})`);
+        return null;
+      }
+      return day;
+    });
     let prevDayRealCandles: any[] = archivedDays
       .filter((day): day is any[] => Array.isArray(day) && day.length > 0)
       .flat();

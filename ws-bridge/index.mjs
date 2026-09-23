@@ -152,6 +152,12 @@ const FIELD_COUNT = 47; // 실측 확정값 - 절대 46으로 되돌리지 말 �
 
 const candleState = new Map(); // symbol -> Map<bucketKey(HH:MM), candle>
 const dirtySymbols = new Set(); // 마지막 플러시 이후 갱신된 종목
+// 🚨 [버그 수정 - 사용자 지적: "삼성전자 3분봉 또 왜저러는데"] candleState가 시각(HH:MM)만 키로 쓰는
+// 인메모리 Map이라, 이 프로세스가 자정을 넘겨 재시작 없이 계속 살아있으면 같은 시각 버킷을 재사용하면서
+// 그 버킷의 date 필드가 "최초 생성된 날짜"에 영구 고정되는 버그가 있었다(실측: 005930이 09/21 이후
+// 재시작 없이 계속 09/21로 저장되며 계속 늘어남 - 화면 3분봉이 09/18→09/21 사이에 큰 점프로 보였던
+// 진짜 원인). getKstDateStr()는 function 선언이라 호이스팅되어 여기서 먼저 호출해도 안전하다.
+let currentTradingDateStr = getKstDateStr();
 
 // 🎯 [기능 추가 - 관심종목 실시간 현재가] symbol -> 최신 시세(가격/전일대비/등락율/누적거래량).
 // 3분봉과 별개로 "지금 이 순간 값"만 들고 있다가 짧은 주기로 realtime_quotes에 흘려보낸다.
@@ -213,20 +219,35 @@ async function hydrateCandleStateFromSupabase(symbols) {
       return;
     }
     const rows = await res.json();
+    // 🚨 [버그 수정 - 사용자 지적: "삼성전자 3분봉 또 왜저러는데", 2단계] 날짜만 고쳐서 복원하면
+    // 예전 버그로 이미 쌓여있던 "미래 시각"(예: 19:57) 버킷까지 그대로 candleState에 들어오고,
+    // 재시작 후 ingestTick이 그 버킷을 "이미 존재함"으로 보고 새로 안 만들어서 오염된 H/L 위에
+    // 새 가격만 덧씌워진다(max/min이라 절대 안 줄어듦). 지금 이 시각 이후의 버킷은 명백히 가짜이므로
+    // 복원 자체를 하지 않는다(수칙 1-3 - 못 믿을 값은 쓰지 않는다).
+    const nowKst = new Date(Date.now() + 9 * 60 * 60 * 1000);
+    const nowTimeKey = `${String(nowKst.getUTCHours()).padStart(2, '0')}:${String(Math.floor(nowKst.getUTCMinutes() / 3) * 3).padStart(2, '0')}`;
     let restoredSymbols = 0;
     let restoredBuckets = 0;
+    let skippedFutureBuckets = 0;
     for (const row of rows) {
       if (!Array.isArray(row.candles) || row.candles.length === 0) continue;
       const bucketMap = new Map();
       for (const c of row.candles) {
         if (!c.time) continue;
-        bucketMap.set(c.time, c);
+        if (c.time > nowTimeKey) { skippedFutureBuckets++; continue; }
+        // 이 행은 date=todayStr로 조회했으니 todayStr이 맞다 - 혹시 예전 버그로 이미 저장된 캔들
+        // 내부에 stale한 date가 남아있어도 복원 시점에 강제로 정상화해서 재사용하지 않는다.
+        bucketMap.set(c.time, { ...c, date: todayStr });
       }
       if (bucketMap.size === 0) continue;
       candleState.set(row.symbol, bucketMap);
       restoredSymbols++;
       restoredBuckets += bucketMap.size;
     }
+    if (skippedFutureBuckets > 0) {
+      log(`[캔들 복원] 미래 시각(현재 ${nowTimeKey} 이후) 버킷 ${skippedFutureBuckets}개 폐기`);
+    }
+    currentTradingDateStr = todayStr;
     if (restoredSymbols > 0) {
       log(`[캔들 복원 완료] ${restoredSymbols}종목, 총 ${restoredBuckets}개 봉 - 재시작으로 오늘자 캔들이 끊기지 않도록 이어받음`);
     }
@@ -245,6 +266,16 @@ function bucketKeyOf(hhmmss) {
 function ingestTick(symbol, hhmmss, price, tickVol) {
   if (!Number.isFinite(price) || price <= 0) return;
   const todayStr = getKstDateStr();
+
+  // 🚨 [버그 수정 - 날짜 경계 미처리] 날짜가 바뀌었는데 이 프로세스가 재시작 안 됐으면, 시각만 키로
+  // 쓰는 버킷들이 전날 것 그대로 남아있어 date가 고정되는 문제가 있었다 - 날짜가 바뀐 걸 감지하는
+  // 즉시 전체 종목의 버킷을 비워서 새 날짜로 새로 쌓기 시작한다.
+  if (todayStr !== currentTradingDateStr) {
+    log(`[날짜 경계 감지] ${currentTradingDateStr} -> ${todayStr}, candleState 전체 초기화(${candleState.size}종목)`);
+    candleState.clear();
+    currentTradingDateStr = todayStr;
+  }
+
   const key = bucketKeyOf(hhmmss);
 
   if (!candleState.has(symbol)) candleState.set(symbol, new Map());
@@ -263,6 +294,9 @@ function ingestTick(symbol, hhmmss, price, tickVol) {
     });
   }
   const c = symbolBuckets.get(key);
+  // 방어적 자가치유 - 위 날짜 경계 감지가 어떤 이유로든 놓친 버킷이 있어도, 매 틱마다 date를 항상
+  // 지금 날짜로 맞춰서 절대 stale한 날짜가 저장되지 않게 한다(수칙 1-3).
+  c.date = todayStr;
   if (hhmmss >= c.rawTime) {
     c.closePrice = price;
     c.rawTime = hhmmss;

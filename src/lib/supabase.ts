@@ -30,8 +30,12 @@ function getSupabaseServiceKey(): string {
 // shared_rank_cache를 다시 읽기 경로에 추가하기 전에, 모든 Supabase 호출에 일괄 타임아웃을 건다.
 // supabase-js v2는 client 옵션의 global.fetch로 커스텀 fetch를 주입할 수 있어(공식 지원 API),
 // 호출부마다 따로 손볼 필요 없이 여기 한 곳에서 전부 안전해진다(수칙 1-6).
+// 🚨 [버그 수정 - 사용자 지적: "삼성전자 3분봉 또 왜저러는데"] cache 옵션이 없으면 Next.js가 이
+// fetch를 자체적으로 캐싱할 수 있다(라우트에 dynamic='force-dynamic'을 걸어도 전역 fetch 패치는
+// 별개로 걸릴 수 있음) - 15초마다 갱신되는 실시간 3분봉 조회가 이 캐시에 걸려 몇 분째 같은 응답만
+// 반환하고 있었다. no-store를 명시해서 매번 실제로 새로 조회하게 한다.
 const supabaseFetchWithTimeout: typeof fetch = (input, init) => {
-  return fetch(input, { ...init, signal: AbortSignal.timeout(8000) });
+  return fetch(input, { ...init, signal: AbortSignal.timeout(8000), cache: 'no-store' });
 };
 
 export function getSupabasePublic(): SupabaseClient | null {
@@ -286,7 +290,12 @@ export async function fetchFreshIntraday3mCandlesFromSupabase(
     const updatedAtMs = new Date(data.updated_at).getTime();
     if (!Number.isFinite(updatedAtMs) || Date.now() - updatedAtMs > maxAgeMs) return null;
 
-    return data.candles;
+    // 🚨 [버그 수정 - 사용자 지적: "삼성전자 3분봉 또 왜저러는데"] ws-bridge의 candleState가 날짜 경계를
+    // 안 챙기던 버그(ws-bridge/index.mjs ingestTick, 2026-09-23 수정)로 인해 이 행(date=eq.${date}로
+    // 조회했으니 date는 분명히 맞음)의 candles 내부 각 항목 date 필드가 예전에 잘못 저장된 stale한
+    // 값일 수 있다. 행 자체는 올바른 날짜로 조회됐으므로 각 항목의 date를 그 값으로 강제 정규화한다
+    // (수칙 1-3 - 안 맞는 걸 그대로 믿지 않는다).
+    return data.candles.map((c: any) => ({ ...c, date }));
   } catch (e: any) {
     console.warn('[Supabase intraday_3m_candles Freshness Read Exception]', e?.message || e);
     return null;

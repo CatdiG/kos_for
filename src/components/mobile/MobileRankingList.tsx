@@ -448,7 +448,9 @@ export default function MobileRankingList() {
   const [activeTab, setActiveTab] = useState<RankingType>('surging');
   const [direction, setDirection] = useState<RankingDirection>('buy');
   const [period, setPeriod] = useState<RankingPeriod>('1d');
-  const [surgingMode, setSurgingMode] = useState<SurgingMode>('fluctuation');
+  // 🚨 [기본값 변경 - 사용자 요청: "급등주탭이 눌리면 맨 앞에 있는 급등주 교집합이 제일 먼저 떠야지",
+  // 데스크톱과 동일(수칙 1-6), 2026-09-23]
+  const [surgingMode, setSurgingMode] = useState<SurgingMode>('overlap');
   const [overlapMode, setOverlapMode] = useState<OverlapMode>('daily');
   // 🚨 [기능 재설계 - 사용자 요청: "토글 필터로 진행해줘"] 데스크톱과 동일하게, 예전엔 3일연속 전용
   // 4번째 버튼("수급 장마감 후보군")이었던 걸 당일/2일연속/3일연속 어디서나 켤 수 있는 독립 토글로 분리.
@@ -799,7 +801,15 @@ export default function MobileRankingList() {
           return (
             <button
               key={t.id}
-              onClick={() => { setActiveTab(t.id); if (t.id !== 'overlap') setShowDropouts(false); }}
+              onClick={() => {
+                setActiveTab(t.id);
+                if (t.id !== 'overlap') setShowDropouts(false);
+                // 🚨 [기능 변경 - 사용자 요청: "다른탭으로 이동할때 실시간 감시 토글버튼은 꺼줘",
+                // 데스크톱과 동일(수칙 1-6), 2026-09-23]
+                setVwapWatchEnabled(false);
+                setPivotWatchEnabled(false);
+                if (t.id === 'surging') setSurgingMode('overlap');
+              }}
               className={`flex items-center gap-1 shrink-0 px-2.5 py-1.5 rounded-lg text-xs font-bold border transition ${
                 isActive
                   ? 'bg-red-600 text-white border-red-600'
@@ -871,7 +881,13 @@ export default function MobileRankingList() {
               return (
                 <button
                   key={m.id}
-                  onClick={() => setActiveTab(m.id)}
+                  onClick={() => {
+                    setActiveTab(m.id);
+                    // 🚨 [기능 변경 - 사용자 요청: "다른탭으로 이동할때 실시간 감시 토글버튼은 꺼줘",
+                    // 데스크톱과 동일(수칙 1-6), 2026-09-23]
+                    setVwapWatchEnabled(false);
+                    setPivotWatchEnabled(false);
+                  }}
                   className={`flex items-center gap-1 shrink-0 px-2.5 py-1 rounded-lg text-[11px] font-bold border transition ${
                     isActive
                       ? 'bg-amber-600 text-white border-transparent'
