@@ -331,7 +331,7 @@ export default function HistoryPage() {
             {([
               { id: 'postmarket', label: '급등' },
               { id: 'discovery', label: '발굴' },
-              { id: 'precursor', label: '전조' },
+              { id: 'precursor', label: '눌림후속' },
             ] as Array<{ id: RankingType; label: string }>).map((m) => (
               <button
                 key={m.id}

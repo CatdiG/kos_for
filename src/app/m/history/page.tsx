@@ -265,7 +265,7 @@ export default function MobileHistoryPage() {
             {([
               { id: 'postmarket' as const, label: '급등' },
               { id: 'discovery' as const, label: '발굴' },
-              { id: 'precursor' as const, label: '전조' },
+              { id: 'precursor' as const, label: '눌림후속' },
             ]).map((m) => (
               <button
                 key={m.id}
