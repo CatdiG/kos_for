@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { withCronRunLog } from '@/lib/cronRunLog';
 import { fetchKisDiscoveryCandidates } from '@/lib/kisApi';
 import { saveDiscoverySnapshots, DiscoverySnapshotRecord } from '@/lib/supabase';
 
@@ -20,11 +21,11 @@ function todayYmdKst(): string {
 }
 
 export async function GET(request: NextRequest) {
-  return handleComputeDiscovery(request);
+  return withCronRunLog('compute-discovery-postmarket', request, () => handleComputeDiscovery(request));
 }
 
 export async function POST(request: NextRequest) {
-  return handleComputeDiscovery(request);
+  return withCronRunLog('compute-discovery-postmarket', request, () => handleComputeDiscovery(request));
 }
 
 async function handleComputeDiscovery(request: NextRequest) {

@@ -493,6 +493,8 @@ export interface InvestorRankingResponse {
   stillWarming?: boolean; // program 탭 전용: 콜드스타트 더미 시그니처(changeRate 0 + volume 1000000)가 응답 목록에 아직 남아있어
   // trend5dBatchStore 백그라운드 예열(after() 25종목/사이클)이 계속 필요함을 표시. 프론트가 이 값이 true인 동안만
   // 짧게 재조회해서(isPartial과 동일 패턴) 예열이 끝나는 대로 화면이 자동으로 정상화되게 한다.
+  // program 탭 전용: 장중/애프터마켓인데 오라클 상시 수집기 데이터가 10분 넘게 갱신되지 않았음(수집기 멈춤/지연)
+  collectorStale?: boolean;
 }
 
 export interface KisTokenResponse {

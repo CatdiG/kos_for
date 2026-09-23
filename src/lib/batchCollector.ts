@@ -2,9 +2,9 @@ import fs from 'fs';
 import path from 'path';
 import { TOP_50_STOCKS, getStockName, resolveMarketType, getSettledAsOfDateLabel, resolveStockPriceAndChange } from './mockData';
 import { TOP_300_STOCKS } from './stockUniverse300';
-import { fetchKisInvestorTrend, fetchKisProgramTrade, fetchKisProgramTradeDaily, fetchKisForeignInstitutionRanking, assertNoMockLeak, getKisAccessToken, getEvaluatedCreditStatus, computeStatusBadgeFromTrend, resolveTrendForBadge, getGlobalMap, syncSharedRankCache, kisQueue } from './kisApi';
+import { fetchKisInvestorTrend, fetchKisProgramTrade, fetchKisProgramTradeDaily, fetchKisForeignInstitutionRanking, assertNoMockLeak, getKisAccessToken, getEvaluatedCreditStatus, computeStatusBadgeFromTrend, resolveTrendForBadge, getGlobalMap, syncSharedRankCache, kisQueue, formatKstHHMM, isKrxMarketOpen } from './kisApi';
 import { InvestorRankingResponse, RankingItem, RankingType, RankingDirection, RankingPeriod, MarketType } from './types';
-import { saveRawDailyDataToSupabase, RawDailyInvestorRecord, upsertSharedRankCache, fetchSharedRankCacheBatch, fetchWsWatchlist, fetchRecentSnapshotSymbols } from './supabase';
+import { saveRawDailyDataToSupabase, RawDailyInvestorRecord, upsertSharedRankCache, fetchSharedRankCacheBatch, fetchSharedRankCacheBatchWithMeta, fetchWsWatchlist, fetchRecentSnapshotSymbols } from './supabase';
 
 // 🚨 [버그 수정 - 수칙 1-3/1-6] DELAY_MS/CHUNK_SIZE/MAX_RETRIES/RETRY_DELAY_MS는 선언만 되고 실제
 // 로직에서 단 한 곳도 참조되지 않는 죽은 설정값이었다(실사용 청크 크기는 759번 줄의 별도 로컬
@@ -17,7 +17,8 @@ export const BATCH_CONFIG = {
 
 interface CacheEntry {
   data: InvestorRankingResponse;
-  timestamp: number;
+  timestamp: number; // 데이터가 실제로 수집된 시각(ms)
+  fetchedAt?: number; // 웹 인스턴스가 Supabase에서 이 데이터를 마지막으로 읽어온 시각(ms) - 메모리 캐시 만료 판단용
 }
 
 // In-Memory Cache Store
@@ -163,10 +164,8 @@ export async function runTop50BatchCollector(
   }
 
   lock.isRunning = true;
-  const dateObj = new Date();
-  const hours = String(dateObj.getHours()).padStart(2, '0');
-  const minutes = String(dateObj.getMinutes()).padStart(2, '0');
-  lastBatchTimeLabel = `${hours}:${minutes} 기준`;
+  // 🚨 [버그 수정] getHours()는 서버 시간대를 따라 Vercel(UTC)에서 9시간 이른 시각이 찍혔다 - KST로 변환한다
+  lastBatchTimeLabel = `${formatKstHHMM()} 기준`;
 
   lock.promise = (async () => {
     console.log(`📌 [TRACE 1-START] runTop50BatchCollector 시작: taskKey=${taskKey}, force=${force}, returnEarly=${returnEarly}`);
@@ -593,55 +592,42 @@ export async function getBatchRankingDataAsync(
     cached = undefined;
   }
 
-  // 1. 콜드스타트 시 배치 수집 실행 및 캐시 빌드 (가짜 seedList 반환 절대 금지)
-  if (!cached || !cached.data || !Array.isArray(cached.data.list) || cached.data.list.length === 0) {
-    // 🚨 [버그 수정 - 근본 원인: 서버리스 인스턴스 간 인메모리 캐시 불일치] 이 인메모리 캐시
-    // (batchCacheStore)는 프로세스 로컬이라, Vercel이 새 서버리스 인스턴스를 띄울 때마다 완전히
-    // 비어있는 채로 시작한다 - 다른 인스턴스가 이미 300종목 완전 스캔(최대 90~150초)을 끝내놨어도
-    // 그 사실을 전혀 모르고 처음부터 다시 라이브 스캔을 한다(실측: 프로덕션 21대 검증 반복 실행 시
-    // 완전판/부분판이 요청마다 오락가락함). 곧장 라이브 스캔을 시작하기 전에, 다른 인스턴스가 이미
-    // Supabase에 올려둔 완전판이 있는지 먼저 확인한다.
-    // 🚨 [버그 수정 - 1차 시도 회귀] 처음엔 뱃지 요약 전용 캐시(syncSharedRankCache가 쓰는 cache_key)를
-    // 그대로 읽었다가, name/currentPrice/isCreditAvailable 등 화면에 필요한 핵심 필드가 전부
-    // undefined가 되는 회귀를 만들었다(골든 스냅샷 검증으로 발견). 완전한 RankingItem 전체가 저장되는
-    // 별도 키('full:' 접두사, buildAndCacheRankings에서 저장)만 읽는다 - 절대 뒤섞이지 않는다.
-    // maxAgeMs=24시간: program은 "다음 영업일 08:30까지 사실상 영구" 정책(kisApi.ts의
-    // getDynamicRankingTtl)이라 짧은 TTL은 의미가 없다 - 대신 완전히 오래된(며칠 전) 데이터를 잘못
-    // 재사용하지 않도록 하루 단위로 넉넉히 제한한다.
-    const sharedMap = await fetchSharedRankCacheBatch([`full:${cacheKey}`], 24 * 60 * 60 * 1000).catch(() => new Map<string, any[]>());
-    const sharedList = sharedMap.get(`full:${cacheKey}`);
-
-    if (sharedList && sharedList.length > 0) {
-      console.log(`[Shared Rank Cache Hit] full:${cacheKey} - 다른 인스턴스가 이미 계산해둔 완전판을 Supabase에서 재사용 (라이브 스캔 생략)`);
-      const now = Date.now();
+  // 🎯 [구조 변경 - 사용자 결정 2026-09-23: "웹은 KIS를 직접 호출하지 않고 캐시만 읽음"] 프로그램매매 300종목은
+  // 이제 오라클 서버의 상시 수집기(scripts/program-collector.js)가 장중 2~3분마다 전체를 KIS REST로 수집해
+  // Supabase 'full:' 캐시에 올린다. 웹은 그걸 읽기만 한다. 예전 방식은 두 가지 문제가 있었다:
+  //  ① 캐시 나이를 보지 않고 있으면 그대로 돌려줘서(인메모리는 무기한, Supabase는 24시간까지 허용) 한동안
+  //     아무도 안 봤으면 첫 조회에 1시간 전 값이 나왔다(9/23 20:24 실측: 19:24 값).
+  //  ② 새로 수집은 응답을 보낸 "뒤"에 시작돼 새 값은 다음 조회자에게만 보였다.
+  // 인메모리 캐시는 PROGRAM_CACHE_MEMORY_TTL_MS만 쓰고 그 뒤엔 Supabase를 다시 읽는다(1행 조회라 가볍다).
+  const nowMs = Date.now();
+  if (!cached || cached.fetchedAt === undefined || nowMs - cached.fetchedAt > PROGRAM_CACHE_MEMORY_TTL_MS) {
+    const sharedMap = await fetchSharedRankCacheBatchWithMeta([`full:${cacheKey}`], 24 * 60 * 60 * 1000).catch(
+      () => new Map<string, { list: any[]; updatedAtMs: number }>()
+    );
+    const shared = sharedMap.get(`full:${cacheKey}`);
+    if (shared && shared.list.length > 0) {
       const hydrated: InvestorRankingResponse = {
         type,
         direction,
         period,
-        list: sharedList,
+        list: shared.list,
         isMock: false,
-        lastBatchTime: lastBatchTimeLabel,
-        // 🚨 [버그 수정 - 애프터마켓 진단 중 발견, kisApi.ts fetchKisForeignInstitutionRanking/
-        // fetchOverlapRankingData와 동일한 원인(수칙 1-6)] top-level asOfDateLabel을 안 채워서
-        // 이걸 참조하는 당일교집합(foreignRes.asOfDateLabel || getSettledAsOfDateLabel())이
-        // 항상 후자로 떨어졌었다.
-        asOfDateLabel: sharedList[0]?.asOfDateLabel,
-        updatedAt: new Date(now).toISOString(),
+        // 데이터가 실제로 수집된 시각(KST)을 그대로 표시한다 - 받아온 시각으로 덮어쓰지 않는다(수칙 1-5)
+        lastBatchTime: `${formatKstHHMM(shared.updatedAtMs)} 수집`,
+        asOfDateLabel: shared.list[0]?.asOfDateLabel,
+        updatedAt: new Date(shared.updatedAtMs).toISOString(),
         isPartial: false,
       };
-      batchCacheStore.set(cacheKey, { data: hydrated, timestamp: now });
+      batchCacheStore.set(cacheKey, { data: hydrated, timestamp: shared.updatedAtMs, fetchedAt: nowMs });
       cached = batchCacheStore.get(cacheKey);
-    } else {
-      console.log(`[Batch Async Collector] Cold-start empty cache for ${type} (shared cache도 없음). Executing runTop50BatchCollector...`);
-      // warmTrend=false: 사용자가 지금 이 응답을 기다리고 있으므로(동기 await) 여기서는 프로그램 매매만 빠르게
-      // 수집하고, 2일/3일연속용 트렌드 예열(20~25초)은 생략한다. 예열은 크론(collect-program)이 담당한다.
-      // returnEarly=true: kisQueue 직렬화(근본 원인 수정) 후 300종목 전체 스캔이 ~103~110초 걸려 그대로
-      // 동기 대기시키면 사용자 체감 지연이 너무 크다 - 우선순위 40종목만 기다리고 나머지는 백그라운드로
-      // 넘긴다(isPartial:true 응답, 프론트가 4초 간격 자동 재조회로 완전판을 받아감).
-      await runTop50BatchCollector(true, `batch_${type}`, false, true).catch((err) => console.error('[Background Batch Collector Error]', err));
-      cached = batchCacheStore.get(cacheKey);
+    } else if (cached) {
+      // Supabase 조회 실패/없음 - 기존 메모리 값을 유지하되 다음 요청에서 다시 시도
+      cached.fetchedAt = nowMs;
     }
   }
+
+  // Supabase에도 데이터가 전혀 없으면(오라클 수집기가 아직 첫 데이터를 안 올림) 웹은 KIS를 부르지 않고
+  // "수집 대기 중"으로 정직하게 빈 목록을 준다(아래 마지막 return).
 
   if (cached && cached.data && Array.isArray(cached.data.list) && cached.data.list.length > 0) {
     let list = cached.data.list || [];
@@ -674,21 +660,38 @@ export async function getBatchRankingDataAsync(
     return {
       ...cached.data,
       list,
-      updatedAt: new Date().toISOString(),
+      // updatedAt은 "지금"이 아니라 데이터가 실제로 수집된 시각이다(예전엔 응답 시각으로 덮어써 오래된 값도 방금 것처럼 보였다)
+      updatedAt: new Date(cached.timestamp).toISOString(),
       stillWarming,
+      collectorStale: isProgramCollectorStale(cached.timestamp, nowMs),
     };
   }
 
-  const dateObj = new Date();
-  const hours = String(dateObj.getHours()).padStart(2, '0');
-  const minutes = String(dateObj.getMinutes()).padStart(2, '0');
+  return programCollectorPendingResponse(type, direction, period, nowMs);
+}
+
+// 웹 인스턴스가 Supabase에서 읽어온 프로그램매매 캐시를 메모리에 두는 시간 - 오라클 수집기가 2~3분마다
+// 갱신하므로 30초면 새 데이터가 늦어도 30초 안에 반영되고, Supabase 조회도 1행이라 부담이 없다.
+const PROGRAM_CACHE_MEMORY_TTL_MS = 30 * 1000;
+// 장중/애프터마켓에 데이터가 이보다 오래됐으면 오라클 수집기가 멈췄거나 지연된 것으로 본다(수집 주기 2~3분의 약 3~5배).
+const PROGRAM_COLLECTOR_STALE_MS = 10 * 60 * 1000;
+
+function isProgramCollectorStale(dataTimestampMs: number, nowMs: number): boolean {
+  const kst = new Date(nowMs + new Date(nowMs).getTimezoneOffset() * 60000 + 9 * 60 * 60000);
+  const timeNum = kst.getHours() * 100 + kst.getMinutes();
+  return isKrxMarketOpen(kst.getDay(), timeNum) && nowMs - dataTimestampMs > PROGRAM_COLLECTOR_STALE_MS;
+}
+
+/** 오라클 수집기가 아직 첫 데이터를 올리지 않았을 때의 정직한 빈 응답(웹은 KIS를 직접 부르지 않는다). */
+function programCollectorPendingResponse(type: 'program', direction: RankingDirection, period: RankingPeriod, nowMs: number): InvestorRankingResponse {
   return {
     type,
     direction,
     period,
     list: [],
-    lastBatchTime: `${hours}:${minutes} 기준`,
-    updatedAt: dateObj.toISOString(),
+    isMock: false,
+    lastBatchTime: '프로그램매매 수집 대기 중',
+    updatedAt: new Date(nowMs).toISOString(),
   };
 }
 
@@ -722,15 +725,10 @@ export function getBatchRankingData(
     };
   }
 
-  runTop50BatchCollector().catch((err) => console.error('[Async Batch Trigger Error]', err));
-  return {
-    type,
-    direction,
-    period,
-    list: [],
-    lastBatchTime: '배치 수집 중',
-    updatedAt: new Date().toISOString(),
-  };
+  // 🎯 [구조 변경 2026-09-23] 예전엔 여기서 runTop50BatchCollector()를 백그라운드로 띄워 웹이 직접 KIS 300종목을
+  // 수집했다. 이제 수집은 오라클 상시 수집기만 하고 웹은 읽기만 한다 - 메모리에 없으면 빈 목록을 돌려준다
+  // (이 동기 getter의 호출부는 모두 Supabase를 먼저 보고 이건 보조로만 쓴다: kisApi.ts 배지 조회).
+  return programCollectorPendingResponse(type, direction, period, Date.now());
 }
 
 /**

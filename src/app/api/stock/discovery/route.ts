@@ -2,8 +2,9 @@ import { NextRequest, NextResponse } from 'next/server';
 import { fetchLatestDiscoverySnapshots } from '@/lib/supabase';
 import { InvestorRankingResponse, RankingItem } from '@/lib/types';
 import { mergeCreditStatusToRanking } from '@/lib/kisApi';
+import { buildSnapshotBatchLabel } from '@/lib/snapshotLabel';
 
-// 🎯 [기능 추가 - 사용자 요청: "발굴 장마감" 탭] 매일 14:30(KST) cron(compute-discovery-postmarket)이
+// 🎯 [기능 추가 - 사용자 요청: "발굴 장마감" 탭] 매일 14:15(KST) 예약 cron(compute-discovery-postmarket, Vercel Hobby라 최대 59분 늦게 실행)이
 // 미리 계산해 discovery_snapshots에 저장해둔 결과를 읽는다 - 종목당 최대 4회 KIS 호출이 필요한
 // 무거운 계산이라 페이지 방문마다 재계산하지 않는다(수칙 2-6과 동일 취지 - 겉핥기 200 OK가 아니라
 // 실제로 비용을 감당할 수 있는 구조인지 확인하고 설계함).
@@ -66,13 +67,8 @@ export async function GET(request: NextRequest) {
     // 🎯 [기능 추가 - 수칙 1-5: 대체 데이터 출처일 명시] date가 오늘이 아니면(아직 오늘자 계산 전이라
     // 직전 거래일 결과를 그대로 보여주는 중이면) "(N/N 기준)"으로 며칠자인지 명확히 밝힌다 - 어제
     // 결과를 오늘 결과인 것처럼 속여 보여주지 않는다.
-    const isTodayResult = date === todayYmdKst();
-    const dateLabel = date ? `${date.slice(4, 6)}/${date.slice(6, 8)}` : null;
-    const lastBatchTime = !dateLabel
-      ? '아직 계산되지 않았습니다 (매 거래일 14:30 자동 계산)'
-      : isTodayResult
-      ? `${dateLabel} 14:30 기준`
-      : `${dateLabel} 14:30 기준 (다음 계산 전까지 최근 결과 유지 중)`;
+    // 기준 시각은 예약 시각이 아니라 스냅샷이 실제로 저장된 시각(created_at) - snapshotLabel.ts 참고(수칙 1-5)
+    const lastBatchTime = buildSnapshotBatchLabel({ date, todayYmd: todayYmdKst(), rows, scheduleText: '14:15' });
 
     const response: InvestorRankingResponse = {
       type: 'discovery',

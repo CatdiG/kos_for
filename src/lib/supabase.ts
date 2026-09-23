@@ -1,4 +1,5 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import { TOP_300_STOCKS } from './stockUniverse300';
 
 let supabasePublicClient: SupabaseClient | null = null;
 let supabaseAdminClient: SupabaseClient | null = null;
@@ -393,6 +394,7 @@ export async function isSymbolInWsWatchlist(symbol: string): Promise<boolean> {
 // 별도 테이블(discovery_snapshots, scratch/create_discovery_snapshots_table.sql)로 분리했다.
 // ============================================================================
 export interface DiscoverySnapshotRecord {
+  created_at?: string; // DB가 저장 시 자동 기록(now()) - 조회(select *) 시에만 채워짐, 저장할 땐 보내지 않는다
   date: string;
   symbol: string;
   name: string;
@@ -469,6 +471,7 @@ export async function fetchDiscoverySnapshots(date: string): Promise<DiscoverySn
 // (kisApi.ts fetchKisPrecursorCandidates 동일 사유, 수칙 1-6) - DB 컬럼 자체는 과거 행 호환을 위해
 // 그대로 두지만(마이그레이션 불필요), 이 타입에서는 더 이상 쓰지 않는 필드를 제거해 혼동을 막는다.
 export interface PrecursorSnapshotRecord {
+  created_at?: string; // DB가 저장 시 자동 기록(now()) - 조회(select *) 시에만 채워짐, 저장할 땐 보내지 않는다
   date: string;
   symbol: string;
   name: string;
@@ -917,35 +920,34 @@ export async function fetchRawDailyTrailingDays(
   // (Supabase 프로젝트 콘솔에서 raw_daily_data 실제 행을 직접 대조해 확정: 리노공업은 DB에 90행이
   // 전부 있는데도 API 응답만 틀렸던 게 이 페이지네이션 절단 때문이었다). 여유있게 60으로 늘린다
   // (60,000행 - 300종목 × 120일까지 커버 가능한 상한이라 향후 lookback을 더 늘려도 안전).
-  const fetchAllPages = async (
-    build: (from: number, to: number) => any,
-    pageSize: number = 1000,
-    maxPages: number = 60
-  ): Promise<any[]> => {
-    const all: any[] = [];
-    for (let page = 0; page < maxPages; page++) {
-      const from = page * pageSize;
-      const { data, error } = await build(from, from + pageSize - 1);
-      if (error) throw error;
-      if (!data || data.length === 0) break;
-      all.push(...data);
-      if (data.length < pageSize) break;
-    }
-    return all;
-  };
+  // → 이 절단 문제는 아래 2단계에서 "행 수(count)를 먼저 세고 그 수만큼 전부 조회"하는 방식으로 계속 막는다.
+
+  // 🚨 [성능 수정 - 2026-09-23 실측] 이 함수가 12.5초 걸렸다(90일 × 494종목 = 43,747행). 원인은 1,000행
+  // 페이지를 "하나씩 순서대로" 약 92번 요청한 것(① 날짜 목록을 찾으려 테이블 전체 47,280행의 date 칸을
+  // 48페이지 순차 스캔 + ② 본 데이터 44페이지 순차 조회, 페이지당 ~130ms). 서버가 새로 뜰 때마다(그리고
+  // kisApi.ts getSharedDbTrailingTrend 캐시 만료마다) 이 비용을 치러, 프로그램 순위 등 배지를 계산하는
+  // 화면의 첫 응답이 8초 넘게 걸렸다.
+  //  ① 날짜 목록: TOP_300은 매일 두 번에 나눠(0~147 / 148~294) 수집되므로(collect-raw-daily-data), 각
+  //    절반에서 한 종목씩(TOP_300 첫 종목·마지막 종목)의 날짜만 조회하면 1페이지로 끝난다. 두 앵커가 모두
+  //    빠진 날은 TOP_300 수집 자체가 안 된 날이라 원래도 배지 계산에 쓸 수 없는 불완전한 날이다.
+  //  ② 본 데이터: 행 수를 먼저 센 뒤 페이지를 동시에(8개씩) 요청한다. 동시 조회에서도 행이 빠지거나
+  //    겹치지 않도록 (date, symbol) 순으로 정렬해서 자른다(예전엔 정렬 없이 잘라 순서가 보장되지 않았다).
+  const PAGE_SIZE = 1000;
+  const PAGE_CONCURRENCY = 8;
+  const anchorSymbols = [TOP_300_STOCKS[0]?.symbol, TOP_300_STOCKS[TOP_300_STOCKS.length - 1]?.symbol].filter(Boolean) as string[];
 
   try {
-    // 1. beforeDate 이전에 실제로 기록된 distinct 날짜 중 최근 tradingDaysBack개를 찾는다.
-    const dateRows = await fetchAllPages((from, to) =>
-      client
-        .from('raw_daily_data')
-        .select('date')
-        .lt('date', beforeDate)
-        .order('date', { ascending: false })
-        .range(from, to)
-    );
+    // 1. beforeDate 이전에 실제로 기록된 distinct 날짜 중 최근 tradingDaysBack개를 찾는다(앵커 종목 기준).
+    const { data: dateRows, error: dateError } = await client
+      .from('raw_daily_data')
+      .select('date')
+      .in('symbol', anchorSymbols)
+      .lt('date', beforeDate)
+      .order('date', { ascending: false })
+      .limit(Math.min(tradingDaysBack * anchorSymbols.length, PAGE_SIZE));
+    if (dateError) throw dateError;
 
-    const distinctDates = [...new Set(dateRows.map((r: any) => r.date as string))]
+    const distinctDates = [...new Set((dateRows || []).map((r: any) => r.date as string))]
       .sort()
       .reverse()
       .slice(0, tradingDaysBack)
@@ -953,13 +955,36 @@ export async function fetchRawDailyTrailingDays(
 
     if (distinctDates.length === 0) return { dates: [], bySymbol: new Map() };
 
-    const data = await fetchAllPages((from, to) =>
-      client
-        .from('raw_daily_data')
-        .select('date, symbol, foreign_net_buy_amt, organ_net_buy_amt, program_net_buy_amt, close_price, open_price, high_price, low_price, volume, change_rate')
-        .in('date', distinctDates)
-        .range(from, to)
-    );
+    // 2. 본 데이터 - 행 수 확인 후 페이지 병렬 조회
+    const { count, error: countError } = await client
+      .from('raw_daily_data')
+      .select('date', { count: 'exact', head: true })
+      .in('date', distinctDates);
+    if (countError) throw countError;
+    const pageCount = Math.ceil((count || 0) / PAGE_SIZE);
+    const pages: any[][] = new Array(pageCount);
+    for (let start = 0; start < pageCount; start += PAGE_CONCURRENCY) {
+      const batch = Array.from({ length: Math.min(PAGE_CONCURRENCY, pageCount - start) }, (_, i) => start + i);
+      await Promise.all(
+        batch.map(async (page) => {
+          const from = page * PAGE_SIZE;
+          const { data: rows, error } = await client
+            .from('raw_daily_data')
+            .select('date, symbol, foreign_net_buy_amt, organ_net_buy_amt, program_net_buy_amt, close_price, open_price, high_price, low_price, volume, change_rate')
+            .in('date', distinctDates)
+            .order('date', { ascending: true })
+            .order('symbol', { ascending: true })
+            .range(from, from + PAGE_SIZE - 1);
+          if (error) throw error;
+          pages[page] = rows || [];
+        })
+      );
+    }
+    const data = pages.flat();
+    // 조회 도중 행이 추가/삭제되면(원본 수집 크론과 겹치는 경우) 개수가 어긋날 수 있다 - 조용히 넘기지 않고 경고로 남긴다
+    if (count != null && data.length !== count) {
+      console.warn(`[raw_daily_data Trailing Read] 행 수 불일치: 예상 ${count} / 실제 ${data.length} (조회 중 데이터 변경 가능성)`);
+    }
 
     if (!data) return { dates: distinctDates, bySymbol: new Map() };
 
@@ -1251,7 +1276,23 @@ export async function fetchSharedRankCacheBatch(
   cacheKeys: string[],
   maxAgeMs: number = 5 * 60 * 1000
 ): Promise<Map<string, any[]>> {
+  const withMeta = await fetchSharedRankCacheBatchWithMeta(cacheKeys, maxAgeMs);
   const result = new Map<string, any[]>();
+  withMeta.forEach((v, k) => result.set(k, v.list));
+  return result;
+}
+
+/**
+ * fetchSharedRankCacheBatch와 같지만 각 행의 저장 시각(updated_at)도 함께 돌려준다.
+ * 🎯 [2026-09-23] 프로그램매매 순위는 이제 오라클 상시 수집기만 쓰고 웹은 읽기만 하므로, 웹이 "이 데이터가
+ * 언제 수집된 것인지"를 알아야 기준 시각을 정직하게 표시할 수 있다(수칙 1-5). 예전엔 받아온 시각을 "지금"으로
+ * 덮어써서 몇 시간 전 데이터도 방금 것처럼 취급됐다.
+ */
+export async function fetchSharedRankCacheBatchWithMeta(
+  cacheKeys: string[],
+  maxAgeMs: number = 5 * 60 * 1000
+): Promise<Map<string, { list: any[]; updatedAtMs: number }>> {
+  const result = new Map<string, { list: any[]; updatedAtMs: number }>();
   if (!cacheKeys || cacheKeys.length === 0) return result;
   const client = getSupabaseAdmin();
   if (!client) return result;
@@ -1269,8 +1310,9 @@ export async function fetchSharedRankCacheBatch(
 
     const now = Date.now();
     (data || []).forEach((row: any) => {
-      if (!row.list || now - new Date(row.updated_at).getTime() > maxAgeMs) return;
-      result.set(row.cache_key, row.list);
+      const updatedAtMs = new Date(row.updated_at).getTime();
+      if (!row.list || now - updatedAtMs > maxAgeMs) return;
+      result.set(row.cache_key, { list: row.list, updatedAtMs });
     });
     return result;
   } catch (e: any) {

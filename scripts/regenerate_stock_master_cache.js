@@ -15,14 +15,7 @@
 // 그 파일이 TypeScript라 typescript 패키지(devDependency)로 즉석 변환해 불러온다.
 const fs = require('fs');
 const path = require('path');
-const ts = require('typescript');
-
-require.extensions['.ts'] = (module, filename) => {
-  const out = ts.transpileModule(fs.readFileSync(filename, 'utf8'), {
-    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020, esModuleInterop: true, resolveJsonModule: true },
-  });
-  module._compile(out.outputText, filename);
-};
+require('./lib/tsRequire').registerTsRequire();
 const { downloadKisMasterFiles, parseKisMasterFiles, diffStockMaster, MAX_SHRINK_RATIO } = require('../src/lib/stockMasterKisFile.ts');
 
 const args = process.argv.slice(2);

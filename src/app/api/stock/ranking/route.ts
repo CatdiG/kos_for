@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse, after } from 'next/server';
 import { fetchKisForeignInstitutionRanking, fetchOverlapRankingData, fetchConsecutive2dOverlapRankingData, fetchConsecutive3dOverlapRankingData, fetchKisQuietAccumulationCandidates, fetchKisInvestorTrend, getKisAccessTokenWithSource, resolveAndCacheMissingCredits, mergeCreditStatusToRanking, assertNoMockLeak } from '@/lib/kisApi';
-import { getBatchRankingData, getBatchRankingDataAsync, runTop50BatchCollector } from '@/lib/batchCollector';
+import { getBatchRankingDataAsync } from '@/lib/batchCollector';
 import { MarketType, RankingDirection, RankingPeriod, RankingType } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
@@ -83,17 +83,9 @@ export async function GET(request: NextRequest) {
             await resolveAndCacheMissingCredits(missingSymbols).catch(() => null);
           }
         }
-        if (type === 'program') {
-          // 🚨 [버그 수정 - 근본 원인] 예전엔 이 keep-warm 트리거가 자기만의 별도 taskKey
-          // ('after_batch_program')를 써서, getBatchRankingDataAsync의 콜드스타트 경로(taskKey=
-          // 'batch_${type}', returnEarly=true)가 백그라운드에서 나머지 종목을 마저 채우는 동안 완전히
-          // 독립적인 전체 300종목 재스캔을 또 띄웠다 - 실측: 둘이 같은 kisQueue를 나눠 쓰면서 서로
-          // 발목을 잡아 25종목 트렌드 예열조차 113.5초가 걸렸다(정상 ~7.5초). 같은 taskKey
-          // ('batch_${type}')를 쓰도록 합쳐서 lock/programBatchBackgroundInFlight 가드를 공유시킨다 -
-          // 이러면 이미 진행 중인 백그라운드 완성과 절대 겹치지 않고, 5분 최소 간격 보호(MIN_INTERVAL_MS)도
-          // 하나로 통합돼 "장중 데이터 신선도 유지"라는 이 트리거 본래 목적은 그대로 유지된다.
-          await runTop50BatchCollector(false, `batch_${type}`).catch(() => null);
-        }
+        // 🎯 [구조 변경 2026-09-23] 예전엔 program 탭 응답 뒤 여기서 runTop50BatchCollector로 300종목을 다시
+        // 수집했다(새 값은 "다음 조회자"에게만 보였음). 이제 수집은 오라클 상시 수집기가 2~3분마다 하고 웹은
+        // Supabase 캐시만 읽는다(batchCollector.ts getBatchRankingDataAsync) - 여기서 KIS를 부르지 않는다.
       });
     }
 

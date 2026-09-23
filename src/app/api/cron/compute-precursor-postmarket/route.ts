@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { withCronRunLog } from '@/lib/cronRunLog';
 import { fetchKisPrecursorCandidates } from '@/lib/kisApi';
 import { savePrecursorSnapshots, PrecursorSnapshotRecord } from '@/lib/supabase';
 
@@ -20,11 +21,11 @@ function todayYmdKst(): string {
 }
 
 export async function GET(request: NextRequest) {
-  return handleComputePrecursor(request);
+  return withCronRunLog('compute-precursor-postmarket', request, () => handleComputePrecursor(request));
 }
 
 export async function POST(request: NextRequest) {
-  return handleComputePrecursor(request);
+  return withCronRunLog('compute-precursor-postmarket', request, () => handleComputePrecursor(request));
 }
 
 async function handleComputePrecursor(request: NextRequest) {

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { withCronRunLog } from '@/lib/cronRunLog';
 import { fetchKisPostMarketCandidates } from '@/lib/kisApi';
 import { savePostmarketSnapshots, PostmarketSnapshotRecord } from '@/lib/supabase';
 
@@ -23,11 +24,11 @@ function todayYmdKst(): string {
 }
 
 export async function GET(request: NextRequest) {
-  return handleComputePostmarket(request);
+  return withCronRunLog('compute-postmarket-snapshot', request, () => handleComputePostmarket(request));
 }
 
 export async function POST(request: NextRequest) {
-  return handleComputePostmarket(request);
+  return withCronRunLog('compute-postmarket-snapshot', request, () => handleComputePostmarket(request));
 }
 
 async function handleComputePostmarket(request: NextRequest) {

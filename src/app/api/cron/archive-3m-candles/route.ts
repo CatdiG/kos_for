@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { withCronRunLog } from '@/lib/cronRunLog';
 import {
   fetchKis3mCandlesFullDay,
   listLocalTodayViewed3mSymbols,
@@ -77,12 +78,15 @@ async function fetchTodayRankedExtraSymbols(): Promise<Set<string>> {
   ]);
   [foreignBuy, foreignSell, organBuy, organSell, surgingFluc, overlapBuy, overlapSell].forEach((res) => addTop(res?.list));
 
-  // 프로그램 순매수·순매도 - batchCollector의 캐시 peek(라이브 호출 아님, 캐시 없으면 그냥 건너뜀)
+  // 프로그램 순매수·순매도 - 오라클 상시 수집기가 Supabase에 올린 캐시를 읽는다(라이브 KIS 호출 아님).
+  // 🚨 [2026-09-23] 예전엔 이 크론 인스턴스의 메모리만 봐서(getBatchRankingData) 웹이 직접 수집하지 않게 바뀐
+  // 뒤로는 늘 비어 있게 된다 - Supabase를 읽는 비동기 버전으로 바꾼다.
   try {
-    const { getBatchRankingData } = await import('@/lib/batchCollector');
-    (['buy', 'sell'] as const).forEach((direction) => {
-      addTop(getBatchRankingData('program', direction, '1d', market).list);
-    });
+    const { getBatchRankingDataAsync } = await import('@/lib/batchCollector');
+    const programRes = await Promise.all(
+      (['buy', 'sell'] as const).map((direction) => getBatchRankingDataAsync('program', direction, '1d', market).catch(() => null))
+    );
+    programRes.forEach((res) => addTop(res?.list));
   } catch (_) {}
 
   return symbols;
@@ -112,11 +116,11 @@ async function buildTargetSymbolList(): Promise<Array<{ symbol: string; name: st
 }
 
 export async function GET(request: NextRequest) {
-  return handleArchive3mCandles(request);
+  return withCronRunLog('archive-3m-candles', request, () => handleArchive3mCandles(request));
 }
 
 export async function POST(request: NextRequest) {
-  return handleArchive3mCandles(request);
+  return withCronRunLog('archive-3m-candles', request, () => handleArchive3mCandles(request));
 }
 
 async function handleArchive3mCandles(request: NextRequest) {

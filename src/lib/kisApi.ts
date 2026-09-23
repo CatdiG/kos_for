@@ -235,7 +235,10 @@ class KisRequestQueue {
   // 전체를 도는 시간이 90초→60초 수준으로 줄어든다. 다만 이 실측은 프로그램매매 TR(FHPPG04650101)
   // 하나로만 검증했다는 한계가 있다 - EGW00201이 앱키 단위(TR 무관) 전역 제한으로 보이는 정황은 있지만,
   // 다른 TR들과 섞인 실부하에서는 21대 회귀 검증으로 재확인한다.
-  private minDelayMs = 200;
+  // 🎯 [2026-09-23] 오라클 서버의 프로그램매매 상시 수집기(scripts/program-collector.js)는 같은 앱키로 사이트와
+  // KIS 초당 한도(실측 5건/초)를 나눠 쓰므로, 그 프로세스에서만 KIS_QUEUE_MIN_DELAY_MS로 간격을 넓힌다.
+  // 사이트(Vercel)에는 이 환경변수가 없어 기본값 200ms 그대로다(동작 변화 없음).
+  private minDelayMs = Number(process.env.KIS_QUEUE_MIN_DELAY_MS) > 0 ? Number(process.env.KIS_QUEUE_MIN_DELAY_MS) : 200;
   private lastCallTime = 0;
   private inFlightMap = new Map<string, Promise<any>>(); // Single-Flight Map
 
@@ -363,13 +366,16 @@ async function fetchWithRetry<T>(
 
 let kisApiQueue: Promise<void> = Promise.resolve();
 let lastKisApiCallTime = 0;
+// kisQueue의 KIS_QUEUE_MIN_DELAY_MS와 같은 이유 - 오라클 상시 수집기 프로세스에서만 KIS_MIN_CALL_INTERVAL_MS로
+// 간격을 넓힌다. 사이트는 기본값 300ms 그대로.
+const KIS_MIN_CALL_INTERVAL_MS = Number(process.env.KIS_MIN_CALL_INTERVAL_MS) > 0 ? Number(process.env.KIS_MIN_CALL_INTERVAL_MS) : 300;
 
 export async function enforceRateLimit(): Promise<void> {
   const nextCall = kisApiQueue.catch(() => { }).then(async () => {
     const now = Date.now();
     const elapsed = now - lastKisApiCallTime;
-    if (elapsed < 300) {
-      await new Promise((resolve) => setTimeout(resolve, 300 - elapsed));
+    if (elapsed < KIS_MIN_CALL_INTERVAL_MS) {
+      await new Promise((resolve) => setTimeout(resolve, KIS_MIN_CALL_INTERVAL_MS - elapsed));
     }
     lastKisApiCallTime = Date.now();
   });
@@ -408,21 +414,29 @@ function getKstMarketOpenTs(referenceTs: number): number {
 // 잘못 포함시킨다 - Header.tsx의 장 상태 배지는 이미 두 구간을 OR로 분리해 판정하고 있어서, 그
 // 30분 동안 헤더는 "장마감"을 보여주는데 랭킹 데이터는 "장중 실시간"으로 취급하는 모순이 있었다.
 // 하나의 공통 함수로 합쳐 앞으로 이 판정이 또 따로따로 어긋나지 않게 한다(수칙 1-6).
-function isKrxMarketOpen(dayOfWeek: number, timeNum: number): boolean {
+export function isKrxMarketOpen(dayOfWeek: number, timeNum: number): boolean {
   const isWeekday = dayOfWeek >= 1 && dayOfWeek <= 5;
   const isRegularSession = timeNum >= 900 && timeNum < 1530;
   const isAfterMarketSession = timeNum >= 1600 && timeNum < 2000;
   return isWeekday && (isRegularSession || isAfterMarketSession);
 }
 
-/** ISO 시각 문자열(또는 생략 시 지금)을 KST 기준 "HH:MM 최초포착" 표시 문구로 변환한다. */
-function formatKstFirstSeenLabel(isoTime?: string): string {
-  const d = isoTime ? new Date(isoTime) : new Date();
+/**
+ * 시각(ms)을 KST "HH:MM"으로 변환 - 서버가 UTC(Vercel)든 KST(로컬)든 같은 결과.
+ * 🚨 [버그 수정 - 수칙 1-6] batchCollector.ts의 lastBatchTime이 new Date().getHours()를 그대로 써서 Vercel에서
+ * 9시간 이른 시각("20:26인데 11:24 기준")이 나왔다 - 이 파일의 다른 KST 표시와 같은 변환을 한 곳에 모은다.
+ */
+export function formatKstHHMM(ms: number = Date.now()): string {
+  const d = new Date(ms);
   const utc = d.getTime() + d.getTimezoneOffset() * 60000;
   const kst = new Date(utc + 9 * 60 * 60000);
-  const hh = String(kst.getHours()).padStart(2, '0');
-  const mm = String(kst.getMinutes()).padStart(2, '0');
-  return `${hh}:${mm} 최초포착`;
+  return `${String(kst.getHours()).padStart(2, '0')}:${String(kst.getMinutes()).padStart(2, '0')}`;
+}
+
+/** ISO 시각 문자열(또는 생략 시 지금)을 KST 기준 "HH:MM 최초포착" 표시 문구로 변환한다. */
+function formatKstFirstSeenLabel(isoTime?: string): string {
+  const ms = isoTime ? new Date(isoTime).getTime() : Date.now();
+  return `${formatKstHHMM(ms)} 최초포착`;
 }
 
 export function getDynamicRankingTtl(): number {
@@ -2645,7 +2659,11 @@ async function enrichRankingWithRawInvestorData(
  */
 const dbTrailingTrendCache = getGlobalMap<string, { data: { dates: string[]; bySymbol: Map<string, Map<string, any>> }; timestamp: number }>('dbTrailingTrendCache');
 const dbTrailingTrendInFlight = getGlobalMap<string, Promise<{ dates: string[]; bySymbol: Map<string, Map<string, any>> }>>('dbTrailingTrendInFlight');
-const DB_TRAILING_TREND_TTL_MS = 3 * 60 * 1000; // 3분
+// 🚨 [성능 수정 - 2026-09-23] 3분 → 60분. 이 데이터는 "오늘 이전"의 raw_daily_data라 장중엔 바뀌지 않고,
+// 원본 수집 크론(18:30~18:40 / 다음날 07:00~07:30 KST)이 돌 때만 바뀐다. 3분마다 43,747행을 다시 읽느라
+// (실측 12.5초, 병렬화 후에도 수 초) 배지를 계산하는 화면이 3분마다 느려졌다. 키가 KST 날짜라 날짜가 바뀌면
+// 자동으로 새로 읽고, 수집 크론이 과거 행을 고친 경우도 최대 1시간 안에 반영된다.
+const DB_TRAILING_TREND_TTL_MS = 60 * 60 * 1000; // 60분
 
 async function getSharedDbTrailingTrend(): Promise<{ dates: string[]; bySymbol: Map<string, Map<string, any>> }> {
   const key = getKstTodayStr();

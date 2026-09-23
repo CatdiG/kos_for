@@ -2,8 +2,9 @@ import { NextRequest, NextResponse } from 'next/server';
 import { fetchLatestPrecursorSnapshots } from '@/lib/supabase';
 import { InvestorRankingResponse, RankingItem } from '@/lib/types';
 import { mergeCreditStatusToRanking } from '@/lib/kisApi';
+import { buildSnapshotBatchLabel } from '@/lib/snapshotLabel';
 
-// 🎯 [기능 추가 - 사용자 요청: "전조 장마감" 탭] /api/stock/discovery와 동일 패턴 - 매일 14:40(KST)
+// 🎯 [기능 추가 - 사용자 요청: "전조 장마감" 탭] /api/stock/discovery와 동일 패턴 - 매일 14:20(KST) 예약(Vercel Hobby라 최대 59분 늦게 실행)
 // cron(compute-precursor-postmarket)이 미리 계산해 precursor_snapshots에 저장해둔 결과를 읽는다.
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -56,13 +57,8 @@ export async function GET(request: NextRequest) {
     // mergeCreditStatusToRanking(kis_credits 테이블)을 그대로 재사용한다.
     const listWithCredit = await mergeCreditStatusToRanking(list);
 
-    const isTodayResult = date === todayYmdKst();
-    const dateLabel = date ? `${date.slice(4, 6)}/${date.slice(6, 8)}` : null;
-    const lastBatchTime = !dateLabel
-      ? '아직 계산되지 않았습니다 (매 거래일 14:40 자동 계산)'
-      : isTodayResult
-      ? `${dateLabel} 14:40 기준`
-      : `${dateLabel} 14:40 기준 (다음 계산 전까지 최근 결과 유지 중)`;
+    // 기준 시각은 예약 시각이 아니라 스냅샷이 실제로 저장된 시각(created_at) - snapshotLabel.ts 참고(수칙 1-5)
+    const lastBatchTime = buildSnapshotBatchLabel({ date, todayYmd: todayYmdKst(), rows, scheduleText: '14:20' });
 
     const response: InvestorRankingResponse = {
       type: 'precursor',

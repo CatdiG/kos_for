@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { withCronRunLog } from '@/lib/cronRunLog';
 import { runTop50BatchCollector, getBatchRankingData } from '@/lib/batchCollector';
 
 export const dynamic = 'force-dynamic';
@@ -10,11 +11,11 @@ export const revalidate = 0;
 export const maxDuration = 280;
 
 export async function GET(request: NextRequest) {
-  return handleCronBatch(request);
+  return withCronRunLog('collect-program', request, () => handleCronBatch(request));
 }
 
 export async function POST(request: NextRequest) {
-  return handleCronBatch(request);
+  return withCronRunLog('collect-program', request, () => handleCronBatch(request));
 }
 
 async function handleCronBatch(request: NextRequest) {

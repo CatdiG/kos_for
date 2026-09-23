@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { withCronRunLog } from '@/lib/cronRunLog';
 import { TOP_300_STOCKS } from '@/lib/stockUniverse300';
 import { runRawDailyDataBackfill } from '@/lib/batchCollector';
 
@@ -24,11 +25,11 @@ export const revalidate = 0;
 export const maxDuration = 300; // 5분 타임아웃 (archive-3m-candles와 동일한 상한)
 
 export async function GET(request: NextRequest) {
-  return handleCollectRawDailyData(request);
+  return withCronRunLog('collect-raw-daily-data', request, () => handleCollectRawDailyData(request));
 }
 
 export async function POST(request: NextRequest) {
-  return handleCollectRawDailyData(request);
+  return withCronRunLog('collect-raw-daily-data', request, () => handleCollectRawDailyData(request));
 }
 
 async function handleCollectRawDailyData(request: NextRequest) {

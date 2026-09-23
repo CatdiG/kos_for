@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { withCronRunLog } from '@/lib/cronRunLog';
 import { saveTokenToSupabase } from '@/lib/supabase';
 import fs from 'fs';
 import path from 'path';
@@ -10,11 +11,11 @@ const TOKEN_CACHE_KEY = Symbol.for('kis_token_cache_v2');
 const LOCAL_TOKEN_FILE = path.join(process.cwd(), 'scratch', '.kis_token_cache.json');
 
 export async function GET(request: NextRequest) {
-  return handleCronTokenRefresh(request);
+  return withCronRunLog('refresh-kis-token', request, () => handleCronTokenRefresh(request));
 }
 
 export async function POST(request: NextRequest) {
-  return handleCronTokenRefresh(request);
+  return withCronRunLog('refresh-kis-token', request, () => handleCronTokenRefresh(request));
 }
 
 async function handleCronTokenRefresh(request: NextRequest) {

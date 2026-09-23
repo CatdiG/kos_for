@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { withCronRunLog } from '@/lib/cronRunLog';
 import { fetchKisInvestorTrend } from '@/lib/kisApi';
 import { fetchPrecursorSnapshots, updatePrecursorSnapshotsConfirmed } from '@/lib/supabase';
 
@@ -22,11 +23,11 @@ function todayYmdKst(): string {
 }
 
 export async function GET(request: NextRequest) {
-  return handleConfirmedMatch(request);
+  return withCronRunLog('compute-precursor-confirmed-match', request, () => handleConfirmedMatch(request));
 }
 
 export async function POST(request: NextRequest) {
-  return handleConfirmedMatch(request);
+  return withCronRunLog('compute-precursor-confirmed-match', request, () => handleConfirmedMatch(request));
 }
 
 async function handleConfirmedMatch(request: NextRequest) {
