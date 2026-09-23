@@ -502,6 +502,12 @@ export interface KisTokenResponse {
   access_token_token_expired?: string;
 }
 
+/**
+ * 이름 키워드 기반 ETF/ETN 추정 - 종목 마스터에 없는 코드(ETN 'Q...' 코드 등)용 폴백 전용.
+ * 🚨 종목코드를 알면 이 함수 대신 stockDictionary.ts의 isEtfSymbol(symbol, name)을 쓸 것 - 이 키워드 목록은
+ * 운용사 브랜드(KIWOOM, 1Q, KoAct, TIME, WON, 파워, 마이티 등)가 빠져 ETF 208개를 주식으로 오분류했고,
+ * 반대로 주식인 YG PLUS(037270)를 'PLUS' 때문에 ETF로 오판했다(2026-09-23 실측).
+ */
 export function isEtfOrEtn(name: string): boolean {
   if (!name) return false;
   const upper = name.toUpperCase();

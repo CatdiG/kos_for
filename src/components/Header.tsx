@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { Activity, ShieldCheck, Clock, TrendingUp, Sun, Moon, History } from 'lucide-react';
 import { useTheme } from '@/providers/ThemeProvider';
+import StockMasterStatusBadge from './StockMasterStatusBadge';
 
 // 평일 09:00~15:30(정규장)/16:00~20:00(애프터마켓) 기준 KST 장 상태 판단 - Header.tsx/MobileHeader.tsx
 // 공용(수칙 1-6). 반드시 KST로 명시 변환해서 계산해야 한다 - Vercel 서버는 UTC로 실행되는데
@@ -110,6 +111,9 @@ export default function Header() {
 
         {/* Live Status Indicators */}
         <div className="flex items-center gap-2.5 sm:gap-4 flex-wrap justify-center">
+          {/* 종목 마스터가 KIS 최신 종목정보와 다를 때만 표시되는 갱신 알림 배지 */}
+          <StockMasterStatusBadge />
+
           {/* Real API Status Badge */}
           <div className="flex items-center gap-1.5 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800/40 px-3 py-1.5 rounded-xl text-xs font-semibold text-emerald-700 dark:text-emerald-300 shadow-xs">
             <ShieldCheck className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />

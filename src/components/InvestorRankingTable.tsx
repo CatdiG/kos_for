@@ -868,7 +868,17 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
     if (isFetching) return;
 
     if (prevContextKey.current !== contextKey && displayList && displayList.length > 0) {
+      // 🚨 [버그 수정 - 사용자 확인: 순위표 로드 전에 검색한 종목이 1위 종목으로 덮어써짐] 페이지 첫 로드 시
+      // 순위표가 뜨기 전에 사용자가 검색창으로 종목을 이미 골랐는데도, 여기서 무조건 1위를 onSelectSymbol로
+      // 올려 보내 검색 결과를 덮어쓰고 검색창까지 비웠다(실측: 삼성에피스홀딩스 선택 20ms 뒤 급등주 1위
+      // 와이즈플래닛컴퍼니로 교체, 첫 요청 ERR_ABORTED). 첫 컨텍스트 확정 시점(prevContextKey가 빈 값)에
+      // 부모가 이미 종목을 넘겨준 상태(propSelectedSymbol - 첫 로드 시점엔 검색 선택만 이 값을 채운다.
+      // 위 478번 줄 초기 선택은 selectedSymbol이 internalSymbol 기본값 '005930'으로 항상 채워져 있어
+      // 실제로는 실행되지 않음)면 키만 기록하고 덮어쓰지 않는다. 이후 사용자가 직접 탭/필터를 바꿀 때
+      // 1위를 자동 선택하는 기존 동작은 그대로 유지한다.
+      const isInitialContext = prevContextKey.current === '';
       prevContextKey.current = contextKey;
+      if (isInitialContext && propSelectedSymbol) return;
       const firstItem = displayList[0];
       setInternalSymbol(firstItem.symbol);
       if (onSelectSymbol) {

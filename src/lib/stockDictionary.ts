@@ -1,4 +1,4 @@
-import { StockInfo } from './types';
+import { StockInfo, isEtfOrEtn } from './types';
 import masterStockData from './data/stockMasterCache.json';
 
 export interface MasterStockEntry {
@@ -6,159 +6,43 @@ export interface MasterStockEntry {
   name: string;
   market: 'KOSPI' | 'KOSDAQ';
   stdCode?: string;
+  // KIS 종목정보 파일의 증권그룹구분코드: ST 주권, EF ETF, RT 리츠, IF 인프라펀드, MF 뮤추얼펀드,
+  // DR 예탁증서, FS 외국주권 (scripts/regenerate_stock_master_cache.js가 채움 - 사이트 헤더 배지로 갱신 필요 알림 → GitHub Actions 수동 실행으로 반영)
+  group?: string;
 }
 
 const masterList: MasterStockEntry[] = Array.isArray(masterStockData) ? (masterStockData as MasterStockEntry[]) : [];
+const masterBySymbol = new Map<string, MasterStockEntry>(masterList.map((m) => [m.symbol, m]));
 
 export function getMasterStockList(): MasterStockEntry[] {
   return masterList;
 }
 
 /**
- * 전역 마스터 종목 한글명 매핑 사전
- * 시세 계산/Mock 데이터 수정 시에도 훼손되지 않도록 독립 관리
+ * ETF/ETN 판별 - 종목코드가 마스터에 있으면 KIS 공식 그룹코드(EF)로 판별하고, 마스터에 없는 코드
+ * (ETN 'Q...' 코드, 마스터 갱신 이후 신규 상장 등)만 이름 키워드(types.ts isEtfOrEtn)로 폴백한다.
+ * 기존 이름 키워드 방식은 운용사 브랜드 누락으로 ETF 208개를 주식으로, 주식 YG PLUS를 ETF로 오분류했다.
+ * 리츠(RT)·인프라펀드(IF)·예탁증서(DR) 등은 기존과 동일하게 "ETF 아님"으로 둔다(유니버스 범위 유지).
  */
-export const STOCK_NAME_MAP: Record<string, string> = {
-  // 대표 대형주 (KOSPI 200 & KOSDAQ 150)
-  '005930': '삼성전자',
-  '005935': '삼성전자우',
-  '000660': 'SK하이닉스',
-  '373220': 'LG에너지솔루션',
-  '207940': '삼성바이오로직스',
-  '005380': '현대차',
-  '000270': '기아',
-  '068270': '셀트리온',
-  '105560': 'KB금융',
-  '055550': '신한지주',
-  '035420': 'NAVER',
-  '035720': '카카오',
-  '005490': 'POSCO홀딩스',
-  '028260': '삼성물산',
-  '012330': '현대모비스',
-  '051910': 'LG화학',
-  '006400': '삼성SDI',
-  '329180': 'HD현대중공업',
-  '138040': '메리츠금융지주',
-  '196170': '알테오젠',
-  '247540': '에코프로비엠',
-  '086520': '에코프로',
-  '000810': '삼성화재',
-  '000815': '삼성화재우',
-  '015760': '한국전력',
-  '032830': '삼성생명',
-  '017670': 'SK텔레콤',
-  '010140': '삼성중공업',
-  '009150': '삼성전기',
-  '030200': 'KT',
-  '036570': '엔씨소프트',
-  '259960': '크래프톤',
-  '018260': '삼성SDS',
-  '003550': 'LG',
-  '034730': 'SK',
-  '011200': 'HMM',
-  '010950': 'S-Oil',
-  '034220': 'LG디스플레이',
-  '010130': '고려아연',
-  '003670': '포스코퓨처엠',
-  '271560': '오리온',
-  '090430': '아모레퍼시픽',
-  '000100': '유한양행',
-  '263750': '펄어비스',
-  '041510': 'SM',
-  '352820': '하이브',
-  '004020': '현대제철',
-  '028050': '삼성엔지니어링',
-  '000720': '현대건설',
-  '005830': 'DB손해보험',
-  '071050': '한국금융지주',
-  '009540': 'HD한국조선해양',
-  '047810': '한국항공우주',
-  '021240': '코웨이',
-  '000150': '두산2우B',
-  '024110': '기업은행',
-  '086790': '하나금융지주',
-  '033780': 'KT&G',
-  '032640': 'LG유플러스',
-  '001040': 'CJ',
-  '000120': 'CJ대한통운',
-  '078930': 'GS',
-  '012450': '한화에어로스페이스',
-  '009830': '한화솔루션',
-  '042660': '한화오션',
-  '001450': '현대해상',
-  '004990': '롯데지주',
-  '023530': '롯데쇼핑',
-  '011170': '롯데케미칼',
-  '006360': 'GS건설',
-  '403070': 'HPSP',
-  '293490': '카카오게임즈',
-  '251270': '넷마블',
-  '293500': 'HLB',
-  '003490': '대한항공',
-  '402340': 'SK스퀘어',
-  '332570': 'PS일렉트로닉스',
-  '454910': '두산로보틱스',
-  '277810': '레인보우로보틱스',
-  '058470': '리노공업',
-  '086900': '메디톡스',
-  '214150': '클래시스',
-  '001800': '오리온홀딩스',
-  '000105': '유한양행우',
-  '003230': '삼양식품',
-  '001680': '대상',
-  '004370': '농심',
-  '005300': '롯데칠성',
-  '007310': '오뚜기',
-  '017800': '현대백화점',
-  '008770': '호텔신라',
-  '069960': '현대백화점',
-  '004170': '신세계',
-  '026960': '동서',
-  '001530': 'DI동일',
-  '005940': 'NH투자증권',
-  '016360': '삼성증권',
-  '039490': '키움증권',
-  '003470': '유진투자증권',
-  '001500': '현대차증권',
-  '003540': '대신증권',
-  '005945': 'NH투자증권우',
-  '008930': '한미반도체',
-  '042700': '한미반도체',
-  '128940': '한미약품',
-  '185750': '종근당',
-  '006280': '녹십자',
-  '000210': 'DL',
-  '039130': '하나투어',
-  '080440': '모두투어',
-  '030000': '제일기획',
-  '032650': 'SK오션플랜트',
-  '009410': '태영건설',
-  '006380': '카프로',
-  '011070': 'LG이노텍',
-  '035250': '강원랜드',
-  '034020': '두산에너빌리티',
-  '000157': '두산2우B',
-  '011780': '금호석유',
-  '002790': '아모레G',
-  '003240': '태광산업',
-  '010060': 'OCI홀딩스',
-  '011790': 'SKC',
-  '006800': '미래에셋증권',
-  '003690': '코리안리',
-  '000670': '영풍',
-  '001740': 'SK네트웍스',
-  '002380': 'KCC',
-  '020150': '일진머티리얼즈',
-  '001430': '세아베스틸지주',
-  '001230': '동국제강',
-  '005880': '대한해운',
-  '003410': '쌍용C&E',
-  '004000': '롯데정밀화학',
-  '014680': '한솔케미칼',
-  '036460': '한국가스공사',
-  '005070': '코스모신소재',
-  '005420': '코스모화학',
-};
+export function isEtfSymbol(symbol: string | undefined, name: string): boolean {
+  const entry = symbol ? masterBySymbol.get(symbol) : undefined;
+  if (entry?.group) return entry.group === 'EF';
+  return isEtfOrEtn(name);
+}
+
+/**
+ * 종목코드로 마스터 항목 조회(O(1)). 종목명·시장 판별의 기준 데이터.
+ * 🚨 [버그 수정 - 2026-09-23] 예전엔 하드코딩 사전 STOCK_NAME_MAP(138개)이 마스터보다 우선했는데, 마스터가
+ * KIS 공식 종목정보 파일로 재생성(scripts/regenerate_stock_master_cache.js)되는 것과 달리 이 사전은 손으로 적은 뒤 방치돼
+ * 옛 이름(엔씨소프트→NC, 삼성엔지니어링→삼성E&A 등 12건)이 최신 이름을 덮어썼고, 아예 다른 회사를 가리키는
+ * 항목(017800을 "현대백화점"으로 - 실제 현대엘리베이터, 003470 "유진투자증권" - 실제 유안타증권, 008930
+ * "한미반도체" - 실제 한미사이언스, 000150 "두산2우B" - 실제 두산)과 존재하지 않는 코드(293500 "HLB" 등 5건)가
+ * 검색 목록에 그대로 섞였다. 138개 전부가 "마스터에 이미 있어 불필요"하거나 "틀려서 해로운" 항목이라 사전을
+ * 삭제하고 마스터를 단일 기준으로 삼는다.
+ */
+export function getMasterEntry(symbol: string): MasterStockEntry | undefined {
+  return masterBySymbol.get(symbol);
+}
 
 /**
  * KIS API 응답 및 실시간 수급 조회 시 자동 갱신되는 동적 종목명 캐시
@@ -176,10 +60,10 @@ export function registerRuntimeStockName(symbol: string, name: string): void {
 
 /**
  * 종목 코드를 한글 종목명으로 변환해주는 마스터 조회 함수
- * 1. rawName
- * 2. runtimeStockNameCache
- * 3. STOCK_NAME_MAP
- * 4. KIS Master Stock Dataset (3,554개 전체 상장 종목)
+ * 1. rawName (KIS API가 방금 돌려준 이름)
+ * 2. runtimeStockNameCache (KIS API 응답에서 수집된 이름)
+ * 3. KIS 종목 마스터 (KIS 공식 종목정보 기준, 이름의 기준)
+ * ※ mockData.ts getStockName도 같은 우선순위를 따른다(두 함수는 각자 런타임 캐시를 가져 완전 통합은 안 됨).
  */
 export function getStockName(symbol: string, rawName?: string): string {
   if (rawName && rawName.trim() !== '' && !rawName.startsWith('종목 ') && rawName !== symbol) {
@@ -192,12 +76,7 @@ export function getStockName(symbol: string, rawName?: string): string {
     return runtimeStockNameCache.get(symbol)!;
   }
 
-  if (STOCK_NAME_MAP[symbol]) {
-    return STOCK_NAME_MAP[symbol];
-  }
-
-  const masterList = getMasterStockList();
-  const foundMaster = masterList.find((m) => m.symbol === symbol);
+  const foundMaster = masterBySymbol.get(symbol);
   if (foundMaster) {
     return foundMaster.name;
   }
@@ -214,7 +93,10 @@ export function getRuntimeStockNameCache(): Map<string, string> {
 
 /**
  * 검색 대상 전체 종목 리스트 생성
- * (KIS Master 전체 상장 3,554개 종목 + STOCK_NAME_MAP + runtimeStockNameCache + PRESET/TOP50)
+ * (KIS 종목 마스터 전체 + runtimeStockNameCache + PRESET/TOP50)
+ * 🚨 종목명·시장은 KIS 공식 종목정보로 만든 마스터가 기준이다. PRESET/TOP50은 손으로 적은 정적 목록이라
+ * 마스터에 없는 종목을 "채우는" 용도로만 쓰고, 마스터 항목의 이름/시장을 덮어쓰지 않는다
+ * (예전엔 덮어써서 옛 이름 "엔씨소프트"(현 NC), 이전상장 전 시장 "엘앤에프=KOSDAQ"(현 KOSPI)이 노출됐다).
  */
 export function buildSearchStockList(
   presets: StockInfo[] = [],
@@ -222,7 +104,7 @@ export function buildSearchStockList(
 ): StockInfo[] {
   const map = new Map<string, StockInfo>();
 
-  // 1. KIS Master Dataset (3,554개 전체 상장 종목)
+  // 1. KIS 종목 마스터 (이름·시장의 기준)
   const masterList = getMasterStockList();
   masterList.forEach((m) => {
     map.set(m.symbol, {
@@ -236,16 +118,18 @@ export function buildSearchStockList(
     });
   });
 
-  // 2. Static preset stocks overlay
-  presets.forEach((s) => map.set(s.symbol, s));
+  // 2. Static preset stocks - 마스터에 없는 종목만 채움
+  presets.forEach((s) => {
+    if (!map.has(s.symbol)) map.set(s.symbol, s);
+  });
 
-  // 3. Static TOP 50 stocks overlay
+  // 3. Static TOP 50 stocks - 마스터에 없는 종목만 채움
   top50s.forEach((s) => {
-    const existing = map.get(s.symbol);
+    if (map.has(s.symbol)) return;
     map.set(s.symbol, {
       symbol: s.symbol,
       name: s.name,
-      market: (s.market as 'KOSPI' | 'KOSDAQ') || existing?.market || 'KOSPI',
+      market: (s.market as 'KOSPI' | 'KOSDAQ') || 'KOSPI',
       currentPrice: s.basePrice,
       change: 0,
       changeRate: 0,
@@ -253,25 +137,7 @@ export function buildSearchStockList(
     });
   });
 
-  // 4. STOCK_NAME_MAP master entries overlay
-  Object.entries(STOCK_NAME_MAP).forEach(([sym, name]) => {
-    if (map.has(sym)) {
-      const existing = map.get(sym)!;
-      map.set(sym, { ...existing, name });
-    } else {
-      map.set(sym, {
-        symbol: sym,
-        name,
-        market: 'KOSPI',
-        currentPrice: 50000,
-        change: 0,
-        changeRate: 0,
-        volume: 1000000,
-      });
-    }
-  });
-
-  // 5. Runtime dynamically cached stocks
+  // 4. Runtime dynamically cached stocks (KIS API 응답에서 수집된 최신 이름 - getStockName과 같은 우선순위)
   runtimeStockNameCache.forEach((name, sym) => {
     if (map.has(sym)) {
       const existing = map.get(sym)!;
@@ -293,15 +159,50 @@ export function buildSearchStockList(
 }
 
 /**
- * 입력 문자열(한글 종목명 또는 6자리 코드)을 6자리 종목 코드로 단일 해석해주는 헬퍼
+ * KRX 종목 단축코드 규칙: 6자리, 첫 글자는 항상 숫자. 기존 숫자 코드(005930)와 최근 상장 종목에 쓰이는
+ * 영숫자 신코드(0126Z0 삼성에피스홀딩스, 00088K 한화3우B 등)를 모두 포함한다. 영숫자 코드도 종목 화면이
+ * 쓰는 KIS TR 8종이 전부 정상 응답함을 실측 확인했다(scratch/diagnose_alnum_symbol_kis_support.js).
+ * 첫 글자를 숫자로 제한해서 "KBSTAR" 같은 6글자 영문 종목명 입력이 코드로 오인되지 않게 한다.
  */
-export function resolveSymbolOrName(input: string, searchList: StockInfo[]): string {
-  const query = input.trim();
-  if (!query) return '005930';
+export const KRX_SYMBOL_PATTERN = /^\d[0-9A-Z]{5}$/;
 
-  // 1. 6자리 영문/숫자 코드 직접 입력된 경우
-  if (/^\d{6}$/.test(query)) {
-    return query;
+/**
+ * 검색창 드롭다운 필터/정렬 공통 함수 - 데스크톱(StockSearch.tsx)·모바일(MobileStockSearch.tsx)·
+ * /api/stock/search가 똑같은 로직을 각자 복사해 쓰던 것을 하나로 합쳤다(수칙 1-6). 종목명과 코드 모두
+ * 대소문자 무시로 비교한다 - 영숫자 코드를 소문자로 입력해도(0126z0) 찾히게 하기 위함.
+ */
+export function filterSearchStockList(searchList: StockInfo[], rawQuery: string, limit: number): StockInfo[] {
+  const query = rawQuery.trim().toLowerCase();
+  if (!query) return [];
+  const matches = searchList.filter(
+    (s) => s.name.toLowerCase().includes(query) || s.symbol.toLowerCase().includes(query)
+  );
+  matches.sort((a, b) => {
+    const aName = a.name.toLowerCase();
+    const bName = b.name.toLowerCase();
+    const aExact = aName === query ? 0 : aName.startsWith(query) ? 1 : 2;
+    const bExact = bName === query ? 0 : bName.startsWith(query) ? 1 : 2;
+    return aExact - bExact;
+  });
+  return matches.slice(0, limit);
+}
+
+/**
+ * 입력 문자열(한글 종목명 또는 6자리 코드)을 6자리 종목 코드로 단일 해석해주는 헬퍼.
+ * 해석할 수 없으면 null을 돌려준다(호출부가 "검색 결과 없음"을 보여줌).
+ * 🚨 [버그 수정 - 2026-09-23] 예전엔 끝까지 못 찾으면 입력 문자열을 그대로 종목코드로 돌려줘서(return query),
+ * "코윈테크"처럼 목록에 없는 글자를 치고 Enter를 누르면 그 글자 자체로 KIS 조회를 날렸다. 빈 입력도
+ * 삼성전자('005930')로 바꿔치기하던 기본값을 없앤다.
+ * 단, 6자리 코드 형식이면 목록에 없어도 그대로 조회한다 - 종목 마스터는 헤더 배지 알림 후 수동 반영
+ * (GitHub Actions)해야 바뀌므로, 반영 전 신규 상장주도 코드로는 바로 볼 수 있어야 하기 때문.
+ */
+export function resolveSymbolOrName(input: string, searchList: StockInfo[]): string | null {
+  const query = input.trim();
+  if (!query) return null;
+
+  // 1. 6자리 종목코드(숫자 또는 영숫자 신코드)가 직접 입력된 경우 - KIS는 대문자 코드만 받으므로 대문자로 정규화
+  if (KRX_SYMBOL_PATTERN.test(query.toUpperCase())) {
+    return query.toUpperCase();
   }
 
   const queryLower = query.toLowerCase();
@@ -319,9 +220,9 @@ export function resolveSymbolOrName(input: string, searchList: StockInfo[]): str
   if (partialMatch) return partialMatch.symbol;
 
   // 5. 부분 코드 매칭
-  const codeMatch = searchList.find((s) => s.symbol.includes(query));
+  const codeMatch = searchList.find((s) => s.symbol.toLowerCase().includes(queryLower));
   if (codeMatch) return codeMatch.symbol;
 
-  return query;
+  return null;
 }
 

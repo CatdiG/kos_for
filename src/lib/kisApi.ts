@@ -2,10 +2,10 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { InvestorTrendDay, InvestorTrendResponse, KisTokenResponse, ProgramTradeIntradayPoint, ProgramTradeSummary, SupplySummary, TrendPeriod, InvestorRankingResponse, RankingItem, RankingDirection, RankingPeriod, RankingType, OverlapInvestorRank, MarketType, SurgingRankItem, ScoreBreakdown, SurgingMode, isEtfOrEtn, IntradayCandlePoint, IntradayPivotFibonacciLevels, IntradayChartResponse, IndexTrendResponse, IndexTrendDay, StockBadgeItem, StockBadgeSummaryResponse, VwapReclaimSignal, PivotReclaimSignal, PivotLevelSignal, PriceLegSignal } from './types';
+import { InvestorTrendDay, InvestorTrendResponse, KisTokenResponse, ProgramTradeIntradayPoint, ProgramTradeSummary, SupplySummary, TrendPeriod, InvestorRankingResponse, RankingItem, RankingDirection, RankingPeriod, RankingType, OverlapInvestorRank, MarketType, SurgingRankItem, ScoreBreakdown, SurgingMode, IntradayCandlePoint, IntradayPivotFibonacciLevels, IntradayChartResponse, IndexTrendResponse, IndexTrendDay, StockBadgeItem, StockBadgeSummaryResponse, VwapReclaimSignal, PivotReclaimSignal, PivotLevelSignal, PriceLegSignal } from './types';
 import { getStockName, resolveStockPriceAndChange, updateRuntimeStockPrice, registerRuntimeStockName, resolveMarketType, computeUnifiedStatusBadge, getSettledAsOfDateLabel, getKrxEstimateSlotInfo, findSplitSafeStartIndex, roundToKrxTick, computeRecentVolumeRatio } from './mockData';
 import { TOP_300_STOCKS } from './stockUniverse300';
-import { getMasterStockList } from './stockDictionary';
+import { getMasterStockList, isEtfSymbol } from './stockDictionary';
 import { fetchTokenFromSupabase, fetchCreditBatchFromSupabase, saveCreditBatchToSupabase, CreditBatchRow, fetchIntraday3mCandlesFromSupabase, fetchFreshIntraday3mCandlesFromSupabase, saveIntraday3mCandlesToSupabase, isSymbolInWsWatchlist, fetchConsecutiveOverlapWatch, upsertConsecutiveOverlapWatch, fetchDailyOverlapFirstSeen, insertDailyOverlapFirstSeenIfMissing, fetchLatestActiveBeforeDate, upsertSharedRankCache, fetchSharedRankCacheBatch, fetchWatchSignalState, upsertWatchSignalState, logReclaimSignalEvent, updateReclaimSignalOutcome } from './supabase';
 // mockData.ts도 함께 써야 해서(runtimePriceCache 공유) kisApi.ts↔mockData.ts 순환 참조를 피하려고
 // getGlobalMap 정의를 별도 파일(globalCache.ts)로 옮겼다 - 기존 호출부(batchCollector.ts 등)가 계속
@@ -1974,7 +1974,8 @@ async function executeKisDailyPriceFetch(
  * - undefined: 미캐시 / 조회 중 (모바일 종목상세 배지: MobileStockDetailChart.tsx가 '신용 확인필요'로 표시)
  */
 export function getEvaluatedCreditStatus(symbol: string, name?: string): boolean | undefined {
-  if (name && isEtfOrEtn(name)) {
+  // 종목코드만으로도 마스터 그룹코드(EF)로 판별 가능 - 이름 없이 호출돼도 ETF는 신용불가로 확정
+  if (isEtfSymbol(symbol, name || '')) {
     return false;
   }
   if (creditStatusCache.has(symbol)) {
@@ -1997,7 +1998,7 @@ export async function mergeCreditStatusToRanking(items: RankingItem[]): Promise<
 
   // 1. Instant ETF / ETN 0ms Filter: Mark all ETFs/ETNs as isCreditAvailable: false
   items.forEach((item) => {
-    if (isEtfOrEtn(item.name)) {
+    if (isEtfSymbol(item.symbol, item.name)) {
       creditStatusCache.set(item.symbol, { isCredit: false, timestamp: Date.now() });
     }
   });
@@ -3252,7 +3253,7 @@ async function executeAsyncOverlapCalculation(
 
     const aiPickCandidates = [...finalOverlapItems]
       .filter((item) => isEntryReadyBadge(item.statusBadge)) // 단기과열 종목은 별표(AI픽) 후보군에서 제외
-      .filter((item) => !isEtfOrEtn(item.name)) // 레버리지/인버스 등 ETF·ETN은 개별 종목 추천 취지에 안 맞아 AI픽 후보군에서 제외 (사용자 요청: "레버리지관련 종목은 다 빼서 추천")
+      .filter((item) => !isEtfSymbol(item.symbol, item.name)) // 레버리지/인버스 등 ETF·ETN은 개별 종목 추천 취지에 안 맞아 AI픽 후보군에서 제외 (사용자 요청: "레버리지관련 종목은 다 빼서 추천")
       .map((item) => ({
         symbol: item.symbol,
         score: computeOverlapAiPickScore(item),
@@ -3751,7 +3752,7 @@ async function finalizeConsecutiveOverlapResult(
   // Calculate Risk-Adjusted AI Pick Candidates (Matching 1st~6th Buy Timing Hierarchy)
   const aiPickCandidates = [...results]
     .filter((item) => isEntryReadyBadge(item.statusBadge)) // 단기과열 종목은 별표(AI픽) 후보군에서 제외
-    .filter((item) => !isEtfOrEtn(item.name)) // 레버리지/인버스 등 ETF·ETN은 개별 종목 추천 취지에 안 맞아 AI픽 후보군에서 제외 (사용자 요청: "레버리지관련 종목은 다 빼서 추천")
+    .filter((item) => !isEtfSymbol(item.symbol, item.name)) // 레버리지/인버스 등 ETF·ETN은 개별 종목 추천 취지에 안 맞아 AI픽 후보군에서 제외 (사용자 요청: "레버리지관련 종목은 다 빼서 추천")
     .map((item) => ({
       symbol: item.symbol,
       score: computeOverlapAiPickScore(item),
@@ -4965,7 +4966,7 @@ async function fetchKisDiscoverySeedPool(market: MarketType): Promise<RankingIte
     }
   }
 
-  return Array.from(itemMap.values()).filter((item) => !isEtfOrEtn(item.name));
+  return Array.from(itemMap.values()).filter((item) => !isEtfSymbol(item.symbol, item.name));
 }
 
 // 🚨 [버그 수정 - 사용자 지적: "그런것들이 더 있나 알아봐"] 기존엔 !res.ok/rt_cd 오류를 재시도 없이
@@ -5406,7 +5407,7 @@ async function fetchKisMultiQuoteBatch(symbols: string[]): Promise<MultiQuoteIte
  */
 async function fetchKisFullUniverseQuotes(market: MarketType): Promise<MultiQuoteItem[]> {
   const universe = getMasterStockList().filter(
-    (s) => (market === 'ALL' || s.market === market) && !isEtfOrEtn(s.name)
+    (s) => (market === 'ALL' || s.market === market) && !isEtfSymbol(s.symbol, s.name)
   );
   const results: MultiQuoteItem[] = [];
   for (let i = 0; i < universe.length; i += PRECURSOR_BATCH_SIZE) {
@@ -5912,7 +5913,7 @@ export async function fetchKisComprehensiveScoreRanking(
     const candidateMap = new Map<string, RankingItem>();
 
     [...flucRes.list, ...volRes.list, ...amtRes.list].forEach((item) => {
-      if (!candidateMap.has(item.symbol) && !isEtfOrEtn(item.name)) {
+      if (!candidateMap.has(item.symbol) && !isEtfSymbol(item.symbol, item.name)) {
         candidateMap.set(item.symbol, { ...item });
       }
     });

@@ -11,6 +11,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { Activity, TrendingUp, Sun, Moon, History } from 'lucide-react';
 import { useTheme } from '@/providers/ThemeProvider';
+import StockMasterStatusBadge from '../StockMasterStatusBadge';
 
 interface MobileHeaderProps {
   // 이 화면에 대응하는 데스크톱 경로 - "데스크톱" 버튼이 여기로 view=desktop과 함께 이동한다.
@@ -84,6 +85,8 @@ export default function MobileHeader({ desktopHref = '/' }: MobileHeaderProps) {
           </div>
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
+          {/* 종목 마스터가 KIS 최신 종목정보와 다를 때만 표시(데스크톱 Header.tsx와 같은 컴포넌트) */}
+          <StockMasterStatusBadge compact />
           <Link
             href="/m/history"
             className="p-1.5 rounded-lg bg-slate-100 dark:bg-[#1e222d] border border-slate-200/60 dark:border-[#2a2e39] text-slate-500 dark:text-slate-400"

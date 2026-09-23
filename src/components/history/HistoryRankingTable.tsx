@@ -37,6 +37,20 @@ export const HistoryRankingTable: React.FC<HistoryRankingTableProps> = ({
   // 🎯 [기능 추가 - 사용자 요청: "수급교집합 장마감 후보만도... 얼마나 올랐는지 두개 보여주고"] 수급교집합에
   // "장마감 후보만" 토글이 켜져 있을 때도 postmarket과 동일하게 다음날 결과(종가/고가)를 보여준다.
   const showNextDayColumn = type === 'postmarket' || type === 'discovery' || type === 'precursor' || type === 'watchlist' || (type === 'overlap' && Boolean(quietFilter));
+  // 🚨 [기능 수정 - 사용자 지적: "장마감 후보군 히스토리는 왜 실시간 내용과 다른거야"] 발굴 탭은 이전엔
+  // 매집주체/오후매수세/거래대금배율/눌림저항/상대강도/종합점수 6개를 "매집·강도 요약" 한 칸으로 뭉쳐
+  // 보여줬다 - 정작 calculateDiscoveryFromHistory(historyService.ts)는 이 6개 필드를 discovery_snapshots
+  // 에서 이미 다 읽어와 RankingItem에 채워주고 있었다(백엔드 데이터는 있었음, 프론트가 안 쓴 것뿐). 라이브
+  // 대시보드(InvestorRankingTable.tsx discovery 컬럼)와 동일하게 6개 컬럼으로 풀어서 보여준다(수칙 1-6:
+  // 새 계산 없이 이미 있는 필드 그대로 노출).
+  const isDiscoveryDetail = type === 'discovery';
+  // 🚨 [기능 수정 - 사용자 지적: "전조도 같이 고쳐"] 발굴과 동일한 문제 - calculatePrecursorFromHistory가
+  // recentReturnPct/volumeSurgeRatio/volumeTrendIncreasing/priceVolumeDivergence/closeToHighRatioPct/
+  // precursorScore 6개를 이미 다 채워주는데 "거래 급증 요약" 한 칸으로 뭉쳐 보여주고 있었다.
+  const isPrecursorDetail = type === 'precursor';
+  // discovery/precursor는 거래량을 별도로 집계하지 않아(전용 지표 컬럼으로 대체) 이 컬럼이 항상 "-"만
+  // 찍혔다 - 라이브 대시보드에도 이 두 탭엔 애초에 "거래량" 컬럼 자체가 없으므로 헤더도 맞춰서 숨긴다.
+  const hideVolumeColumn = type === 'discovery' || type === 'precursor';
   const [searchTerm, setSearchTerm] = useState('');
   // 🚨 [기능 수정 - 사용자 지적: "누른 종목밑에 바로 떠야하지않겠니? 지금 로컬에서처럼"] 처음엔 부모
   // (history/page.tsx)가 selectedSymbol을 받아 테이블 "위"에 고정 패널로 차트를 띄웠는데, 실시간
@@ -90,7 +104,9 @@ export const HistoryRankingTable: React.FC<HistoryRankingTableProps> = ({
               <th className="py-3 px-4 min-w-[160px]">종목명</th>
               <th className="py-3 px-4 text-right">종가</th>
               <th className="py-3 px-4 text-right">등락률</th>
-              <th className="py-3 px-4 text-right">거래량</th>
+              {!hideVolumeColumn ? (
+                <th className="py-3 px-4 text-right">거래량</th>
+              ) : null}
               {showAmountColumn ? (
                 <th className="py-3 px-4 text-right">거래대금</th>
               ) : null}
@@ -109,11 +125,21 @@ export const HistoryRankingTable: React.FC<HistoryRankingTableProps> = ({
               {type === 'postmarket' ? (
                 <th className="py-3 px-4 min-w-[220px]">급등 상세 순위</th>
               ) : null}
-              {type === 'discovery' ? (
-                <th className="py-3 px-4 min-w-[220px]">매집·강도 요약</th>
+              {isDiscoveryDetail ? (
+                <>
+                  <th className="py-3 px-4 min-w-[150px]" title="상승 과정에서 누가 물량을 받았는지(장중 추정)">매집 주체</th>
+                  <th className="py-3 px-4 text-right" title="오늘 누적 거래대금 중 14시 이후 비중">오후 매수세</th>
+                  <th className="py-3 px-4 text-right" title="오늘 거래대금 ÷ 최근 20거래일 평균">거래대금 배율</th>
+                  <th className="py-3 px-4 text-right" title="당일 고가 등락률 대비 현재 등락률 하락폭(0에 가까울수록 고가권 유지)">눌림 저항</th>
+                  <th className="py-3 px-4 text-right" title="현재 등락률 - 소속 시장 지수 등락률">상대강도</th>
+                  <th className="py-3 px-4 text-center" title="5개 지표 백분위 평균 - 아직 실측 백테스트 전 잠정치">종합점수</th>
+                </>
               ) : null}
-              {type === 'precursor' ? (
-                <th className="py-3 px-4 min-w-[220px]">거래 급증 요약</th>
+              {isPrecursorDetail ? (
+                // 🚨 [전면 재정의 - "눌림후속"] 기존 4개 지표 점수식은 202거래일 실측에서 다음날 수익률과
+                // 상관계수 사실상 0으로 확인돼 제거(수칙 1-7) - 조건2(종가/고가 94~97%)만 추가 표시.
+                // 조건1(당일등락률<-0.5%)은 이미 공통 "등락률" 컬럼에 표시됨(수칙 1-6, 중복 컬럼 방지).
+                <th className="py-3 px-4 text-right" title="조건2: 94~97% (당일 하락 중 어중간하게 반등도 붕괴도 아닌 위치에서 마감)">종가/고가</th>
               ) : null}
               {showNextDayColumn ? (
                 <th className="py-3 px-4 text-right min-w-[130px]" title="raw_daily_data에 실제로 수집된 다음 영업일 종가/고가 기준">
@@ -125,7 +151,7 @@ export const HistoryRankingTable: React.FC<HistoryRankingTableProps> = ({
           <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60">
             {isLoading ? (
               <tr>
-                <td colSpan={10} className="py-12 text-center text-slate-400 text-sm">
+                <td colSpan={14} className="py-12 text-center text-slate-400 text-sm">
                   <div className="flex flex-col items-center justify-center gap-2">
                     <div className="w-6 h-6 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
                     <span>과거 확정 데이터를 불러오는 중입니다...</span>
@@ -134,7 +160,7 @@ export const HistoryRankingTable: React.FC<HistoryRankingTableProps> = ({
               </tr>
             ) : filteredItems.length === 0 ? (
               <tr>
-                <td colSpan={10} className="py-12 text-center text-slate-400 text-sm">
+                <td colSpan={14} className="py-12 text-center text-slate-400 text-sm">
                   {type === 'watchlist' ? '등록된 관심종목이 없거나, 이 날짜 원본 데이터가 없습니다.' : `해당 날짜(${selectedDate})의 확정 데이터가 없습니다.`}
                 </td>
               </tr>
@@ -181,10 +207,11 @@ export const HistoryRankingTable: React.FC<HistoryRankingTableProps> = ({
                     <td className={`py-3 px-4 text-right font-semibold ${priceColor}`}>
                       {isPositive ? '+' : ''}{(item.changeRate || 0).toFixed(2)}%
                     </td>
-                    <td className="py-3 px-4 text-right text-slate-600 dark:text-slate-400 text-xs">
-                      {/* discovery/precursor는 거래량을 별도로 계산하지 않는다(전용 요약 칸으로 대체) - 의미 없는 0 대신 대시 표시 */}
-                      {type === 'discovery' || type === 'precursor' ? '-' : (item.volume || 0).toLocaleString()}
-                    </td>
+                    {!hideVolumeColumn ? (
+                      <td className="py-3 px-4 text-right text-slate-600 dark:text-slate-400 text-xs">
+                        {(item.volume || 0).toLocaleString()}
+                      </td>
+                    ) : null}
                     {showAmountColumn ? (
                       <td className="py-3 px-4 text-right font-medium text-slate-800 dark:text-slate-200">
                         {item.amountEok ? `${item.amountEok}억` : '-'}
@@ -260,18 +287,49 @@ export const HistoryRankingTable: React.FC<HistoryRankingTableProps> = ({
                         </span>
                       </td>
                     ) : null}
-                    {type === 'discovery' ? (
-                      <td className="py-3 px-4 max-w-[240px]">
-                        <span className="text-[10px] px-2 py-0.5 rounded-md font-bold bg-amber-100 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-700/50 whitespace-normal leading-snug inline-block">
-                          {item.absorptionBadge || '데이터 없음'} · 점수 {item.discoveryScore != null ? item.discoveryScore.toFixed(1) : '-'}
-                        </span>
-                      </td>
+                    {isDiscoveryDetail ? (
+                      <>
+                        <td className="py-3 px-4 whitespace-nowrap">
+                          <span
+                            className={`text-[10px] px-2 py-0.5 rounded-md font-bold border whitespace-nowrap ${
+                              item.absorptionDirection === 'both'
+                                ? 'bg-gradient-to-r from-red-600 to-amber-600 text-white border-transparent'
+                                : item.absorptionDirection === 'foreign' || item.absorptionDirection === 'organ'
+                                ? 'bg-red-50 dark:bg-red-950/50 text-red-700 dark:text-red-300 border-red-200 dark:border-red-800/60'
+                                : 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-slate-700'
+                            }`}
+                          >
+                            {item.absorptionBadge || '데이터 없음'}
+                          </span>
+                        </td>
+                        <td className="py-3 px-4 text-right font-mono text-slate-700 dark:text-slate-300">
+                          {item.afternoonVolumeRatioPct != null ? `${item.afternoonVolumeRatioPct.toFixed(1)}%` : '-'}
+                        </td>
+                        <td className="py-3 px-4 text-right font-mono text-slate-700 dark:text-slate-300">
+                          {item.volumeSurgeRatio != null ? `${item.volumeSurgeRatio.toFixed(2)}배` : '-'}
+                        </td>
+                        <td className="py-3 px-4 text-right font-mono">
+                          {item.pullbackFromHighPct != null ? (
+                            <span className={item.pullbackFromHighPct <= 1 ? 'text-red-600 dark:text-red-400' : 'text-slate-600 dark:text-slate-400'}>
+                              -{item.pullbackFromHighPct.toFixed(2)}%p
+                            </span>
+                          ) : '-'}
+                        </td>
+                        <td className="py-3 px-4 text-right font-mono">
+                          {item.relativeStrengthPct != null ? (
+                            <span className={item.relativeStrengthPct >= 0 ? 'text-red-600 dark:text-red-400' : 'text-blue-600 dark:text-blue-400'}>
+                              {item.relativeStrengthPct >= 0 ? '+' : ''}{item.relativeStrengthPct.toFixed(2)}%p
+                            </span>
+                          ) : '-'}
+                        </td>
+                        <td className="py-3 px-4 text-center font-bold text-slate-900 dark:text-white">
+                          {item.discoveryScore != null ? item.discoveryScore.toFixed(1) : '-'}
+                        </td>
+                      </>
                     ) : null}
-                    {type === 'precursor' ? (
-                      <td className="py-3 px-4 max-w-[240px]">
-                        <span className="text-[10px] px-2 py-0.5 rounded-md font-bold bg-amber-100 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-700/50 whitespace-normal leading-snug inline-block">
-                          거래대금 {item.volumeSurgeRatio != null ? item.volumeSurgeRatio.toFixed(2) : '-'}배{item.volumeTrendIncreasing ? ' · 증가추세' : ''} · 점수 {item.precursorScore != null ? item.precursorScore.toFixed(1) : '-'}
-                        </span>
+                    {isPrecursorDetail ? (
+                      <td className="py-3 px-4 text-right font-mono text-slate-700 dark:text-slate-300">
+                        {item.closeToHighRatioPct != null ? `${item.closeToHighRatioPct.toFixed(2)}%` : '-'}
                       </td>
                     ) : null}
                     {showNextDayColumn ? (
@@ -312,7 +370,7 @@ export const HistoryRankingTable: React.FC<HistoryRankingTableProps> = ({
                       아래에 아코디언으로 상세 차트를 펼친다. */}
                   {isExpanded && (
                     <tr className="bg-slate-50/60 dark:bg-[#181c27]/60">
-                      <td colSpan={10} className="p-3">
+                      <td colSpan={14} className="p-3">
                         <RankingStockDetailChart symbol={item.symbol} onClose={() => setExpandedSymbol(null)} />
                       </td>
                     </tr>

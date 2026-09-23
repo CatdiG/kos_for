@@ -46,7 +46,7 @@ function HistoryCard({ item, type, isConsecutive, isSurgingOverlap, quietFilter 
     : type === 'discovery'
     ? `${item.absorptionBadge || '데이터 없음'} · 점수 ${item.discoveryScore != null ? item.discoveryScore.toFixed(1) : '-'}`
     : type === 'precursor'
-    ? `거래대금 ${item.volumeSurgeRatio != null ? item.volumeSurgeRatio.toFixed(2) : '-'}배${item.volumeTrendIncreasing ? ' · 증가추세' : ''} · 점수 ${item.precursorScore != null ? item.precursorScore.toFixed(1) : '-'}`
+    ? `종가/고가 ${item.closeToHighRatioPct != null ? item.closeToHighRatioPct.toFixed(2) : '-'}%`
     : type === 'surging' || type === 'watchlist'
     ? `거래대금 ${item.amountEok ? `${item.amountEok}억` : '-'}`
     : type === 'comprehensive'

@@ -5,7 +5,7 @@
 
 import { MarketType } from './types';
 import { TOP_300_STOCKS } from './stockUniverse300';
-import { getMasterStockList } from './stockDictionary';
+import { getMasterEntry } from './stockDictionary';
 import { getGlobalMap } from './globalCache';
 
 export function getSettledAsOfDateLabel(lastTradeDate?: string): string {
@@ -139,25 +139,24 @@ export function getStockName(symbol: string, fallbackName?: string): string {
     return runtimeStockNameMap.get(symbol)!;
   }
 
+  // 🚨 [버그 수정 - 2026-09-23] KIS 종목 마스터(KIS 공식 종목정보 기준)를 정적 목록(PRESET/TOP50/TOP300)보다 먼저 본다.
+  // 예전엔 손으로 적은 TOP_50이 먼저라 옛 이름(엔씨소프트→현 NC, 아프리카TV→현 SOOP 등)과 다른 회사 이름
+  // (036830을 "오성첨단소재"로 - 실제 솔브레인홀딩스)이 최신 이름을 덮어썼다. stockDictionary.ts getStockName과
+  // 같은 우선순위(API 이름 → 런타임 캐시 → 마스터 → 정적 목록)다. 마스터 조회는 Map O(1).
+  const master = getMasterEntry(symbol);
+  if (master) return master.name;
+
+  // 이하 정적 목록은 마스터에 없는 종목(마스터 갱신 전 신규 상장 등)용 폴백
   const preset = PRESET_STOCKS.find((s) => s.symbol === symbol);
   if (preset) return preset.name;
 
   const top50 = TOP_50_STOCKS.find((s) => s.symbol === symbol);
   if (top50) return top50.name;
 
-  // TOP_300_STOCKS(코스피+코스닥 시총 상위 300종목 풀)에도 있는지 마지막으로 확인 - 219종목대 등
-  // TOP_50/PRESET엔 없지만 이월(carriedOver) 경로로 유입되는 종목들의 이름이 숫자 코드 그대로
-  // 저장/노출되던 버그(319660 피에스케이, 214370 케어젠 등)를 근본적으로 막기 위함.
+  // TOP_300_STOCKS(코스피+코스닥 시총 상위 300종목 풀) - 이월(carriedOver) 경로로 유입되는 종목들의 이름이
+  // 숫자 코드 그대로 저장/노출되던 버그(319660 피에스케이, 214370 케어젠 등) 방지용으로 남긴다.
   const top300 = TOP_300_STOCKS.find((s) => s.symbol === symbol);
   if (top300) return top300.name;
-
-  // 🚨 [버그 수정 - 사용자 지적: 종목명이 코드로 뜨는 현상] TOP_300(시총 상위 300종목)에도 없는
-  // 중소형주(엔켐 348370, 라온피플 300120, 기가레인 049080 등 실측 확인)는 여기서 전부 걸러지지 않고
-  // symbol 그대로 반환됐다 - stockDictionary.ts의 getMasterStockList()(KIS 전체 상장 3,554종목 캐시)를
-  // 이미 이 파일이 import해두고도(8번 줄) 정작 이 조회 사다리엔 안 끼워 넣었던 게 근본 원인이었다.
-  // 순수 인메모리 배열 조회라 네트워크 호출 없음 - 실측 50개 연속 조회 최악 시나리오 3.27ms(수칙 2-6).
-  const master = getMasterStockList().find((s) => s.symbol === symbol);
-  if (master) return master.name;
 
   return symbol;
 }
@@ -185,7 +184,7 @@ export const TOP_50_STOCKS: { symbol: string; name: string; market: 'KOSPI' | 'K
   { symbol: '009150', name: '삼성전기', market: 'KOSPI', basePrice: 154000 },
   { symbol: '034730', name: 'SK', market: 'KOSPI', basePrice: 165000 },
   { symbol: '086790', name: '하나금융지주', market: 'KOSPI', basePrice: 61200 },
-  { symbol: '018260', name: '삼성SDS', market: 'KOSPI', basePrice: 142500 },
+  { symbol: '018260', name: '삼성에스디에스', market: 'KOSPI', basePrice: 142500 },
   { symbol: '003550', name: 'LG', market: 'KOSPI', basePrice: 78000 },
   { symbol: '011200', name: 'HMM', market: 'KOSPI', basePrice: 17400 },
   { symbol: '329180', name: 'HD현대중공업', market: 'KOSPI', basePrice: 138000 },
@@ -197,23 +196,23 @@ export const TOP_50_STOCKS: { symbol: string; name: string; market: 'KOSPI' | 'K
   { symbol: '035900', name: 'JYP Ent.', market: 'KOSDAQ', basePrice: 58000 },
   { symbol: '122870', name: '와이지엔터테인먼트', market: 'KOSDAQ', basePrice: 41200 },
   { symbol: '357780', name: '솔브레인', market: 'KOSDAQ', basePrice: 285000 },
-  { symbol: '066970', name: '엘앤에프', market: 'KOSDAQ', basePrice: 145000 },
+  { symbol: '066970', name: '엘앤에프', market: 'KOSPI', basePrice: 145000 },
   { symbol: '196170', name: '알테오젠', market: 'KOSDAQ', basePrice: 275000 },
-  { symbol: '041510', name: 'SM 엔터테인먼트', market: 'KOSDAQ', basePrice: 72000 },
+  { symbol: '041510', name: '에스엠', market: 'KOSDAQ', basePrice: 72000 },
   { symbol: '253450', name: '스튜디오드래곤', market: 'KOSDAQ', basePrice: 44500 },
-  { symbol: '036830', name: '오성첨단소재', market: 'KOSDAQ', basePrice: 1850 },
+  { symbol: '036830', name: '솔브레인홀딩스', market: 'KOSDAQ', basePrice: 1850 },
   { symbol: '060310', name: '3S', market: 'KOSDAQ', basePrice: 2650 },
-  { symbol: '067160', name: '아프리카TV', market: 'KOSDAQ', basePrice: 115000 },
+  { symbol: '067160', name: 'SOOP', market: 'KOSDAQ', basePrice: 115000 },
   { symbol: '000100', name: '유한양행', market: 'KOSPI', basePrice: 76000 },
   { symbol: '000810', name: '삼성화재', market: 'KOSPI', basePrice: 325000 },
   { symbol: '010950', name: 'S-Oil', market: 'KOSPI', basePrice: 68000 },
-  { symbol: '036570', name: '엔씨소프트', market: 'KOSPI', basePrice: 188000 },
+  { symbol: '036570', name: 'NC', market: 'KOSPI', basePrice: 188000 },
   { symbol: '011170', name: '롯데케미칼', market: 'KOSPI', basePrice: 112000 },
   { symbol: '004020', name: '현대제철', market: 'KOSPI', basePrice: 32000 },
   { symbol: '021240', name: '코웨이', market: 'KOSPI', basePrice: 58500 },
   { symbol: '008770', name: '호텔신라', market: 'KOSPI', basePrice: 56200 },
   { symbol: '078930', name: 'GS', market: 'KOSPI', basePrice: 52000 },
-  { symbol: '000150', name: '두산2우B', market: 'KOSPI', basePrice: 19500 },
+  { symbol: '000150', name: '두산', market: 'KOSPI', basePrice: 19500 },
 ];
 
 export const PRESET_STOCKS: StockInfo[] = TOP_50_STOCKS.slice(0, 10).map((s) => ({
@@ -243,24 +242,26 @@ export function resolveMarketType(
     return 'KOSPI';
   }
 
+  // 🚨 [버그 수정 - 2026-09-23] KIS 종목 마스터(KIS 공식 종목정보 기준)를 정적 목록보다 먼저 본다. 예전엔 손으로 적은
+  // TOP_50이 먼저라, 코스닥→코스피 이전상장한 엘앤에프(066970)가 계속 KOSDAQ으로 판정됐다.
+  const foundInMaster = getMasterEntry(symbol);
+  if (foundInMaster) {
+    return foundInMaster.market;
+  }
+
+  // 이하 정적 목록은 마스터에 없는 종목용 폴백.
+  // 🚨 [버그 수정] 여기서 바로 숫자 코드 범위 추정(아래)으로 넘어가던 게 문제였다 - KRX 종목코드는
+  // 시장별로 엄격한 숫자 구간 규칙이 없어서(예: 6만 미만도 코스닥 종목이 많음), 이 추정이 자주 틀렸다
+  // (실측: 리노공업 058470 - 실제 코스닥인데 58470 < 60000이라 무조건 KOSPI로 잘못 판정되어 organ
+  // 랭킹에 "코스피"로 잘못 표시됨).
   const foundInTop50 = TOP_50_STOCKS.find((s) => s.symbol === symbol);
   if (foundInTop50) {
     return foundInTop50.market;
   }
 
-  // 🚨 [버그 수정] 여기서 바로 숫자 코드 범위 추정(아래)으로 넘어가던 게 문제였다 - KRX 종목코드는
-  // 시장별로 엄격한 숫자 구간 규칙이 없어서(예: 6만 미만도 코스닥 종목이 많음), 이 추정이 자주 틀렸다
-  // (실측: 리노공업 058470 - 실제 코스닥인데 58470 < 60000이라 무조건 KOSPI로 잘못 판정되어 organ
-  // 랭킹에 "코스피"로 잘못 표시됨). TOP_300_STOCKS(295종목)와 stockMasterCache.json(3,554개 전
-  // 상장종목, 이미 정확한 market 필드 보유)을 먼저 확인해서 실제 데이터로 정확히 판별한다.
   const foundInTop300 = TOP_300_STOCKS.find((s) => s.symbol === symbol);
   if (foundInTop300) {
     return foundInTop300.market;
-  }
-
-  const foundInMaster = getMasterStockList().find((s) => s.symbol === symbol);
-  if (foundInMaster) {
-    return foundInMaster.market;
   }
 
   if (KOSDAQ_KNOWN_SYMBOLS.has(symbol)) {

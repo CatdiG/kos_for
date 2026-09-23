@@ -10,8 +10,8 @@ import {
   ScoreBreakdown,
   OverlapInvestorRank,
   SurgingRankItem,
-  isEtfOrEtn,
 } from './types';
+import { isEtfSymbol } from './stockDictionary';
 import { TOP_300_STOCKS } from './stockUniverse300';
 import { getSupabaseAdmin, getSupabasePublic, RawDailyInvestorRecord, fetchWsWatchlist, fetchDiscoverySnapshots, fetchPrecursorSnapshots, fetchPostmarketSnapshots } from './supabase';
 import { resolveMarketType, resolveStockPriceAndChange } from './mockData';
@@ -774,7 +774,7 @@ export async function calculateComprehensiveFromHistory(
   const rawRecords = await loadRawDailyRecordsForDate(normalizedDate);
   const filtered = rawRecords
     .filter((r) => market === 'ALL' || resolveMarketType(r.symbol) === market)
-    .filter((r) => !isEtfOrEtn(r.name));
+    .filter((r) => !isEtfSymbol(r.symbol, r.name));
 
   if (filtered.length === 0) {
     return {
@@ -1036,7 +1036,7 @@ export async function calculatePostMarketFromHistory(
   const rawRecords = await loadRawDailyRecordsForDate(normalizedDate);
   const filtered = rawRecords
     .filter((r) => market === 'ALL' || resolveMarketType(r.symbol) === market)
-    .filter((r) => !isEtfOrEtn(r.name));
+    .filter((r) => !isEtfSymbol(r.symbol, r.name));
 
   if (filtered.length === 0) {
     return {
@@ -1373,7 +1373,7 @@ async function reconstructDiscoveryFromRawData(
   dateGroups.forEach(({ date, records }) => {
     records.forEach((r) => {
       if (market !== 'ALL' && resolveMarketType(r.symbol) !== market) return;
-      if (isEtfOrEtn(r.name)) return;
+      if (isEtfSymbol(r.symbol, r.name)) return;
       if (!bySymbol.has(r.symbol)) bySymbol.set(r.symbol, new Map());
       bySymbol.get(r.symbol)!.set(date, r);
     });
@@ -1408,7 +1408,7 @@ async function reconstructDiscoveryFromRawData(
   const todayRecords = dateGroups[dateGroups.length - 1].records;
   todayRecords.forEach((today) => {
     if (market !== 'ALL' && resolveMarketType(today.symbol) !== market) return;
-    if (isEtfOrEtn(today.name)) return;
+    if (isEtfSymbol(today.symbol, today.name)) return;
     const symDates = bySymbol.get(today.symbol);
     if (!symDates || !orderedDates.every((d) => symDates.has(d))) return;
 
@@ -1557,110 +1557,58 @@ export async function calculateDiscoveryFromHistory(
   };
 }
 
-/** 전조 장마감 히스토리 - calculateDiscoveryFromHistory와 동일 패턴, precursor_snapshots 재사용. */
-// 전조 장마감 4개 조건 배점 - kisApi.ts fetchKisPrecursorCandidates의 절대 점수제와 동일 공식(수칙 1-6).
-const PRECURSOR_MIN_SURGE_RATIO = 1.5;
-const PRECURSOR_MAX_RECENT_RETURN_PCT_H = 15;
-const PRECURSOR_MAX_TODAY_CHANGE_PCT_H = 8;
-function rampScore(value: number | undefined, from: number, to: number, maxScore: number): number {
-  if (value === undefined) return 0;
-  if (value <= from) return 0;
-  if (value >= to) return maxScore;
-  return Number((((value - from) / (to - from)) * maxScore).toFixed(2));
-}
-
+/** 전조("눌림후속") 히스토리 - calculateDiscoveryFromHistory와 동일 패턴, precursor_snapshots 재사용. */
 /**
- * 🎯 [기능 추가 - 사용자 지적: "발굴, 전조는 계산 안되어서 진짜 못하는거야? 히스토리는 기록을
- * 남겨놓을텐데 거기서 하면 안되나?"] 전조 장마감의 4개 조건(거래대금급증·증가추세·다이버전스·고가유지)은
- * 투자자동향 추정치나 3분봉 같은 "장중에만 존재하는" 데이터가 전혀 필요 없다 - raw_daily_data(일봉
- * 종가/고가/저가/거래량)만으로 완전히 재구성 가능하다(실측 백테스트로 확인 - scratch/
- * backtest_precursor_history.js). precursor_snapshots에 그 날짜 스냅샷이 없으면(과거 날짜, 또는 아직
- * 크론이 안 돈 날) 이 재구성으로 대체한다.
- * ⚠️ 라이브 버전은 장마감 "전"(14:40) 시점 데이터로 계산하지만, 여기선 raw_daily_data의 장마감 확정치
- * (하루 전체 거래량/고가)를 쓴다 - "급등 장마감"(calculatePostMarketFromHistory)도 동일한 근사를 이미
- * 쓰고 있어 이 코드베이스의 기존 관례와 일치한다.
+ * 🚨 [전면 재정의 - "눌림후속", 사용자 지적] 기존 4개 지표 점수식은 202거래일 실측에서 다음날 수익률과
+ * 상관계수가 사실상 0으로 확인돼 제거했다(kisApi.ts enrichPrecursorCandidate 동일 사유, 수칙 1-6).
+ * 이제 "당일 하락(<-0.5%) + 종가/당일고가 94~97%" 2개 조건만 본다 - 점수 없음. 20일 평균/5일 수익률이
+ * 필요 없어져서 과거엔 22거래일 연속 이력이 온전한 종목만 대상이었는데, 이제 전일 종가 1개만 있으면
+ * 되므로 대상 범위가 훨씬 넓어졌다(부수 개선).
  */
 async function reconstructPrecursorFromRawData(
   normalizedDate: string,
   market: MarketType,
   limit: number
 ): Promise<RankingItem[]> {
-  const dateGroups = await loadRawRecordsForDateRange(normalizedDate, 22); // 오늘 포함 22거래일(20일 평균 + 5일 수익률 + 오늘)
-  if (dateGroups.length < 22 || dateGroups[dateGroups.length - 1]?.date !== normalizedDate) return [];
+  const dateGroups = await loadRawRecordsForDateRange(normalizedDate, 2); // 오늘 + 전일, 딱 2거래일만 필요
+  if (dateGroups.length < 2 || dateGroups[dateGroups.length - 1]?.date !== normalizedDate) return [];
 
-  const orderedDates = dateGroups.map((g) => g.date);
-  const bySymbol = new Map<string, Map<string, RawDailyInvestorRecord>>();
-  dateGroups.forEach(({ date, records }) => {
-    records.forEach((r) => {
-      if (market !== 'ALL' && resolveMarketType(r.symbol) !== market) return;
-      if (isEtfOrEtn(r.name)) return;
-      if (!bySymbol.has(r.symbol)) bySymbol.set(r.symbol, new Map());
-      bySymbol.get(r.symbol)!.set(date, r);
-    });
-  });
+  const prevRecords = new Map(dateGroups[dateGroups.length - 2].records.map((r) => [r.symbol, r]));
+  const todayRecords = dateGroups[dateGroups.length - 1].records;
 
   const candidates: RankingItem[] = [];
-  const todayRecords = dateGroups[dateGroups.length - 1].records;
-  todayRecords.forEach((today) => {
-    if (market !== 'ALL' && resolveMarketType(today.symbol) !== market) return;
-    if (isEtfOrEtn(today.name)) return;
-    const symDates = bySymbol.get(today.symbol);
-    if (!symDates || !orderedDates.every((d) => symDates.has(d))) return; // 22일 이력 온전한 종목만
+  todayRecords.forEach((todayRow) => {
+    if (market !== 'ALL' && resolveMarketType(todayRow.symbol) !== market) return;
+    if (isEtfSymbol(todayRow.symbol, todayRow.name)) return;
+    const prevRow = prevRecords.get(todayRow.symbol);
+    if (!prevRow || prevRow.close_price <= 0) return;
 
-    const history = orderedDates.map((d) => symDates.get(d)!);
-    const todayRow = history[history.length - 1];
-    const amount = (r: RawDailyInvestorRecord) => r.close_price * r.volume;
-
-    const fiveDaysAgo = history[history.length - 6];
-    const recentReturnPct = fiveDaysAgo.close_price > 0
-      ? Number((((todayRow.close_price - fiveDaysAgo.close_price) / fiveDaysAgo.close_price) * 100).toFixed(2))
-      : 0;
-    if (Math.abs(recentReturnPct) > PRECURSOR_MAX_RECENT_RETURN_PCT_H) return;
-    if (Math.abs(todayRow.change_rate || 0) > PRECURSOR_MAX_TODAY_CHANGE_PCT_H) return;
-
-    const prior20 = history.slice(0, -1);
-    const avgAmount = prior20.reduce((s, r) => s + amount(r), 0) / prior20.length;
-    const volumeSurgeRatio = avgAmount > 0 ? Number((amount(todayRow) / avgAmount).toFixed(2)) : 0;
-    if (volumeSurgeRatio < PRECURSOR_MIN_SURGE_RATIO) return;
-
-    const recent3 = history.slice(-3).reduce((s, r) => s + r.volume, 0) / 3;
-    const prior3 = history.slice(-6, -3).reduce((s, r) => s + r.volume, 0) / 3;
-    const volumeTrendIncreasing = prior3 > 0 && recent3 > prior3;
-
-    const priceVolumeDivergence = Number((volumeSurgeRatio / (1 + Math.abs(todayRow.change_rate || 0))).toFixed(2));
+    const todayChangeRate = ((todayRow.close_price - prevRow.close_price) / prevRow.close_price) * 100;
+    if (todayChangeRate >= -0.5) return; // 조건1: 당일 등락률 < -0.5%
 
     const high = todayRow.high_price || todayRow.close_price;
-    const closeToHighRatioPct = high > 0 ? Number(((todayRow.close_price / high) * 100).toFixed(2)) : 100;
-
-    const surgeScore = rampScore(volumeSurgeRatio, 1.5, 4, 35);
-    const trendScore = volumeTrendIncreasing ? 20 : 0;
-    const divergenceScore = rampScore(priceVolumeDivergence, 1, 5, 25);
-    const closeToHighScore = rampScore(closeToHighRatioPct, 80, 95, 20);
-    const precursorScore = Number((surgeScore + trendScore + divergenceScore + closeToHighScore).toFixed(1));
+    if (high <= 0) return;
+    const closeToHighRatioPct = Number(((todayRow.close_price / high) * 100).toFixed(2));
+    if (closeToHighRatioPct <= 94 || closeToHighRatioPct > 97) return; // 조건2: 종가/당일고가 94~97%
 
     candidates.push({
       rank: 0,
-      symbol: today.symbol,
-      name: today.name,
-      market: resolveMarketType(today.symbol),
+      symbol: todayRow.symbol,
+      name: todayRow.name,
+      market: resolveMarketType(todayRow.symbol),
       currentPrice: todayRow.close_price,
       change: 0,
-      changeRate: todayRow.change_rate || 0,
+      changeRate: Number(todayChangeRate.toFixed(2)),
       netBuyQty: 0,
       netBuyAmt: 0,
       netBuyAmtEok: 0,
       volume: 0,
       ratioVsVolume: 0,
-      recentReturnPct,
-      volumeSurgeRatio,
-      volumeTrendIncreasing,
-      priceVolumeDivergence,
       closeToHighRatioPct,
-      precursorScore,
     });
   });
 
-  candidates.sort((a, b) => (b.precursorScore || 0) - (a.precursorScore || 0));
+  candidates.sort((a, b) => a.changeRate - b.changeRate); // 하락폭 큰 순
   return candidates.slice(0, limit).map((item, idx) => ({ ...item, rank: idx + 1 }));
 }
 
@@ -1688,12 +1636,7 @@ export async function calculatePrecursorFromHistory(
       netBuyAmtEok: 0,
       volume: 0,
       ratioVsVolume: 0,
-      recentReturnPct: r.recent_return_pct,
-      volumeSurgeRatio: r.volume_surge_ratio,
-      volumeTrendIncreasing: r.volume_trend_increasing,
-      priceVolumeDivergence: r.price_volume_divergence,
       closeToHighRatioPct: r.close_to_high_ratio_pct,
-      precursorScore: r.precursor_score,
       asOfDateLabel: dateLabel,
     }));
 
@@ -1708,7 +1651,7 @@ export async function calculatePrecursorFromHistory(
     return {
       type: 'precursor', direction: 'buy', period: params.period || '1d', list: [],
       isMock: false, updatedAt: new Date().toISOString(), lastBatchTime: dateLabel,
-      error: `${dateLabel} 기준 20거래일치 원본 데이터가 부족해 전조 장마감을 계산할 수 없습니다.`,
+      error: `${dateLabel} 기준 전일 대비 원본 데이터가 부족해 전조(눌림후속)를 계산할 수 없습니다.`,
     };
   }
 

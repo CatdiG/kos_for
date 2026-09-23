@@ -14,7 +14,7 @@
 import React, { useState } from 'react';
 import { Search, X } from 'lucide-react';
 import { PRESET_STOCKS, TOP_50_STOCKS } from '@/lib/mockData';
-import { buildSearchStockList, getStockName, resolveSymbolOrName } from '@/lib/stockDictionary';
+import { KRX_SYMBOL_PATTERN, buildSearchStockList, filterSearchStockList, getStockName, resolveSymbolOrName } from '@/lib/stockDictionary';
 import MobileStockDetailPanel from './MobileStockDetailPanel';
 
 export default function MobileStockSearch() {
@@ -25,20 +25,10 @@ export default function MobileStockSearch() {
   const searchStockList = buildSearchStockList(PRESET_STOCKS, TOP_50_STOCKS);
   const query = inputVal.trim().toLowerCase();
 
-  const filtered = React.useMemo(() => {
-    if (!query) return [];
-    const matches = searchStockList.filter(
-      (s) => s.name.toLowerCase().includes(query) || s.symbol.includes(query)
-    );
-    matches.sort((a, b) => {
-      const aName = a.name.toLowerCase();
-      const bName = b.name.toLowerCase();
-      const aExact = aName === query ? 0 : aName.startsWith(query) ? 1 : 2;
-      const bExact = bName === query ? 0 : bName.startsWith(query) ? 1 : 2;
-      return aExact - bExact;
-    });
-    return matches.slice(0, 15);
-  }, [query, searchStockList]);
+  const filtered = React.useMemo(
+    () => filterSearchStockList(searchStockList, query, 15),
+    [query, searchStockList]
+  );
 
   const handleSelect = (sym: string, name?: string) => {
     setSymbol(sym);
@@ -50,9 +40,17 @@ export default function MobileStockSearch() {
     e.preventDefault();
     const trim = inputVal.trim();
     if (!trim) return;
-    const matched = searchStockList.find((s) => s.name.toLowerCase() === trim.toLowerCase() || s.symbol === trim);
+    const matched = searchStockList.find(
+      (s) => s.name.toLowerCase() === trim.toLowerCase() || s.symbol.toLowerCase() === trim.toLowerCase()
+    );
     const targetSymbol = matched ? matched.symbol : resolveSymbolOrName(trim, searchStockList);
-    handleSelect(targetSymbol, matched ? matched.name : getStockName(targetSymbol, trim));
+    // 해석 불가(목록에 없는 이름) - 조회하지 않고 아래 "검색 결과 없음" 안내를 띄운 채로 둔다(데스크톱과 동일)
+    if (!targetSymbol) {
+      setIsOpen(true);
+      return;
+    }
+    // 사용자가 친 글자를 "API가 준 이름" 자리로 넘기지 않는다(런타임 이름 캐시 오염 방지 - StockSearch.tsx와 동일)
+    handleSelect(targetSymbol, matched ? matched.name : getStockName(targetSymbol));
   };
 
   return (
@@ -95,6 +93,13 @@ export default function MobileStockSearch() {
                 <span className="text-[11px] font-mono text-slate-400">{s.symbol} · {s.market}</span>
               </button>
             ))}
+          </div>
+        )}
+        {isOpen && query && filtered.length === 0 && (
+          <div className="absolute left-0 right-0 top-full mt-1 bg-white dark:bg-[#1e222d] border border-slate-200 dark:border-[#2a2e39] rounded-lg shadow-lg z-40 px-3 py-2.5 text-xs text-slate-500 dark:text-[#787b86]">
+            {KRX_SYMBOL_PATTERN.test(inputVal.trim().toUpperCase())
+              ? <>종목코드 &apos;{inputVal.trim().toUpperCase()}&apos; 직조회 (엔터)</>
+              : <>&apos;{inputVal.trim()}&apos; 검색 결과 없음 (종목명 또는 6자리 코드로 검색)</>}
           </div>
         )}
       </div>

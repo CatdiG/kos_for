@@ -1,0 +1,58 @@
+name: Stock Master Apply (manual)
+
+# 종목 마스터(src/lib/data/stockMasterCache.json)를 KIS 공식 종목정보 파일로 다시 만들어 main에 커밋한다.
+# 커밋되면 Vercel이 자동 배포한다.
+#
+# 🚨 수동 실행 전용(workflow_dispatch) - 예약 실행 없음. 사용자가 Run workflow를 누를 때만 커밋·배포된다(수칙 1-8).
+#   알림은 배포된 사이트 헤더의 "종목 목록 갱신 필요" 배지가 한다(/api/stock/master-status가 스스로 비교).
+#   배지의 "GitHub에서 반영 실행" 링크가 이 워크플로 페이지로 온다 → 휴대폰으로도 PC 없이 반영 가능.
+#
+# 권한: 이 워크플로만 contents: write(커밋 push용). 저장소 설정의 "Allow GitHub Actions to create and approve
+#   pull requests"는 필요 없다(PR을 만들지 않음).
+# 안전장치: 종목 수가 5% 넘게 줄면(다운로드 잘림/형식 변경 의심) 스크립트가 파일을 쓰지 않고 실패한다.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: stock-master-apply
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      # 반영 스크립트가 사이트와 같은 TypeScript 모듈(src/lib/stockMasterKisFile.ts)을 쓰므로 typescript 설치가 필요
+      - name: 의존성 설치
+        run: npm ci --ignore-scripts
+
+      - name: 종목 마스터 재생성 (KIS 종목정보 파일 다운로드)
+        run: |
+          node scripts/regenerate_stock_master_cache.js --download --write \
+            --summary-file "$RUNNER_TEMP/summary.md"
+          cat "$RUNNER_TEMP/summary.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 변경 시 main에 커밋 (Vercel 자동 배포)
+        run: |
+          if git diff --quiet -- src/lib/data/stockMasterCache.json; then
+            echo "변경 없음 - 커밋하지 않습니다." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/lib/data/stockMasterCache.json
+          git commit -m "종목 마스터 갱신 (KIS 종목정보 파일 기준, 수동 실행)"
+          git push
+          echo "✅ main에 커밋·push 완료 - Vercel 배포가 시작됩니다." | tee -a "$GITHUB_STEP_SUMMARY"

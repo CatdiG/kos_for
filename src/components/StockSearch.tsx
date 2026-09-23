@@ -4,7 +4,7 @@ import React, { useState, useRef } from 'react';
 import { Search, Building2, TrendingUp, TrendingDown, RefreshCw } from 'lucide-react';
 import { StockInfo } from '@/lib/types';
 import { PRESET_STOCKS, TOP_50_STOCKS } from '@/lib/mockData';
-import { buildSearchStockList, getStockName, resolveSymbolOrName } from '@/lib/stockDictionary';
+import { KRX_SYMBOL_PATTERN, buildSearchStockList, filterSearchStockList, getStockName, resolveSymbolOrName } from '@/lib/stockDictionary';
 import StockBadgeStrip from './StockBadgeStrip';
 
 interface StockSearchProps {
@@ -47,20 +47,19 @@ export default function StockSearch({
 
   const query = inputVal.trim().toLowerCase();
 
-  const filtered = React.useMemo(() => {
-    if (!query) return [];
-    const matches = searchStockList.filter(
-      (s) => s.name.toLowerCase().includes(query) || s.symbol.includes(query)
-    );
-    matches.sort((a, b) => {
-      const aName = a.name.toLowerCase();
-      const bName = b.name.toLowerCase();
-      const aExact = aName === query ? 0 : aName.startsWith(query) ? 1 : 2;
-      const bExact = bName === query ? 0 : bName.startsWith(query) ? 1 : 2;
-      return aExact - bExact;
-    });
-    return matches.slice(0, 25);
-  }, [query, searchStockList]);
+  const filtered = React.useMemo(
+    () => filterSearchStockList(searchStockList, query, 25),
+    [query, searchStockList]
+  );
+
+  // 🚨 [버그 수정 - 사용자 요청: 한글 조합 중 Enter로도 선택] 기존엔 handleKeyDown 첫 줄에서 조합 중(isComposing)
+  // keydown을 통째로 무시했다. macOS Chrome은 조합 중 Enter 뒤에 조합이 끝난 Enter keydown이 한 번 더 와서
+  // 그걸로 선택됐지만, Windows Chrome은 조합 중 Enter keydown 한 번만 오기 때문에 "코윈" 입력 후 Enter를 쳐도
+  // 아무 일도 안 일어났다. 두 환경을 다 맞추기 위해:
+  //  1) 조합 중 Enter는 "대기"만 표시해두고, 조합이 확정되는 compositionend에서 선택한다(확정된 최종 글자 기준).
+  //  2) 그 선택 직후 macOS식으로 뒤따라오는 일반 Enter keydown 1회는 중복이므로 무시한다(다른 입력이 들어오면 해제).
+  const imeEnterPendingRef = useRef<boolean>(false);
+  const skipNextEnterRef = useRef<boolean>(false);
 
   // Reset selectedIndex ONLY when search query text actually changes (not on array re-creation)
   React.useEffect(() => {
@@ -100,9 +99,66 @@ export default function StockSearch({
     setSelectedIndex(-1);
   };
 
+  // 드롭다운 목록 없이 입력 문자열만으로 조회(정확 일치 → resolveSymbolOrName 순) - 조회 버튼/Enter 공통
+  const submitText = (text: string) => {
+    const trim = text.trim();
+    if (!trim) return;
+
+    // Resolve Korean stock name or code to 6-digit stock code
+    const matched = searchStockList.find(
+      (s) => s.name.toLowerCase() === trim.toLowerCase() || s.symbol.toLowerCase() === trim.toLowerCase()
+    );
+    const targetSymbol = matched ? matched.symbol : resolveSymbolOrName(trim, searchStockList);
+    // 해석 불가(목록에 없는 이름) - 조회하지 않고 드롭다운의 "검색 결과 없음" 안내를 띄운 채로 둔다
+    if (!targetSymbol) {
+      setIsOpen(true);
+      return;
+    }
+    // 🚨 [버그 수정] getStockName의 두 번째 인자는 "KIS API가 준 이름" 자리라, 여기에 사용자가 친 글자(trim)를
+    // 넘기면 "삼성" → 삼성전자 부분일치 선택 시 "삼성"이 005930의 이름으로 런타임 캐시에 등록됐다.
+    const displayName = matched ? matched.name : getStockName(targetSymbol);
+    handleSelect(targetSymbol, displayName);
+  };
+
+  // Enter 선택 공통: 방향키로 고른 항목 → 없으면 드롭다운 첫 항목 → 드롭다운이 비었으면 입력 문자열로 조회
+  const commitEnter = (text: string) => {
+    const list = filterSearchStockList(searchStockList, text, 25);
+    if (selectedIndex >= 0 && selectedIndex < list.length) {
+      handleSelect(list[selectedIndex].symbol, list[selectedIndex].name);
+    } else if (list.length > 0) {
+      handleSelect(list[0].symbol, list[0].name);
+    } else {
+      submitText(text);
+    }
+  };
+
+  // Windows 한글 IME는 조합 중 Enter의 e.key를 'Process'로 줄 수 있어 물리 키(e.code)도 함께 본다
+  const isEnterKey = (e: React.KeyboardEvent<HTMLInputElement>) =>
+    e.key === 'Enter' || e.code === 'Enter' || e.code === 'NumpadEnter';
+
+  const handleCompositionEnd = (e: React.CompositionEvent<HTMLInputElement>) => {
+    if (!imeEnterPendingRef.current) return;
+    imeEnterPendingRef.current = false;
+    skipNextEnterRef.current = true;
+    commitEnter(e.currentTarget.value);
+  };
+
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    // Ignore keydown during Korean IME composition to prevent double-firing
-    if (e.nativeEvent.isComposing) return;
+    // 조합 중 keydown은 기존처럼 처리하지 않되, Enter였다면 compositionend에서 선택하도록 표시만 해둔다.
+    // (여기서 preventDefault하면 일부 환경에서 IME 확정 자체가 막힐 수 있어 호출하지 않는다)
+    if (e.nativeEvent.isComposing) {
+      if (isEnterKey(e)) imeEnterPendingRef.current = true;
+      return;
+    }
+
+    // compositionend에서 이미 선택을 끝낸 뒤 macOS식으로 뒤따라온 Enter - 중복 선택/폼 제출 방지
+    if (skipNextEnterRef.current) {
+      skipNextEnterRef.current = false;
+      if (isEnterKey(e)) {
+        e.preventDefault();
+        return;
+      }
+    }
 
     if (e.key === 'Escape') {
       e.preventDefault();
@@ -144,16 +200,7 @@ export default function StockSearch({
       return;
     }
 
-    const trim = inputVal.trim();
-    if (!trim) return;
-
-    // Resolve Korean stock name or code to 6-digit stock code
-    const matched = searchStockList.find(
-      (s) => s.name.toLowerCase() === trim.toLowerCase() || s.symbol === trim
-    );
-    const targetSymbol = matched ? matched.symbol : resolveSymbolOrName(trim, searchStockList);
-    const displayName = matched ? matched.name : getStockName(targetSymbol, trim);
-    handleSelect(targetSymbol, displayName);
+    submitText(inputVal);
   };
 
   const isUp = (stockInfo?.change || 0) >= 0;
@@ -169,11 +216,13 @@ export default function StockSearch({
               type="text"
               value={inputVal}
               onChange={(e) => {
+                skipNextEnterRef.current = false;
                 setInputVal(e.target.value);
                 setIsOpen(true);
               }}
               onFocus={() => setIsOpen(true)}
               onKeyDown={handleKeyDown}
+              onCompositionEnd={handleCompositionEnd}
               placeholder="한글 종목명 또는 6자리 코드 검색 (예: 지투파워, 삼성전자, 388050)"
               className="w-full pl-10 pr-24 py-2.5 bg-slate-50 dark:bg-[#1e222d] border border-slate-200 dark:border-[#2a2e39] focus:border-red-500/80 rounded-lg text-sm text-slate-900 dark:text-[#e0e3eb] placeholder:text-slate-400 dark:placeholder-[#787b86] outline-none transition font-semibold"
             />
@@ -227,7 +276,9 @@ export default function StockSearch({
                 })
               ) : (
                 <div className="px-4 py-3 text-xs text-slate-500 dark:text-[#787b86]">
-                  검색어 &apos;{inputVal}&apos; 직조회 (엔터 또는 조회 클릭)
+                  {KRX_SYMBOL_PATTERN.test(inputVal.trim().toUpperCase())
+                    ? <>종목코드 &apos;{inputVal.trim().toUpperCase()}&apos; 직조회 (엔터 또는 조회 클릭)</>
+                    : <>&apos;{inputVal.trim()}&apos; 검색 결과 없음 (종목명 또는 6자리 코드로 검색)</>}
                 </div>
               )}
             </div>

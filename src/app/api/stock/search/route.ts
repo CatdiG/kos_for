@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { PRESET_STOCKS, TOP_50_STOCKS } from '@/lib/mockData';
-import { buildSearchStockList, resolveSymbolOrName } from '@/lib/stockDictionary';
+import { buildSearchStockList, filterSearchStockList, resolveSymbolOrName } from '@/lib/stockDictionary';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -20,21 +20,11 @@ export async function GET(request: NextRequest) {
     }
 
     const queryTrim = query.trim();
-    const queryLower = queryTrim.toLowerCase();
 
     const matchedSymbol = resolveSymbolOrName(queryTrim, searchList);
 
-    const matches = searchList.filter(
-      (s) => s.name.toLowerCase().includes(queryLower) || s.symbol.includes(queryLower)
-    );
-
-    matches.sort((a, b) => {
-      const aName = a.name.toLowerCase();
-      const bName = b.name.toLowerCase();
-      const aExact = aName === queryLower ? 0 : aName.startsWith(queryLower) ? 1 : 2;
-      const bExact = bName === queryLower ? 0 : bName.startsWith(queryLower) ? 1 : 2;
-      return aExact - bExact;
-    });
+    // count는 기존처럼 전체 매칭 수를 준다(limit 없이 한 번 필터 후 앞 30개만 결과로 반환)
+    const matches = filterSearchStockList(searchList, queryTrim, Number.MAX_SAFE_INTEGER);
 
     return NextResponse.json({
       query: queryTrim,
