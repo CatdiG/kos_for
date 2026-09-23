@@ -953,9 +953,9 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
     setExpandedSymbols({});
   }, [activeTab, surgingMode, market, direction, period, overlapMode, overlapLimit, weights, creditOnly, entryReadyOnly, sortField, sortAsc, quietAccumFilter]);
 
+  // 🚨 [순서 변경 - 사용자 요청: "급등주 뒤에 관심종목, 그 뒤에 장마감 후보군", 2026-09-23]
   const tabs: { id: RankingType; label: string; icon: any; isRealtime: boolean; badge?: string }[] = [
     { id: 'surging', label: '급등주', icon: Rocket, isRealtime: true, badge: 'LIVE' },
-    { id: 'comprehensive', label: '단타 종합랭킹', icon: Trophy, isRealtime: true, badge: 'SCORE' },
     // 🚨 [기능 추가 - 사용자 요청: "관심종목으로 누른 종목들 관심종목으로 따로 빼줘. 단타종합랭킹이랑
     // 장마감 후보군 사이에"] 종목 상세(RankingStockDetailChart)의 "실시간" 토글로 등록한 관심종목
     // (ws_watchlist, 오라클 웹소켓 브릿지 구독 대상과 동일 목록)의 현재가를 보여주는 탭.
@@ -965,6 +965,7 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
     // 합치고 내부 토글(급등/발굴/전조)로 전환한다 - isPostMarketGroup/POSTMARKET_SUBMODES 참고.
     // id는 postmarket을 대표값으로 쓴다(처음 클릭 시 기본 서브모드).
     { id: 'postmarket', label: '장마감 후보군', icon: Target, isRealtime: false, badge: 'NEW' },
+    { id: 'comprehensive', label: '단타 종합랭킹', icon: Trophy, isRealtime: true, badge: 'SCORE' },
     { id: 'foreign', label: '외국인', icon: Globe2, isRealtime: true },
     { id: 'organ', label: '기관', icon: Landmark, isRealtime: true },
     { id: 'program', label: '프로그램', icon: Cpu, isRealtime: false },
@@ -1268,7 +1269,22 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
             // 넓은 화면에서 서브모드 pill/VWAP버튼/피봇버튼 3개를 양끝으로 흩어놓고 있었다. 수급교집합
             // 탭(아래쪽 "Dedicated Sub-Controls Bar")은 이미 이 문제를 피해 gap-2만 쓰고 있으니 동일하게 맞춘다.
             <div className="flex flex-wrap items-center gap-2 pt-2.5 border-t border-red-100 dark:border-red-950/40">
+              {/* 🚨 [순서 변경 - 사용자 요청: "급등주 교집합을 제일 앞으로", 2026-09-23] 실시간 감시
+                  토글과 겹침기준 토글(아래 surgingMode==='overlap' 블록)은 그대로 두고, 서브모드 pill
+                  4개 중 급등주 교집합만 맨 앞으로 옮긴다. */}
               <div className="bg-red-50 dark:bg-red-950/40 p-1 rounded-xl flex items-center text-xs font-medium border border-red-200 dark:border-red-800/40 max-w-full overflow-hidden gap-0.5 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => handleSurgingModeChange('overlap')}
+                  className={`px-2.5 py-1 rounded-lg transition whitespace-nowrap cursor-pointer text-xs font-bold flex items-center gap-1 shrink-0 ${
+                    surgingMode === 'overlap'
+                      ? 'bg-gradient-to-r from-red-600 to-amber-600 text-white shadow-xs font-black'
+                      : 'text-red-700 dark:text-red-300 hover:text-red-900'
+                  }`}
+                >
+                  <Flame className="w-3 h-3 text-amber-300 shrink-0" />
+                  급등주 교집합 ({overlapMinCount}개+)
+                </button>
                 <button
                   type="button"
                   onClick={() => handleSurgingModeChange('fluctuation')}
@@ -1304,18 +1320,6 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
                 >
                   <Coins className="w-3 h-3 shrink-0" />
                   거래대금 상위
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleSurgingModeChange('overlap')}
-                  className={`px-2.5 py-1 rounded-lg transition whitespace-nowrap cursor-pointer text-xs font-bold flex items-center gap-1 shrink-0 ${
-                    surgingMode === 'overlap'
-                      ? 'bg-gradient-to-r from-red-600 to-amber-600 text-white shadow-xs font-black'
-                      : 'text-red-700 dark:text-red-300 hover:text-red-900'
-                  }`}
-                >
-                  <Flame className="w-3 h-3 text-amber-300 shrink-0" />
-                  급등주 교집합 ({overlapMinCount}개+)
                 </button>
                 {/* 🎯 [기능 추가 - 사용자 요청: "급등주 다른 토글은 실시간 감시 되는데 급등주 교집합은
                     안되잖냐.. 다 되게 해줘야지", "토글들 계속 껏다켰다 하기 너무 힘든데"] VWAP·피봇 감시
@@ -1402,7 +1406,7 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
                   }`}
                 >
                   <Radar className="w-3 h-3 shrink-0" />
-                  전조
+                  눌림후속
                 </button>
               </div>
               {/* 🎯 [기능 추가 - 사용자 요청: "장마감 후보들은 언제 업데이트 되는거야? 마지막 업데이트
@@ -2032,17 +2036,20 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
                         <th className="p-2.5 text-center whitespace-nowrap sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]" title="5개 지표 백분위 평균 - 아직 실측 백테스트 전 잠정치">종합점수</th>
                       </>
                     ) : activeTab === 'precursor' ? (
-                      // 🚨 [기능 추가 - "전조 장마감" 탭] 아직 크게 안 오른 상태에서 거래량만 조용히
-                      // 늘고 있는지를 보는 4가지 지표 전용 컬럼.
+                      // 🚨 [전면 재정의 - "눌림후속"] 기존 4개 지표 점수식은 202거래일 실측에서 다음날
+                      // 수익률과 상관계수 사실상 0으로 확인돼 제거(수칙 1-7) - 점수 없이 조건 2개
+                      // (당일하락<-0.5%, 종가/고가 94~97%) 충족 여부만 보여준다.
+                      // 🎯 [컬럼 추가 - 사용자 요청, 2026-09-23] 전체 유니버스 백테스트(200거래일 워크
+                      // 포워드 9/9)에서 확정치 기준 "당일 외국인 순매수비율 상위20%"가 가장 안정적인
+                      // 요인이었다. 다만 라이브 14:40 크론 시점엔 확정치가 아직 없고 14:30 가집계
+                      // (HHPTJ04160200) 추정치만 있다 - 백테스트(확정치)와 라이브(가집계)가 다른 데이터
+                      // 소스임을 헷갈리지 않도록 컬럼명에 "가집계"를 명시한다(수칙 1-9 취지 - 오인 방지).
                       <>
                         <th className="p-2.5 text-right whitespace-nowrap sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]">현재가</th>
-                        <th className="p-2.5 text-right whitespace-nowrap sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]">등락률</th>
-                        <th className="p-2.5 text-right whitespace-nowrap sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]" title="최근 5거래일 누적 등락률 - 이미 급등한 종목은 후보에서 제외됨">최근5일 등락</th>
-                        <th className="p-2.5 text-right whitespace-nowrap sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]" title="오늘 거래대금 ÷ 최근 20거래일 평균">거래대금 배율</th>
-                        <th className="p-2.5 text-center whitespace-nowrap sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]" title="최근 3거래일 평균 거래량이 그 이전 3거래일보다 높은지">증가 추세</th>
-                        <th className="p-2.5 text-right whitespace-nowrap sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]" title="거래대금 배율 대비 가격변동 - 클수록 거래는 느는데 가격은 안 움직임">다이버전스</th>
-                        <th className="p-2.5 text-right whitespace-nowrap sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]" title="현재가 ÷ 당일 고가">고가유지</th>
-                        <th className="p-2.5 text-center whitespace-nowrap sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]" title="4개 조건 배점 합계 - 아직 실측 백테스트 전 잠정치">종합점수</th>
+                        <th className="p-2.5 text-right whitespace-nowrap sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]" title="조건1: -0.5% 미만">당일 등락률</th>
+                        <th className="p-2.5 text-right whitespace-nowrap sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]" title="조건2: 94~97% (당일 하락 중 어중간하게 반등도 붕괴도 아닌 위치에서 마감)">종가/고가</th>
+                        <th className="p-2.5 text-right whitespace-nowrap sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]" title="14:30 장중 가집계(추정치) 기준 - 18:00+ 확정치와 다를 수 있음, 백테스트는 확정치 기준">외국인 가집계 순매수비율</th>
+                        <th className="p-2.5 text-right whitespace-nowrap sticky top-0 z-20 bg-slate-100 dark:bg-[#1a1e29]" title="오늘 눌림후속 후보군 내 외국인 가집계 순매수비율 백분위 순위 (낮을수록 상위)">외국인 순위(%)</th>
                       </>
                     ) : activeTab === 'surging' || activeTab === 'postmarket' || activeTab === 'watchlist' ? (
                       activeTab === 'postmarket' ? (
@@ -2763,35 +2770,26 @@ export default function InvestorRankingTable({ selectedSymbol: propSelectedSymbo
                               {item.currentPrice.toLocaleString()} 원
                             </td>
                             <td className="p-2.5 text-right font-bold font-mono whitespace-nowrap">
-                              <span className={item.changeRate >= 0 ? 'text-red-600 dark:text-red-400' : 'text-blue-600 dark:text-blue-400'}>
-                                {item.changeRate >= 0 ? '+' : ''}{item.changeRate.toFixed(2)}%
+                              <span className="text-blue-600 dark:text-blue-400">
+                                {item.changeRate.toFixed(2)}%
                               </span>
                             </td>
                             <td className="p-2.5 text-right font-mono text-slate-700 dark:text-slate-300 whitespace-nowrap">
-                              {item.recentReturnPct != null ? (
-                                <span className={item.recentReturnPct >= 0 ? 'text-red-600 dark:text-red-400' : 'text-blue-600 dark:text-blue-400'}>
-                                  {item.recentReturnPct >= 0 ? '+' : ''}{item.recentReturnPct.toFixed(2)}%
+                              {item.closeToHighRatioPct != null ? `${item.closeToHighRatioPct.toFixed(2)}%` : '-'}
+                            </td>
+                            <td className="p-2.5 text-right font-mono whitespace-nowrap">
+                              {item.foreignRatioEstimate != null ? (
+                                <span className={item.foreignRatioEstimate >= 0 ? 'text-red-600 dark:text-red-400' : 'text-blue-600 dark:text-blue-400'}>
+                                  {item.foreignRatioEstimate >= 0 ? '+' : ''}{item.foreignRatioEstimate.toFixed(2)}%
                                 </span>
                               ) : '-'}
                             </td>
                             <td className="p-2.5 text-right font-mono text-slate-700 dark:text-slate-300 whitespace-nowrap">
-                              {item.volumeSurgeRatio != null ? `${item.volumeSurgeRatio.toFixed(2)}배` : '-'}
-                            </td>
-                            <td className="p-2.5 text-center whitespace-nowrap">
-                              {item.volumeTrendIncreasing != null ? (
-                                item.volumeTrendIncreasing
-                                  ? <span className="text-[10px] px-2 py-0.5 rounded-md font-bold bg-red-50 dark:bg-red-950/50 text-red-700 dark:text-red-300 border border-red-200 dark:border-red-800/60">증가 ↑</span>
-                                  : <span className="text-[10px] text-slate-400 dark:text-slate-500">-</span>
+                              {item.foreignRatioEstimateRankPct != null ? (
+                                <span className={item.foreignRatioEstimateTop20 ? 'font-bold text-amber-600 dark:text-amber-400' : ''}>
+                                  상위 {item.foreignRatioEstimateRankPct.toFixed(1)}%
+                                </span>
                               ) : '-'}
-                            </td>
-                            <td className="p-2.5 text-right font-mono text-slate-700 dark:text-slate-300 whitespace-nowrap">
-                              {item.priceVolumeDivergence != null ? item.priceVolumeDivergence.toFixed(2) : '-'}
-                            </td>
-                            <td className="p-2.5 text-right font-mono text-slate-700 dark:text-slate-300 whitespace-nowrap">
-                              {item.closeToHighRatioPct != null ? `${item.closeToHighRatioPct.toFixed(1)}%` : '-'}
-                            </td>
-                            <td className="p-2.5 text-center font-bold text-slate-900 dark:text-white whitespace-nowrap">
-                              {item.precursorScore != null ? item.precursorScore.toFixed(1) : '-'}
                             </td>
                           </>
                         ) : activeTab === 'surging' || activeTab === 'postmarket' || activeTab === 'watchlist' ? (

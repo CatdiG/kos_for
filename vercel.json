@@ -39,7 +39,7 @@
     },
     {
       "path": "/api/cron/collect-raw-daily-data?startIdx=148&endIdx=295",
-      "schedule": "30 10 * * 1-5"
+      "schedule": "40 9 * * 1-5"
     },
     {
       "path": "/api/cron/archive-3m-candles?startIdx=180&endIdx=240",
@@ -64,6 +64,10 @@
     {
       "path": "/api/cron/collect-raw-daily-data?startIdx=148&endIdx=295",
       "schedule": "30 22 * * 1-5"
+    },
+    {
+      "path": "/api/cron/compute-precursor-confirmed-match",
+      "schedule": "35 9 * * 1-5"
     }
   ]
 }

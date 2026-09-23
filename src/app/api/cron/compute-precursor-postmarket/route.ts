@@ -55,13 +55,12 @@ async function handleComputePrecursor(request: NextRequest) {
       market: item.market || 'KOSPI',
       current_price: item.currentPrice,
       change_rate: item.changeRate,
-      recent_return_pct: item.recentReturnPct,
-      volume_surge_ratio: item.volumeSurgeRatio,
-      volume_trend_increasing: item.volumeTrendIncreasing,
-      price_volume_divergence: item.priceVolumeDivergence,
       close_to_high_ratio_pct: item.closeToHighRatioPct,
-      precursor_score: item.precursorScore,
       rank: item.rank,
+      // 🎯 [실험 추가 - "가집계 vs 확정치 재현율 검증" 1단계, 2026-09-23]
+      foreign_ratio_estimate: item.foreignRatioEstimate,
+      foreign_ratio_estimate_top20: item.foreignRatioEstimateTop20,
+      foreign_ratio_estimate_rank_pct: item.foreignRatioEstimateRankPct,
     }));
 
     const saved = await savePrecursorSnapshots(records);

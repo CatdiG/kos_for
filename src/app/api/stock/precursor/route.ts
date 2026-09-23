@@ -45,12 +45,10 @@ export async function GET(request: NextRequest) {
       volume: 0,
       ratioVsVolume: 0,
       type: 'precursor',
-      recentReturnPct: r.recent_return_pct,
-      volumeSurgeRatio: r.volume_surge_ratio,
-      volumeTrendIncreasing: r.volume_trend_increasing,
-      priceVolumeDivergence: r.price_volume_divergence,
       closeToHighRatioPct: r.close_to_high_ratio_pct,
-      precursorScore: r.precursor_score,
+      foreignRatioEstimate: r.foreign_ratio_estimate,
+      foreignRatioEstimateTop20: r.foreign_ratio_estimate_top20,
+      foreignRatioEstimateRankPct: r.foreign_ratio_estimate_rank_pct,
     }));
 
     // 🚨 [버그 수정 - 사용자 지적: "장마감 후보군 신용데이터는 다 똑같은걸 쓸텐데 왜 신용이 되는지

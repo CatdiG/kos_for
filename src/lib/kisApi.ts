@@ -5,6 +5,7 @@ import os from 'os';
 import { InvestorTrendDay, InvestorTrendResponse, KisTokenResponse, ProgramTradeIntradayPoint, ProgramTradeSummary, SupplySummary, TrendPeriod, InvestorRankingResponse, RankingItem, RankingDirection, RankingPeriod, RankingType, OverlapInvestorRank, MarketType, SurgingRankItem, ScoreBreakdown, SurgingMode, isEtfOrEtn, IntradayCandlePoint, IntradayPivotFibonacciLevels, IntradayChartResponse, IndexTrendResponse, IndexTrendDay, StockBadgeItem, StockBadgeSummaryResponse, VwapReclaimSignal, PivotReclaimSignal, PivotLevelSignal, PriceLegSignal } from './types';
 import { getStockName, resolveStockPriceAndChange, updateRuntimeStockPrice, registerRuntimeStockName, resolveMarketType, computeUnifiedStatusBadge, getSettledAsOfDateLabel, getKrxEstimateSlotInfo, findSplitSafeStartIndex, roundToKrxTick, computeRecentVolumeRatio } from './mockData';
 import { TOP_300_STOCKS } from './stockUniverse300';
+import { getMasterStockList } from './stockDictionary';
 import { fetchTokenFromSupabase, fetchCreditBatchFromSupabase, saveCreditBatchToSupabase, CreditBatchRow, fetchIntraday3mCandlesFromSupabase, fetchFreshIntraday3mCandlesFromSupabase, saveIntraday3mCandlesToSupabase, isSymbolInWsWatchlist, fetchConsecutiveOverlapWatch, upsertConsecutiveOverlapWatch, fetchDailyOverlapFirstSeen, insertDailyOverlapFirstSeenIfMissing, fetchLatestActiveBeforeDate, upsertSharedRankCache, fetchSharedRankCacheBatch, fetchWatchSignalState, upsertWatchSignalState, logReclaimSignalEvent, updateReclaimSignalOutcome } from './supabase';
 // mockData.ts도 함께 써야 해서(runtimePriceCache 공유) kisApi.ts↔mockData.ts 순환 참조를 피하려고
 // getGlobalMap 정의를 별도 파일(globalCache.ts)로 옮겼다 - 기존 호출부(batchCollector.ts 등)가 계속
@@ -863,7 +864,30 @@ export async function fetchKisInvestorTrend(
  * KIS OpenAPI HHPTJ04160200: 종목별 외인기관 추정가집계 조회
  * (개별 종목에 대해 10:00 1차, 11:30 2차, 13:20 3차, 14:30 4차 잠정치를 장중에 실시간 제공)
  */
+// 🚨 [버그 수정 - 사용자 지적: "그런것들이 더 있나 알아봐"] 기존엔 이 함수가 kisQueue/fetchWithRetry
+// 어디도 안 거치고 fetch 1회만 쏘고 실패하면(!res.ok 포함) 그냥 null로 끝났다 - 발굴 탭 "매집 주체"
+// 배지(absorptionBadge)가 근거 없이 "데이터 없음"으로 빠지는 원인. AbortSignal.timeout도 없었다 - 이제
+// kisQueue로 감싸므로(c2b923c에서 고친 "타임아웃 없는 큐 호출 = 큐 영구 마비" 재발 방지 위해) 반드시
+// 같이 추가한다(수칙 1-6, 6곳 기존 패턴과 동일).
 export async function fetchKisInvestorTrendEstimate(symbol: string): Promise<{
+  foreignQty: number;
+  organQty: number;
+  step: string;
+  timeStr: string;
+} | null> {
+  try {
+    return await kisQueue.enqueue(
+      () => fetchWithRetry(() => executeKisInvestorTrendEstimateFetch(symbol)),
+      'LOW',
+      `investor-trend-estimate-${symbol}`
+    );
+  } catch (err) {
+    console.warn(`[Investor Trend Estimate Queue Error] ${symbol}:`, (err as any)?.message || err);
+    return null;
+  }
+}
+
+async function executeKisInvestorTrendEstimateFetch(symbol: string): Promise<{
   foreignQty: number;
   organQty: number;
   step: string;
@@ -890,40 +914,42 @@ export async function fetchKisInvestorTrendEstimate(symbol: string): Promise<{
 
   const url = `${baseUrl}/uapi/domestic-stock/v1/quotations/investor-trend-estimate?${qs}`;
 
-  try {
-    const res = await fetch(url, {
-      method: 'GET',
-      headers: {
-        'Content-Type': 'application/json; charset=utf-8',
-        authorization: `Bearer ${token}`,
-        appkey: appKey,
-        appsecret: appSecret,
-        tr_id: 'HHPTJ04160200',
-        custtype: 'P',
-      },
-      cache: 'no-store',
-    });
+  const res = await fetch(url, {
+    method: 'GET',
+    headers: {
+      'Content-Type': 'application/json; charset=utf-8',
+      authorization: `Bearer ${token}`,
+      appkey: appKey,
+      appsecret: appSecret,
+      tr_id: 'HHPTJ04160200',
+      custtype: 'P',
+    },
+    cache: 'no-store',
+    signal: AbortSignal.timeout(8000),
+  });
 
-    if (!res.ok) return null;
-    const json = await res.json().catch(() => null);
-    if (json && json.rt_cd === '0' && Array.isArray(json.output2) && json.output2.length > 0) {
-      const latest = json.output2[0]; // 가장 최신 차수 수치
-      const foreignQty = parseInt(latest.frgn_fake_ntby_qty || '0', 10);
-      const organQty = parseInt(latest.orgn_fake_ntby_qty || '0', 10);
-
-      // 단일 공통 함수(getKrxEstimateSlotInfo)를 통해 현재 KST 시각 기준 이미 경과한 차수 판정 (미래 시간 노출 원천 차단)
-      const slotInfo = getKrxEstimateSlotInfo();
-      return {
-        foreignQty,
-        organQty,
-        step: slotInfo.currentSlot.step,
-        timeStr: slotInfo.currentSlot.time,
-      };
-    }
-  } catch (err) {
-    console.error(`[HHPTJ04160200 Error] symbol=${symbol}:`, err);
+  if (!res.ok) throw new Error(`[KIS HTTP Error] Status ${res.status} (investor-trend-estimate ${symbol})`);
+  const json = await res.json().catch(() => null);
+  if (!json) throw new Error(`[KIS Parse Error] investor-trend-estimate ${symbol}`);
+  if (json.rt_cd !== '0') {
+    throw new Error(`[KIS rt_cd Error] ${json.msg1 || json.rt_cd} (investor-trend-estimate ${symbol})`);
   }
-  return null;
+  // rt_cd='0'(정상처리)인데 output2가 비어있는 건 "아직 그 차수 추정치가 안 나왔음"(예: 10:00 전)일
+  // 뿐인 정당한 상태다 - 에러가 아니므로 재시도 대상에서 제외한다(수칙 1-3).
+  if (!Array.isArray(json.output2) || json.output2.length === 0) return null;
+
+  const latest = json.output2[0]; // 가장 최신 차수 수치
+  const foreignQty = parseInt(latest.frgn_fake_ntby_qty || '0', 10);
+  const organQty = parseInt(latest.orgn_fake_ntby_qty || '0', 10);
+
+  // 단일 공통 함수(getKrxEstimateSlotInfo)를 통해 현재 KST 시각 기준 이미 경과한 차수 판정 (미래 시간 노출 원천 차단)
+  const slotInfo = getKrxEstimateSlotInfo();
+  return {
+    foreignQty,
+    organQty,
+    step: slotInfo.currentSlot.step,
+    timeStr: slotInfo.currentSlot.time,
+  };
 }
 
 async function executeKisInvestorTrendFetch(
@@ -1885,12 +1911,15 @@ async function executeKisDailyPriceFetch(
     signal: AbortSignal.timeout(8000),
   });
 
+  // 🚨 [버그 수정 - 사용자 지적: "눌림저항 -인 애들은 뭐야?"] 이 "5xx 무재시도" 패턴은 원래
+  // executeKisCreditAvailableFetch(1803행)의 신용상태 배치용으로 만들어졌다 - 거긴 creditStatusCache에
+  // 장기 TTL로 캐시되고 랭킹 테이블이 주기적으로 재조회하면서 자연스럽게 재시도되니 5xx를 그냥 넘겨도
+  // 무해했다. 그런데 이 함수(발굴/전조 enrichment에서도 재사용됨, 5019/5258/5518행)는 하루 한 번만
+  // 도는 스냅샷 배치라 그런 자연 재시도가 없다 - 5xx를 조용히 넘기면 다음날 크론까지 "-"로 영구히
+  // 남는다(실측: 09/22 14:30 배치에서 SFA반도체·한전기술·삼성전기 등 6종목 확인, 재호출 시 전부 정상).
+  // fetchWithRetry(최대 3회, 600ms 백오프)가 이미 감싸고 있으니 그냥 throw로 맡긴다(수칙 1-6).
   if (!res.ok) {
-    if (res.status >= 500) {
-      console.warn(`[KIS Server ${res.status} Temporary Failure] ${symbol} 당일 시세 조회 한투 서버 오류. 백그라운드 안전 스킵됨.`);
-      return undefined;
-    }
-    throw new Error(`[KIS HTTP Error] Status ${res.status}`);
+    throw new Error(`[KIS HTTP Error] Status ${res.status} (daily-price ${symbol})`);
   }
 
   const json = await res.json();
@@ -4906,7 +4935,15 @@ const DISCOVERY_ENRICH_DELAY_MS = 900;
 // 슬롯을 먼저 차지해 진짜 발굴 후보를 밀어내는 문제까지 함께 해결된다.
 const DISCOVERY_MAX_TODAY_CHANGE_PCT = 15; // 오늘 등락률이 이보다 크면 "이미 급등" - 발굴 후보에서 제외(급등 탭에서 보게 됨)
 
-/** 등락률순위/거래량·거래대금순위 TR을 여러 정렬 기준으로 반복 호출해 넓은 후보군을 모은다(실측: scratch/diagnose_discovery_universe.js). */
+// 🚨 [구조 재설계 - 사용자 지적: "발굴/전조가 이미 급등주 탭에 뜬 종목을 재탕한다"] 실측 확인 결과
+// (2026-09-23) 발굴 후보 31개 중 31개(100%) 전부 급등주 탭(등락률/거래량/거래대금 서브모드)에 이미
+// 떠 있었다 - 원인은 시드풀이 급등주 탭과 동일한 절대순위 TR(등락률순위 FHPST01700000, 거래량·거래대금
+// FID_BLNG_CLS_CODE 0/3)을 그대로 재사용했기 때문이다. 시가총액이 큰 종목은 "안 튀어도" 절대순위
+// top-N에 항상 걸려서, "아직 눈에 안 띈 종목 발굴"이라는 원래 취지와 정반대로 동작했다. 절대순위
+// 2종(등락률순위 전체, 거래량·거래대금)을 시드에서 완전히 빼고, 그 종목 자체의 평소 대비 상대적
+// 이상 징후만 보는 상대순위 2종(거래회전율·평균거래량대비, FID_BLNG_CLS_CODE 1/2)만 남긴다.
+/** 거래회전율·평균거래량대비(상대순위)만으로 후보군을 모은다 - 절대순위(등락률/거래량/거래대금)는
+ * 급등주 탭과 겹치는 원인이라 시드에서 제외한다(수칙 1-6: 아래 전조 시드풀과 동일 원칙). */
 async function fetchKisDiscoverySeedPool(market: MarketType): Promise<RankingItem[]> {
   const iscdList = market === 'KOSPI' ? ['0001'] : market === 'KOSDAQ' ? ['1001'] : ['0001', '1001'];
   const itemMap = new Map<string, RankingItem>();
@@ -4918,16 +4955,10 @@ async function fetchKisDiscoverySeedPool(market: MarketType): Promise<RankingIte
   };
 
   for (const iscd of iscdList) {
-    // FID_RANK_SORT_CLS_CODE: 0=상승율, 1=하락율, 2=시가대비상승율, 3=상한가/하한가 근접 등 - 값마다
-    // 서로 다른 상위 30종목을 준다(실측 확인, 4는 3과 중복이라 제외).
-    for (const sortCode of ['0', '1', '2', '3']) {
-      await enforceRateLimit();
-      const list = await fetchKisDiscoveryRankingSlice('FHPST01700000', iscd, 'FID_RANK_SORT_CLS_CODE', sortCode);
-      collect(list);
-    }
-    // FID_BLNG_CLS_CODE: 0=거래량, 1=거래회전율, 2=평균거래량대비, 3=거래대금 등 - 마찬가지로 값마다
-    // 서로 다른 상위 30종목(4는 3과 중복이라 제외).
-    for (const blngCode of ['0', '1', '2', '3']) {
+    // FID_BLNG_CLS_CODE: 1=거래회전율, 2=평균거래량대비 - 둘 다 "그 종목 평소 대비" 상대지표라 대형주가
+    // 절대치만으로 항상 상위를 차지하는 문제가 없다. 0(거래량)·3(거래대금)은 급등주 탭과 동일한 절대
+    // 순위라 제외.
+    for (const blngCode of ['1', '2']) {
       await enforceRateLimit();
       const list = await fetchKisDiscoveryRankingSlice('FHPST01710000', iscd, 'FID_BLNG_CLS_CODE', blngCode);
       collect(list);
@@ -4937,7 +4968,25 @@ async function fetchKisDiscoverySeedPool(market: MarketType): Promise<RankingIte
   return Array.from(itemMap.values()).filter((item) => !isEtfOrEtn(item.name));
 }
 
+// 🚨 [버그 수정 - 사용자 지적: "그런것들이 더 있나 알아봐"] 기존엔 !res.ok/rt_cd 오류를 재시도 없이
+// 조용히 []로 삼켰다 - 이건 발굴 탭의 "후보 풀 자체"를 만드는 단계라, 한 슬라이스만 실패해도 원래
+// 후보에 들었어야 할 종목이 애초에 목록에 안 잡힌다(눌림저항/거래대금배율처럼 "-"로라도 보이지 않고
+// 완전히 무소식이라 더 안 좋다). fetchWithRetry(최대 3회, 600ms 백오프)로 감싸서 재시도하게 한다.
 async function fetchKisDiscoveryRankingSlice(
+  trId: 'FHPST01700000' | 'FHPST01710000',
+  iscd: string,
+  paramKey: 'FID_RANK_SORT_CLS_CODE' | 'FID_BLNG_CLS_CODE',
+  paramValue: string
+): Promise<RankingItem[]> {
+  try {
+    return await fetchWithRetry(() => executeKisDiscoveryRankingSliceFetch(trId, iscd, paramKey, paramValue));
+  } catch (e) {
+    console.warn(`[Discovery Seed Slice Error] ${trId}/${paramKey}=${paramValue}/${iscd}:`, (e as any)?.message || e);
+    return [];
+  }
+}
+
+async function executeKisDiscoveryRankingSliceFetch(
   trId: 'FHPST01700000' | 'FHPST01710000',
   iscd: string,
   paramKey: 'FID_RANK_SORT_CLS_CODE' | 'FID_BLNG_CLS_CODE',
@@ -4958,60 +5007,61 @@ async function fetchKisDiscoveryRankingSlice(
     ? `${baseUrl}/uapi/domestic-stock/v1/ranking/fluctuation?FID_COND_MRKT_DIV_CODE=J&FID_COND_SCR_DIV_CODE=20170&FID_INPUT_ISCD=${iscd}&FID_RANK_SORT_CLS_CODE=${paramKey === 'FID_RANK_SORT_CLS_CODE' ? paramValue : '0'}&FID_PRC_CLS_CODE=0&FID_INPUT_PRICE_1=0&FID_INPUT_PRICE_2=0&FID_VOL_CNT=0&FID_TRGT_CLS_CODE=0&FID_TRGT_EXLS_CLS_CODE=0&FID_DIV_CLS_CODE=0&FID_INPUT_CNT_1=0&FID_RSFL_RATE1=0&FID_RSFL_RATE2=0`
     : `${baseUrl}/uapi/domestic-stock/v1/quotations/volume-rank?FID_COND_MRKT_DIV_CODE=J&FID_COND_SCR_DIV_CODE=20171&FID_INPUT_ISCD=${iscd}&FID_DIV_CLS_CODE=0&FID_BLNG_CLS_CODE=${paramKey === 'FID_BLNG_CLS_CODE' ? paramValue : '0'}&FID_TRGT_CLS_CODE=111111111&FID_TRGT_EXLS_CLS_CODE=000000000&FID_INPUT_PRICE_1=0&FID_INPUT_PRICE_2=0&FID_VOL_CNT=0&FID_INPUT_CNT_1=0`;
 
-  try {
-    const res = await fetch(url, {
-      method: 'GET',
-      headers: {
-        'content-type': 'application/json; charset=utf-8',
-        authorization: `Bearer ${token}`,
-        appkey: appKey,
-        appsecret: appSecret,
-        tr_id: trId,
-        custtype: 'P',
-      },
-      cache: 'no-store',
-      signal: AbortSignal.timeout(8000),
-    });
-    if (!res.ok) return [];
-    const json = await res.json().catch(() => null);
-    if (!json || json.rt_cd !== '0' || !Array.isArray(json.output)) return [];
-
-    return json.output.map((item: any): RankingItem => {
-      const symbol = item.stck_shrn_iscd || item.mksc_shrn_iscd || '';
-      const rawName = item.hts_kor_isnm || '';
-      const name = getStockName(symbol, rawName);
-      if (symbol && rawName) registerRuntimeStockName(symbol, rawName);
-      const currentPrice = parseInt(item.stck_prpr || '0', 10);
-      const sign = item.prdy_vrss_sign || '3';
-      let change = parseInt(item.prdy_vrss || '0', 10);
-      if (sign === '4' || sign === '5') change = -Math.abs(change);
-      const changeRate = parseFloat(item.prdy_ctrt || '0');
-      const volume = parseInt(item.acml_vol || '0', 10);
-      const amountEok = item.acml_tr_pbmn
-        ? Number((parseInt(item.acml_tr_pbmn, 10) / 100000000).toFixed(1))
-        : Number(((currentPrice * volume) / 100000000).toFixed(1));
-
-      return {
-        rank: 0,
-        symbol,
-        name,
-        market: resolveMarketType(symbol),
-        currentPrice,
-        change,
-        changeRate,
-        netBuyQty: 0,
-        netBuyAmt: 0,
-        netBuyAmtEok: 0,
-        volume,
-        ratioVsVolume: 0,
-        amountEok,
-        type: 'discovery',
-      };
-    }).filter((item: RankingItem) => item.symbol);
-  } catch (e) {
-    console.warn(`[Discovery Seed Slice Error] ${trId}/${paramKey}=${paramValue}/${iscd}:`, (e as any)?.message || e);
-    return [];
+  const res = await fetch(url, {
+    method: 'GET',
+    headers: {
+      'content-type': 'application/json; charset=utf-8',
+      authorization: `Bearer ${token}`,
+      appkey: appKey,
+      appsecret: appSecret,
+      tr_id: trId,
+      custtype: 'P',
+    },
+    cache: 'no-store',
+    signal: AbortSignal.timeout(8000),
+  });
+  if (!res.ok) throw new Error(`[KIS HTTP Error] Status ${res.status} (discovery-seed ${trId}/${paramKey}=${paramValue}/${iscd})`);
+  const json = await res.json().catch(() => null);
+  if (!json) throw new Error(`[KIS Parse Error] discovery-seed ${trId}/${iscd}`);
+  if (json.rt_cd !== '0') {
+    throw new Error(`[KIS rt_cd Error] ${json.msg1 || json.rt_cd} (discovery-seed ${trId}/${paramKey}=${paramValue}/${iscd})`);
   }
+  // rt_cd='0'(정상처리)인데 output만 0건인 건 KIS 측 순간 공백 응답일 뿐 API 장애가 아니다(2276행
+  // 기존 패턴과 동일) - 에러로 던지지 않고 그냥 빈 배열로 반환한다.
+  if (!Array.isArray(json.output)) return [];
+
+  return json.output.map((item: any): RankingItem => {
+    const symbol = item.stck_shrn_iscd || item.mksc_shrn_iscd || '';
+    const rawName = item.hts_kor_isnm || '';
+    const name = getStockName(symbol, rawName);
+    if (symbol && rawName) registerRuntimeStockName(symbol, rawName);
+    const currentPrice = parseInt(item.stck_prpr || '0', 10);
+    const sign = item.prdy_vrss_sign || '3';
+    let change = parseInt(item.prdy_vrss || '0', 10);
+    if (sign === '4' || sign === '5') change = -Math.abs(change);
+    const changeRate = parseFloat(item.prdy_ctrt || '0');
+    const volume = parseInt(item.acml_vol || '0', 10);
+    const amountEok = item.acml_tr_pbmn
+      ? Number((parseInt(item.acml_tr_pbmn, 10) / 100000000).toFixed(1))
+      : Number(((currentPrice * volume) / 100000000).toFixed(1));
+
+    return {
+      rank: 0,
+      symbol,
+      name,
+      market: resolveMarketType(symbol),
+      currentPrice,
+      change,
+      changeRate,
+      netBuyQty: 0,
+      netBuyAmt: 0,
+      netBuyAmtEok: 0,
+      volume,
+      ratioVsVolume: 0,
+      amountEok,
+      type: 'discovery',
+    };
+  }).filter((item: RankingItem) => item.symbol);
 }
 
 /** 종목 하나의 발굴 지표 4종(absorption/afternoon/volumeSurge/pullback)을 계산한다 - relativeStrength는 지수 등락률을 공유해야 해서 호출부에서 더한다. */
@@ -5207,14 +5257,33 @@ export async function fetchKisDiscoveryCandidates(market: MarketType = 'ALL'): P
     item.discoveryScore = Number((amountSurgeScore + afternoonScore + closeToHighScore + relativeScore + supplyScore + higherLowScore + unSurgedScore + reactivationScore).toFixed(1));
   });
 
-  filtered.sort((a, b) => (b.discoveryScore || 0) - (a.discoveryScore || 0));
-  filtered.forEach((item, idx) => { item.rank = idx + 1; });
+  // 🚨 [구조 재설계 - 사용자 지적: "발굴이 급등 탭 재탕이다"] 시드를 상대순위로 바꿨는데도(위
+  // fetchKisDiscoverySeedPool) 실측 73.9%가 여전히 급등주 탭과 겹쳤다(2026-09-23) - 진짜로 튀기
+  // 시작한 종목은 상대지표·절대지표 둘 다에서 자연스럽게 잡히기 때문에 시드 소스만으론 한계가 있다.
+  // 그래서 후보 생성이 끝난 뒤, 지금 이 순간 급등주 탭(등락률·거래량·거래대금 3서브모드)에 이미 떠
+  // 있는 종목을 명시적으로 걸러낸다 - 시드 단계가 아니라 "후보 생성 후" 비교(사용자 지시).
+  const beforeSurgingExcludeCount = filtered.length;
+  const [surgingFluct, surgingVol, surgingAmt] = await Promise.all([
+    fetchKisSurgingStocks('fluctuation', 'ALL').catch(() => null),
+    fetchKisSurgingStocks('volume', 'ALL').catch(() => null),
+    fetchKisSurgingStocks('amount', 'ALL').catch(() => null),
+  ]);
+  const surgingSymbols = new Set<string>();
+  [surgingFluct, surgingVol, surgingAmt].forEach((res) => {
+    (res?.list || []).forEach((item) => surgingSymbols.add(item.symbol));
+  });
+  const excludedFromSurging = filtered.filter((item) => surgingSymbols.has(item.symbol));
+  const afterSurgingExclude = filtered.filter((item) => !surgingSymbols.has(item.symbol));
+  console.log(`[발굴 장마감 급등주 탭 중복 제외] ${beforeSurgingExcludeCount}개 -> ${afterSurgingExclude.length}개 (제외 ${excludedFromSurging.length}개: ${excludedFromSurging.map((i) => i.name).join(', ')})`);
+
+  afterSurgingExclude.sort((a, b) => (b.discoveryScore || 0) - (a.discoveryScore || 0));
+  afterSurgingExclude.forEach((item, idx) => { item.rank = idx + 1; });
 
   return {
     type: 'discovery',
     direction: 'buy',
     period: '1d',
-    list: filtered,
+    list: afterSurgingExclude,
     isMock: false,
     updatedAt: new Date().toISOString(),
     lastBatchTime: dateLabel,
@@ -5222,142 +5291,225 @@ export async function fetchKisDiscoveryCandidates(market: MarketType = 'ALL'): P
 }
 
 // ============================================================================
-// 🎯 [기능 추가 - 사용자 요청: "전조 장마감" 탭] "발굴 장마감"이 이미 오른 종목을 고르는 것과 정반대로,
-// 이 탭은 "아직 크게 안 올랐는데 거래량/거래대금만 조용히 늘고 있는" 돌파 전조 종목을 찾는다:
-//   1) 최근 며칠 상승률이 과하지 않음 - 이미 급등한 종목 제외(하드 필터)
-//   2) 오늘 거래량/거래대금이 평소 대비 비정상 증가 + 그 증가가 하루짜리가 아니라 최근 며칠 추세
-//   3) 그 거래 증가 대비 가격 상승은 아직 작음(다이버전스)
-//   4) 그런데도 장중 고가 부근을 유지 중
-// seed 후보군은 등락률순위가 아니라 거래량/거래대금순위(FHPST01710000)만 여러 정렬로 모은다 -
-// "가격은 안 움직였는데 거래량만 튄" 종목은 등락률순위엔 애초에 안 잡히기 때문이다. 투자자동향
-// 추정치나 3분봉은 이 4개 조건에 필요 없어 호출하지 않는다(종목당 2회만 - 발굴 장마감의 절반 비용).
-// ⚠️ 이 점수식(거래량급증 35·증가추세 20·다이버전스 20·고가유지 25)은 사용자가 직접 정한 배점이
-// 아니라 "발굴 장마감"과 같은 절대 점수제 스타일을 참고해 제안한 잠정치다 - 실측 결과를 보고 조정 필요.
+// 🎯 [전면 재정의 - "눌림후속"] 원래 "전조 장마감"은 거래대금급증·증가추세·다이버전스·고가유지 4개
+// 지표를 100점 만점으로 채점했으나, 202거래일 실측(scratch/backtest_C_*.js 일련, 2026-09-23)에서
+// 그 점수가 다음날 수익률과 상관계수 사실상 0(train r=-0.011, test r=-0.089)으로 확인됐다. 대신
+// 원시 차원을 하나씩 독립적으로 뜯어본 결과 "당일 하락(<-0.5%) + 종가/당일고가 94~97%"라는 완전히
+// 다른 조합이 train/test 양쪽에서 재현되는 신호로 나왔다(경계값 스윕 검증까지 통과) - 점수 없이 이
+// 2개 조건 충족 여부만으로 "눌림후속" 후보를 표시한다.
+//
+// 🚨 [구조 재설계 - 사용자 지적: "시드풀 완전 제거", 2026-09-23] 상대순위 시드풀(거래회전율·평균
+// 거래량대비, FID_BLNG_CLS_CODE 1/2)조차도 "가격 패턴과 무관한 거래량 기준 순위"라 눌림후속 조건
+// (순수 가격 패턴)과 안 맞는 종목을 놓친다는 지적에 따라 시드풀 자체를 없앤다. 대신 KIS 관심종목
+// (멀티종목) 시세조회(FHKST11300006, intstock-multprice)로 전체 유니버스(stockMasterCache.json
+// 3,554개 중 ETF/ETN 제외 실측 2,803종목)를 30종목씩 배치 조회한다.
+// 실측 근거(scratch/diagnose_multiquote_and_ratelimit.js, 2026-09-23):
+//   - intstock-multprice는 콜당 정확히 30종목까지 응답(35종목 요청해도 30개로 캡, 에러 없음).
+//   - 응답 1건에 현재가(inter2_prpr)·고가(inter2_hgpr)·거래량(acml_vol)·거래대금(acml_tr_pbmn)이
+//     전부 포함돼 있어, 예전에 필요했던 종목당 2차 호출(enrichPrecursorCandidate/fetchKisDailyPrice)
+//     이 통째로 사라진다 - 종목당 2회→배치당 1회로 줄었다.
+//   - 이 앱키의 실측 안전 호출 간격은 200ms(초당 5건, 0% 실패) - kisQueue의 minDelayMs와 동일해
+//     그대로 재사용한다(수칙 1-6). 2,803종목/30 = 94콜 × 200ms ≈ 19초로 maxDuration=280 대비 여유.
 // ============================================================================
-const PRECURSOR_ENRICH_LIMIT = 80;
-const PRECURSOR_ENRICH_CHUNK_SIZE = 4;
-const PRECURSOR_ENRICH_DELAY_MS = 700;
-const PRECURSOR_MAX_RECENT_RETURN_PCT = 15; // 최근 5거래일 누적 등락률이 이보다 크면 "이미 급등"으로 제외
-const PRECURSOR_MAX_TODAY_CHANGE_PCT = 8; // 오늘 하루 등락률이 이보다 크면 "가격이 이미 크게 움직임"으로 제외
+const PRECURSOR_BATCH_SIZE = 30;
 
-async function fetchKisPrecursorSeedPool(market: MarketType): Promise<RankingItem[]> {
-  const iscdList = market === 'KOSPI' ? ['0001'] : market === 'KOSDAQ' ? ['1001'] : ['0001', '1001'];
-  const itemMap = new Map<string, RankingItem>();
-  for (const iscd of iscdList) {
-    for (const blngCode of ['0', '1', '2', '3']) {
-      await enforceRateLimit();
-      const list = await fetchKisDiscoveryRankingSlice('FHPST01710000', iscd, 'FID_BLNG_CLS_CODE', blngCode);
-      list.forEach((item) => { if (!itemMap.has(item.symbol)) itemMap.set(item.symbol, item); });
-    }
-  }
-  return Array.from(itemMap.values()).filter((item) => !isEtfOrEtn(item.name));
+interface MultiQuoteItem {
+  symbol: string;
+  name: string;
+  currentPrice: number;
+  highPrice: number;
+  lowPrice: number;
+  openPrice: number;
+  prevClose: number;
+  changeRate: number;
+  volume: number;
+  amountEok: number;
 }
 
-async function enrichPrecursorCandidate(item: RankingItem): Promise<RankingItem | null> {
+async function executeKisMultiQuoteBatchFetch(symbols: string[]): Promise<MultiQuoteItem[]> {
+  const isVirtual = process.env.KIS_VIRTUAL === 'true';
+  const defaultBaseUrl = isVirtual
+    ? 'https://openapivts.koreainvestment.com:29443'
+    : 'https://openapi.koreainvestment.com:9443';
+  const baseUrl = process.env.KIS_BASE_URL || defaultBaseUrl;
+  const appKey = process.env.KIS_APPKEY!;
+  const appSecret = process.env.KIS_APPSECRET!;
+
+  const token = await getKisAccessToken();
+  if (!token) return [];
+
+  const params = symbols.map((s, i) => `FID_COND_MRKT_DIV_CODE_${i + 1}=J&FID_INPUT_ISCD_${i + 1}=${s}`).join('&');
+  const url = `${baseUrl}/uapi/domestic-stock/v1/quotations/intstock-multprice?${params}`;
+
+  const res = await fetch(url, {
+    method: 'GET',
+    headers: {
+      'content-type': 'application/json; charset=utf-8',
+      authorization: `Bearer ${token}`,
+      appkey: appKey,
+      appsecret: appSecret,
+      tr_id: 'FHKST11300006',
+      custtype: 'P',
+    },
+    cache: 'no-store',
+    signal: AbortSignal.timeout(8000),
+  });
+  if (!res.ok) throw new Error(`[KIS HTTP Error] Status ${res.status} (multi-quote batch)`);
+  const json = await res.json().catch(() => null);
+  if (!json) throw new Error('[KIS Parse Error] multi-quote batch');
+  if (json.rt_cd !== '0') throw new Error(`[KIS rt_cd Error] ${json.msg1 || json.rt_cd} (multi-quote batch)`);
+  // 🚨 [버그 수정 - 제 실수] intstock-multprice 실제 응답 필드는 "output1"이 아니라 "output"이다
+  // (실측 확인, 2026-09-23: 단발 3종목 호출 raw body에 "output":[...] 로 옴). 첫 진단 스크립트에서
+  // output1||output 둘 다 체크해뒀던 걸 여기 옮기며 output1만 남기는 실수를 해서, 전체 유니버스
+  // 스캔이 매 배치 조용히 빈 배열을 반환하고 있었다(count:0 오탐 - 조건 미충족이 아니라 파싱 버그).
+  if (!Array.isArray(json.output)) return [];
+
+  return json.output
+    .map((item: any): MultiQuoteItem | null => {
+      const symbol = item.inter_shrn_iscd || '';
+      if (!symbol) return null;
+      const rawName = item.inter_kor_isnm || '';
+      const name = getStockName(symbol, rawName);
+      if (rawName) registerRuntimeStockName(symbol, rawName);
+      const currentPrice = parseInt(item.inter2_prpr || '0', 10);
+      if (currentPrice <= 0) return null;
+      const changeRate = parseFloat(item.prdy_ctrt || '0');
+      return {
+        symbol,
+        name,
+        currentPrice,
+        highPrice: parseInt(item.inter2_hgpr || '0', 10),
+        lowPrice: parseInt(item.inter2_lwpr || '0', 10),
+        openPrice: parseInt(item.inter2_oprc || '0', 10),
+        prevClose: parseInt(item.inter2_prdy_clpr || '0', 10),
+        changeRate: isNaN(changeRate) ? 0 : changeRate,
+        volume: parseInt(item.acml_vol || '0', 10),
+        amountEok: Number((parseInt(item.acml_tr_pbmn || '0', 10) / 100000000).toFixed(1)),
+      };
+    })
+    .filter((item: MultiQuoteItem | null): item is MultiQuoteItem => item !== null);
+}
+
+async function fetchKisMultiQuoteBatch(symbols: string[]): Promise<MultiQuoteItem[]> {
+  if (symbols.length === 0) return [];
   try {
-    const [todayPrice, bars] = await Promise.all([
-      fetchKisDailyPrice(item.symbol).catch(() => undefined),
-      fetchKisRecentDailyBars(item.symbol).catch(() => undefined),
-    ]);
-
-    if (!bars || bars.length < 15) return null; // 이력 부족 - 판단 불가능한 종목은 후보에서 제외
-
-    // bars는 오늘(장중이면 진행 중인 값)을 마지막 원소로 포함한 오름차순(과거->최근) 배열이다.
-    const allBars = bars.filter((b) => b.date !== undefined);
-    // 1) 최근 5거래일 누적 등락률 - "이미 급등한 종목 제외" 하드 필터용
-    const fiveDaysAgoIdx = allBars.length - 6; // 오늘 포함 6개 중 첫 번째 = 5거래일 전
-    let recentReturnPct: number | undefined;
-    if (fiveDaysAgoIdx >= 0) {
-      const refClose = allBars[fiveDaysAgoIdx].close;
-      if (refClose > 0) recentReturnPct = Number((((item.currentPrice - refClose) / refClose) * 100).toFixed(2));
-    }
-    if (recentReturnPct !== undefined && Math.abs(recentReturnPct) > PRECURSOR_MAX_RECENT_RETURN_PCT) return null;
-    if (Math.abs(item.changeRate) > PRECURSOR_MAX_TODAY_CHANGE_PCT) return null;
-
-    // 2) 거래대금 급증배율 - 오늘(현재까지 누적) ÷ 최근 20거래일(오늘 제외) 평균
-    const prior20Bars = allBars.slice(-21, -1); // 오늘 제외
-    let volumeSurgeRatio: number | undefined;
-    let volumeTrendIncreasing: boolean | undefined;
-    if (prior20Bars.length >= 10) {
-      const avgAmount = prior20Bars.reduce((sum, b) => sum + b.amount, 0) / prior20Bars.length;
-      const todayAmount = (item.amountEok || 0) * 100000000;
-      if (avgAmount > 0) volumeSurgeRatio = Number((todayAmount / avgAmount).toFixed(2));
-    }
-    // 🚨 [버그 수정 - 사용자 지적: "거래대금배율이 0.5~0.96배인데도 40점 채워지는" 실측 확인] 거래대금
-    // 급증이 이 탭의 핵심 조건인데, 정작 급증하지 않은(오히려 평소보다 적은) 종목이 "증가추세+고가유지"
-    // 두 항목만으로 바닥점수(40점)를 채워 리스트에 섞여 들어왔다 - 하루 종일 안 움직인 밋밋한 종목은
-    // 변동폭 자체가 작아 종가가 고가에 가까운 게 당연해서(진짜 매수세 유지가 아님) 이 함정이 생겼다.
-    // 핵심 조건(거래대금 최소 1.5배 급증)을 못 채우면 아예 후보에서 제외한다.
-    if (volumeSurgeRatio === undefined || volumeSurgeRatio < 1.5) return null;
-    if (allBars.length >= 6) {
-      const recent3 = allBars.slice(-3).reduce((sum, b) => sum + b.volume, 0) / 3; // 오늘 포함 최근 3일
-      const prior3 = allBars.slice(-6, -3).reduce((sum, b) => sum + b.volume, 0) / 3; // 그 이전 3일
-      if (prior3 > 0) volumeTrendIncreasing = recent3 > prior3;
-    }
-
-    // 3) 가격 대비 거래량 다이버전스 - 거래대금은 급증했는데 가격은 안 움직일수록 큰 값
-    const priceVolumeDivergence = volumeSurgeRatio !== undefined
-      ? Number((volumeSurgeRatio / (1 + Math.abs(item.changeRate))).toFixed(2))
-      : undefined;
-
-    // 4) 장중 고가 부근 유지
-    let closeToHighRatioPct: number | undefined;
-    if (todayPrice && todayPrice.high > 0 && item.currentPrice > 0) {
-      closeToHighRatioPct = Number(((item.currentPrice / todayPrice.high) * 100).toFixed(2));
-    }
-
-    return { ...item, recentReturnPct, volumeSurgeRatio, volumeTrendIncreasing, priceVolumeDivergence, closeToHighRatioPct };
+    return await kisQueue.enqueue(() => fetchWithRetry(() => executeKisMultiQuoteBatchFetch(symbols)), 'NORMAL');
   } catch (e) {
-    console.warn(`[Precursor Enrich Skip] ${item.symbol}:`, (e as any)?.message || e);
-    return null;
+    console.warn(`[Multi Quote Batch Error] ${symbols.length}종목:`, (e as any)?.message || e);
+    return [];
   }
+}
+
+/**
+ * 전체 유니버스(stockMasterCache.json - ETF/ETN 제외)를 30종목씩 관심종목(멀티종목) 시세조회로
+ * 훑는다. 시드풀(상대순위) 없이 진짜 전체 종목을 대상으로 한다(사용자 요청: "시드풀 완전 제거").
+ */
+async function fetchKisFullUniverseQuotes(market: MarketType): Promise<MultiQuoteItem[]> {
+  const universe = getMasterStockList().filter(
+    (s) => (market === 'ALL' || s.market === market) && !isEtfOrEtn(s.name)
+  );
+  const results: MultiQuoteItem[] = [];
+  for (let i = 0; i < universe.length; i += PRECURSOR_BATCH_SIZE) {
+    const batch = universe.slice(i, i + PRECURSOR_BATCH_SIZE).map((s) => s.symbol);
+    const quotes = await fetchKisMultiQuoteBatch(batch);
+    results.push(...quotes);
+  }
+  return results;
 }
 
 export async function fetchKisPrecursorCandidates(market: MarketType = 'ALL'): Promise<InvestorRankingResponse> {
   const dateLabel = getSettledAsOfDateLabel();
 
-  const seedPool = await fetchKisPrecursorSeedPool(market);
-  if (seedPool.length === 0) {
+  const universeQuotes = await fetchKisFullUniverseQuotes(market);
+  if (universeQuotes.length === 0) {
     return { type: 'precursor', direction: 'buy', period: '1d', list: [], isMock: false, updatedAt: new Date().toISOString(), lastBatchTime: dateLabel };
   }
 
-  const candidates = [...seedPool].sort((a, b) => (b.amountEok || 0) - (a.amountEok || 0)).slice(0, PRECURSOR_ENRICH_LIMIT);
+  // 조건1: 당일 등락률 < -0.5% / 조건2: 종가(현재가)/당일고가 94~97% - 점수 없이 이 2개 조건 충족
+  // 여부만으로 "눌림후속" 후보를 가른다(위 202거래일 실측 근거).
+  const matched: RankingItem[] = universeQuotes
+    .filter((q) => q.changeRate < -0.5 && q.highPrice > 0)
+    .map((q) => ({ q, closeToHighRatioPct: Number(((q.currentPrice / q.highPrice) * 100).toFixed(2)) }))
+    .filter(({ closeToHighRatioPct }) => closeToHighRatioPct > 94 && closeToHighRatioPct <= 97)
+    .map(({ q, closeToHighRatioPct }): RankingItem => ({
+      rank: 0,
+      symbol: q.symbol,
+      name: q.name,
+      market: resolveMarketType(q.symbol),
+      currentPrice: q.currentPrice,
+      change: q.currentPrice - q.prevClose,
+      changeRate: q.changeRate,
+      netBuyQty: 0,
+      netBuyAmt: 0,
+      netBuyAmtEok: 0,
+      volume: q.volume,
+      ratioVsVolume: 0,
+      amountEok: q.amountEok,
+      openPrice: q.openPrice,
+      highPrice: q.highPrice,
+      lowPrice: q.lowPrice,
+      type: 'precursor',
+      closeToHighRatioPct,
+    }));
 
-  const enriched: RankingItem[] = [];
-  for (let i = 0; i < candidates.length; i += PRECURSOR_ENRICH_CHUNK_SIZE) {
-    const chunk = candidates.slice(i, i + PRECURSOR_ENRICH_CHUNK_SIZE);
-    const results = await Promise.all(chunk.map((item) => enrichPrecursorCandidate(item)));
-    results.forEach((item) => { if (item) enriched.push(item); });
-    if (i + PRECURSOR_ENRICH_CHUNK_SIZE < candidates.length) {
-      await new Promise((resolve) => setTimeout(resolve, PRECURSOR_ENRICH_DELAY_MS));
-    }
-  }
-
-  const ramp = (value: number | undefined, from: number, to: number, maxScore: number): number => {
-    if (value === undefined) return 0;
-    if (value <= from) return 0;
-    if (value >= to) return maxScore;
-    return Number((((value - from) / (to - from)) * maxScore).toFixed(2));
-  };
-
-  enriched.forEach((item) => {
-    // 배점(사용자 확정 - "거래가 먼저 비정상적으로 증가 → 가격은 아직 안 뜸 → 그런데 장중엔 안 무너짐"):
-    // 거래대금 급증(35) · 증가 추세(20) · 다이버전스(25) · 고가 유지(20) = 100점
-    const surgeScore = ramp(item.volumeSurgeRatio, 1.5, 4, 35);
-    const trendScore = item.volumeTrendIncreasing ? 20 : 0;
-    const divergenceScore = ramp(item.priceVolumeDivergence, 1, 5, 25);
-    const closeToHighScore = ramp(item.closeToHighRatioPct, 80, 95, 20);
-    item.precursorScore = Number((surgeScore + trendScore + divergenceScore + closeToHighScore).toFixed(1));
+  // 🚨 [구조 재설계 - 사용자 지적: "C의 목적이 이미 시장에 드러난 종목이 아니라 아직 급등 탭에 잡히지
+  // 않은 전조 종목을 찾는 것"] 발굴(fetchKisDiscoveryCandidates)과 동일 원인·동일 조치(수칙 1-6) - 시드를
+  // 상대순위로 바꿨는데도 실측 33.3%가 여전히 급등주 탭과 겹쳤다(2026-09-23). 후보 생성이 끝난 뒤, 지금
+  // 급등주 탭(등락률·거래량·거래대금 3서브모드)에 이미 떠 있는 종목을 명시적으로 걸러낸다.
+  const beforeSurgingExcludeCountC = matched.length;
+  const [surgingFluctC, surgingVolC, surgingAmtC] = await Promise.all([
+    fetchKisSurgingStocks('fluctuation', 'ALL').catch(() => null),
+    fetchKisSurgingStocks('volume', 'ALL').catch(() => null),
+    fetchKisSurgingStocks('amount', 'ALL').catch(() => null),
+  ]);
+  const surgingSymbolsC = new Set<string>();
+  [surgingFluctC, surgingVolC, surgingAmtC].forEach((res) => {
+    (res?.list || []).forEach((item) => surgingSymbolsC.add(item.symbol));
   });
+  const excludedFromSurgingC = matched.filter((item) => surgingSymbolsC.has(item.symbol));
+  const afterSurgingExcludeC = matched.filter((item) => !surgingSymbolsC.has(item.symbol));
+  console.log(`[전조(눌림후속) 급등주 탭 중복 제외] ${beforeSurgingExcludeCountC}개 -> ${afterSurgingExcludeC.length}개 (제외 ${excludedFromSurgingC.length}개: ${excludedFromSurgingC.map((i) => i.name).join(', ')})`);
 
-  enriched.sort((a, b) => (b.precursorScore || 0) - (a.precursorScore || 0));
-  enriched.forEach((item, idx) => { item.rank = idx + 1; });
+  // 🎯 [실험 추가 - 사용자 지시: "14:40 크론에 가집계 조회 붙이기", 2026-09-23 1단계] 후보군(보통
+  // 수백 개 수준)에 한해서만 가집계 추정치(HHPTJ04160200)를 개별 조회한다 - kisQueue가 이미 200ms
+  // 페이싱을 하므로 별도 쓰로틀링 없이 Promise.all로 넘겨도 안전하다(fetchKisRecentDailyBars와 동일
+  // 패턴, 수칙 1-6). 실패한 종목은 foreignRatioEstimate가 undefined로 남는다(가짜 0 금지, 수칙 1-3).
+  const estimates = await Promise.all(
+    afterSurgingExcludeC.map((item) => fetchKisInvestorTrendEstimate(item.symbol).catch(() => null))
+  );
+  afterSurgingExcludeC.forEach((item, idx) => {
+    const est = estimates[idx];
+    if (est && item.volume > 0) {
+      item.foreignRatioEstimate = Number(((est.foreignQty / item.volume) * 100).toFixed(3));
+    }
+  });
+  const withEstimate = afterSurgingExcludeC.filter((item) => item.foreignRatioEstimate !== undefined);
+  const estimateTop20Count = Math.max(1, Math.ceil(withEstimate.length * 0.2));
+  const sortedByEstimate = [...withEstimate].sort((a, b) => (b.foreignRatioEstimate || 0) - (a.foreignRatioEstimate || 0));
+  const top20Symbols = new Set(sortedByEstimate.slice(0, estimateTop20Count).map((item) => item.symbol));
+  // 🎯 [UI 추가 - 사용자 요청: "외국인 순위(%)" 컬럼, 2026-09-23] top20 불리언만으로는 화면에 "상위 몇
+  // %"인지 못 보여준다 - 가집계 순매수비율 내림차순 순위를 그대로 백분위로 환산한다(1위=가장 낮은 값
+  // =가장 상위, 후보군 크기가 매일 달라도 항상 0~100 범위로 비교 가능).
+  const estimateRankBySymbol = new Map(sortedByEstimate.map((item, idx) => [item.symbol, idx + 1]));
+  afterSurgingExcludeC.forEach((item) => {
+    if (item.foreignRatioEstimate !== undefined) {
+      item.foreignRatioEstimateTop20 = top20Symbols.has(item.symbol);
+      const rank = estimateRankBySymbol.get(item.symbol)!;
+      item.foreignRatioEstimateRankPct = Number(((rank / withEstimate.length) * 100).toFixed(1));
+    }
+  });
+  console.log(`[전조(눌림후속) 가집계 외국인순매수 조회] 후보 ${afterSurgingExcludeC.length}개 중 ${withEstimate.length}개 조회 성공, 상위20%(${estimateTop20Count}개) 플래그 지정`);
+
+  // 점수가 없으므로 당일 하락폭이 큰 순(조건1의 핵심 차원)으로 정렬한다 - 별도 배점 없이 조건 충족
+  // 종목을 그대로 보여주는 게 목적이라 "가장 뚜렷하게 하락한 것부터"가 가장 단순한 기본 정렬이다.
+  afterSurgingExcludeC.sort((a, b) => a.changeRate - b.changeRate);
+  afterSurgingExcludeC.forEach((item, idx) => { item.rank = idx + 1; });
 
   return {
     type: 'precursor',
     direction: 'buy',
     period: '1d',
-    list: enriched,
+    list: afterSurgingExcludeC,
     isMock: false,
     updatedAt: new Date().toISOString(),
     lastBatchTime: dateLabel,
@@ -5475,9 +5627,17 @@ async function executeKisRecentDailyBarsFetch(
     signal: AbortSignal.timeout(8000),
   });
 
-  if (!res.ok) return undefined;
+  // 🚨 [버그 수정 - 사용자 지적: "현대건설, 대한항공의 거래대금 배율은 왜 -로 표시되는거야?"] 기존엔
+  // !res.ok(비-200 응답)를 재시도 없이 조용히 undefined로 삼켜서, 배치 도중 KIS 게이트웨이가 일시적으로
+  // non-200을 준 종목만 20일 평균 계산에 필요한 일봉을 영영 못 받고 "-"로 남았다(실측: 09/22 14:30
+  // 배치에서 현대건설·대한항공 등 대형주 9종목 중복 확인 - 재호출 시 전부 정상 28일치 수신됨, KIS
+  // 서버측 순간 오류였음이 확정). 다른 KIS 호출들(747/6125/6629/6687라인)과 동일하게 throw로 바꿔서
+  // 이 함수를 감싸는 fetchWithRetry(최대 3회, 600ms 백오프)가 실제로 재시도하게 한다(수칙 1-6).
+  if (!res.ok) throw new Error(`[KIS HTTP Error] Status ${res.status} (recent-daily-bars ${symbol})`);
   const json = await res.json().catch(() => null);
-  if (!json || json.rt_cd !== '0' || !Array.isArray(json.output2)) return undefined;
+  if (!json || json.rt_cd !== '0' || !Array.isArray(json.output2)) {
+    throw new Error(`[KIS rt_cd Error] ${json?.rt_cd || 'parse-fail'}: ${json?.msg1 || '응답 파싱 실패'} (recent-daily-bars ${symbol})`);
+  }
 
   return json.output2
     .map((item: any) => ({

@@ -456,6 +456,9 @@ export async function fetchDiscoverySnapshots(date: string): Promise<DiscoverySn
 // 데이터라 raw_daily_data와 별도)로 분리한 테이블(precursor_snapshots,
 // scratch/create_precursor_snapshots_table.sql). 저장/조회 패턴도 100% 동일하게 재사용한다(수칙 1-6).
 // ============================================================================
+// 🚨 [전면 재정의 - "눌림후속"] 기존 점수/배지 필드(recent_return_pct 등)는 더 이상 저장하지 않는다
+// (kisApi.ts fetchKisPrecursorCandidates 동일 사유, 수칙 1-6) - DB 컬럼 자체는 과거 행 호환을 위해
+// 그대로 두지만(마이그레이션 불필요), 이 타입에서는 더 이상 쓰지 않는 필드를 제거해 혼동을 막는다.
 export interface PrecursorSnapshotRecord {
   date: string;
   symbol: string;
@@ -463,13 +466,16 @@ export interface PrecursorSnapshotRecord {
   market: string;
   current_price: number;
   change_rate: number;
-  recent_return_pct?: number;
-  volume_surge_ratio?: number;
-  volume_trend_increasing?: boolean;
-  price_volume_divergence?: number;
   close_to_high_ratio_pct?: number;
-  precursor_score?: number;
   rank?: number;
+  // 🎯 [실험 추가 - "가집계 vs 확정치 재현율 검증", 2026-09-23] kisApi.ts RankingItem의
+  // foreignRatioEstimate 계열과 1:1 대응(수칙 1-6). confirmed 2개는 14:40엔 비워두고, 18:30+
+  // 확정치 매칭 크론이 같은 행을 UPDATE로 채운다.
+  foreign_ratio_estimate?: number;
+  foreign_ratio_estimate_top20?: boolean;
+  foreign_ratio_estimate_rank_pct?: number;
+  foreign_ratio_confirmed?: number;
+  foreign_ratio_confirmed_top20?: boolean;
 }
 
 export async function savePrecursorSnapshots(records: PrecursorSnapshotRecord[]): Promise<boolean> {
@@ -516,6 +522,37 @@ export async function fetchPrecursorSnapshots(date: string): Promise<PrecursorSn
     console.warn('[Supabase precursor_snapshots List Exception]', e?.message || e);
     return [];
   }
+}
+
+/**
+ * "가집계 vs 확정치 재현율 검증" 2단계 - 18:30 이후 확정 f13을 오늘 저장된 precursor_snapshots
+ * 행에 UPDATE로만 채운다(수칙 1-3: DELETE 후 재적재하면 14:40에 저장한 foreign_ratio_estimate가
+ * 날아간다 - savePrecursorSnapshots와 달리 이 함수는 전체 재적재가 아니라 부분 갱신 전용).
+ * 개별 UPDATE로 처리하는 이유: Supabase upsert는 기본적으로 행 전체를 치환하므로, 여기서 안 채우는
+ * estimate 컬럼까지 NULL로 덮어쓸 위험이 있다(후보 수가 보통 수백 개 수준이라 개별 UPDATE도 안전).
+ */
+export async function updatePrecursorSnapshotsConfirmed(
+  date: string,
+  updates: Array<{ symbol: string; foreign_ratio_confirmed: number; foreign_ratio_confirmed_top20: boolean }>
+): Promise<{ updated: number; failed: number }> {
+  const client = getSupabaseAdmin();
+  if (!client || updates.length === 0) return { updated: 0, failed: 0 };
+  let updated = 0, failed = 0;
+  for (const u of updates) {
+    const { error } = await client
+      .from('precursor_snapshots')
+      .update({ foreign_ratio_confirmed: u.foreign_ratio_confirmed, foreign_ratio_confirmed_top20: u.foreign_ratio_confirmed_top20 })
+      .eq('date', date)
+      .eq('symbol', u.symbol);
+    if (error) {
+      console.warn(`[Supabase precursor_snapshots Confirmed Update Error] ${date}/${u.symbol}:`, error.message);
+      failed++;
+    } else {
+      updated++;
+    }
+  }
+  console.log(`[Supabase precursor_snapshots Confirmed Update] ${date} - 성공 ${updated}건, 실패 ${failed}건`);
+  return { updated, failed };
 }
 
 // ============================================================================

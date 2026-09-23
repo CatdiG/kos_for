@@ -93,28 +93,29 @@ async function fetchDropouts(direction: RankingDirection, market: MarketType, sc
   return { list: merged };
 }
 
+// 🚨 [순서 변경 - 사용자 요청: "급등주 뒤에 관심종목, 그 뒤에 장마감 후보군", 데스크톱과 동일(수칙 1-6), 2026-09-23]
 const TABS: { id: RankingType; label: string; icon: any; badge?: string }[] = [
   { id: 'surging', label: '급등주', icon: Rocket, badge: 'LIVE' },
-  { id: 'comprehensive', label: '단타종합', icon: Trophy, badge: 'SCORE' },
   // 🚨 [기능 추가 - 데스크톱과 동일(수칙 1-6), 사용자 지적: "당연하지 모바일도 데스크탑이랑 볼수있는
   // 탭과 차트는 같아야지"] 종목 상세의 "실시간" 토글로 등록한 관심종목(ws_watchlist, 오라클 웹소켓
-  // 브릿지 구독 대상과 동일 목록) 현재가 탭 - 데스크톱과 같은 위치(단타종합-장마감후보군 사이).
+  // 브릿지 구독 대상과 동일 목록) 현재가 탭.
   { id: 'watchlist', label: '관심종목', icon: Star },
   // 🚨 [기능 통합 - 사용자 요청: "장마감 탭들을 장마감 후보군 탭으로 합쳐서 각자 토글로"] 데스크톱
   // InvestorRankingTable.tsx와 동일하게 급등/발굴/전조 3개 탭을 화면엔 하나로 합친다.
   { id: 'postmarket', label: '장마감 후보군', icon: Target, badge: 'NEW' },
+  { id: 'comprehensive', label: '단타종합', icon: Trophy, badge: 'SCORE' },
   { id: 'foreign', label: '외국인', icon: Globe2 },
   { id: 'organ', label: '기관', icon: Landmark },
   { id: 'program', label: '프로그램', icon: Cpu },
   { id: 'overlap', label: '수급교집합', icon: Flame, badge: 'HOT' },
 ];
 
-// 데스크톱 InvestorRankingTable.tsx 908~950번 줄과 동일한 4개 서브탭.
+// 🚨 [순서 변경 - 사용자 요청: "급등주 교집합을 제일 앞으로", 데스크톱과 동일(수칙 1-6), 2026-09-23]
 const SURGING_MODES: { id: SurgingMode; label: string; icon: any }[] = [
+  { id: 'overlap', label: '급등주 교집합', icon: Flame },
   { id: 'fluctuation', label: '등락률', icon: Rocket },
   { id: 'volume', label: '거래량', icon: TrendingUp },
   { id: 'amount', label: '거래대금', icon: Coins },
-  { id: 'overlap', label: '급등주 교집합', icon: Flame },
 ];
 
 // InvestorRankingTable.tsx 354~364번 줄과 동일한 기본 프리셋(합계 100%).
@@ -382,7 +383,7 @@ function RankingCard({ item, activeTab, overlapMode, quietAccumFilter, pivotSign
             : activeTab === 'discovery'
             ? (item.absorptionBadge || '데이터 없음')
             : activeTab === 'precursor'
-            ? `거래대금 ${item.volumeSurgeRatio != null ? item.volumeSurgeRatio.toFixed(2) : '-'}배${item.volumeTrendIncreasing ? ' · 증가추세' : ''}`
+            ? `종가/고가 ${item.closeToHighRatioPct != null ? item.closeToHighRatioPct.toFixed(2) : '-'}% · 외국인 가집계 ${item.foreignRatioEstimate != null ? item.foreignRatioEstimate.toFixed(1) + '%' : '-'}${item.foreignRatioEstimateRankPct != null ? ` (상위${item.foreignRatioEstimateRankPct.toFixed(0)}%)` : ''}`
             : activeTab === 'surging' || activeTab === 'postmarket'
             ? (item.surgingBadge || `거래량 ${item.volume?.toLocaleString() || '-'}`)
             : activeTab === 'comprehensive'
@@ -410,11 +411,6 @@ function RankingCard({ item, activeTab, overlapMode, quietAccumFilter, pivotSign
           {activeTab === 'discovery' && (
             <div className="text-[11px] font-mono font-bold text-amber-600 dark:text-amber-400">
               점수 {item.discoveryScore != null ? item.discoveryScore.toFixed(1) : '-'}
-            </div>
-          )}
-          {activeTab === 'precursor' && (
-            <div className="text-[11px] font-mono font-bold text-amber-600 dark:text-amber-400">
-              점수 {item.precursorScore != null ? item.precursorScore.toFixed(1) : '-'}
             </div>
           )}
         </div>
@@ -867,7 +863,7 @@ export default function MobileRankingList() {
             {([
               { id: 'postmarket' as const, label: '급등', icon: Target, batch: postmarketBatchData },
               { id: 'discovery' as const, label: '발굴', icon: Compass, batch: discoveryBatchData },
-              { id: 'precursor' as const, label: '전조', icon: Radar, batch: precursorBatchData },
+              { id: 'precursor' as const, label: '눌림후속', icon: Radar, batch: precursorBatchData },
             ]).map((m) => {
               const Icon = m.icon;
               const isActive = activeTab === m.id;
