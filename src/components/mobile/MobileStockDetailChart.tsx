@@ -668,7 +668,10 @@ export default function MobileStockDetailChart({ trend, stockInfo, isLoading }: 
                 모바일 화면에서 서로 겹쳐서 아래 팝업이 가려졌다 - 세 정보를 한 카드로 합친
                 CustomUnifiedMobileTooltip 하나만 여기(캔들 차트)에 띄우고, 나머지 두 차트는 세로
                 기준선(cursor)만 유지한 채 팝업 내용은 비운다(아래 두 Tooltip 참고). */}
-            <Tooltip trigger="click" content={<CustomUnifiedMobileTooltip priceLabel="원" />} cursor={{ stroke: '#94a3b8', strokeWidth: 1, strokeDasharray: '3 3' }} />
+            {/* 🚨 [버그 수정 - 사용자 지적: "일봉 팝업 잘 안 보인다"] 팝업이 캔들 차트 아래로 길게 내려오는데, DOM상
+                뒤에 오는 4대주체·거래량 차트가 팝업 위에 그려져 아랫부분(거래량·거래대금)이 막대에 가려졌다 -
+                툴팁 틀에 z-index를 줘서 아래 차트들보다 위에 그린다. */}
+            <Tooltip trigger="click" wrapperStyle={{ zIndex: 50 }} content={<CustomUnifiedMobileTooltip priceLabel="원" />} cursor={{ stroke: '#94a3b8', strokeWidth: 1, strokeDasharray: '3 3' }} />
             <Bar dataKey="closePrice" name="캔들스틱" shape={(props: any) => <CandlestickBar {...props} minPrice={minPrice} maxPrice={maxPrice} topPadding={PRICE_CHART_CONFIG.margin.top} plotHeight={PRICE_CHART_CONFIG.plotHeight} />} isAnimationActive={false} />
             {showMA5 && <Line type="linear" dataKey="ma5" name="5일 이동평균" stroke="#f59e0b" strokeWidth={1.5} dot={false} activeDot={false} connectNulls={true} />}
             {showMA20 && <Line type="linear" dataKey="ma20" name="20일 이동평균" stroke="#a855f7" strokeWidth={1.5} dot={false} activeDot={false} connectNulls={true} />}

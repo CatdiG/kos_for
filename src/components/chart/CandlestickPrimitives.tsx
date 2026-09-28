@@ -216,10 +216,12 @@ export const CustomUnifiedMobileTooltip = ({ active, payload, label, priceLabel 
   const volMa20 = dataPoint.volMa20 || 0;
   const volRatioVsAvg = volMa20 > 0 ? Math.round((volume / volMa20) * 100) : null;
 
+  // 모바일 전용 팝업: 배경을 불투명하게(예전 95%+블러는 뒤 차트 선·막대가 비쳐 글씨가 안 읽혔다).
   return (
-    <div className="bg-white/95 dark:bg-[#1a1e29]/95 border border-slate-200 dark:border-[#2a2e39] p-2.5 rounded-lg shadow-xl text-xs space-y-1 z-50 font-sans backdrop-blur-sm min-w-[195px] w-auto whitespace-nowrap pointer-events-none">
+    <div className="bg-white dark:bg-[#1a1e29] border border-slate-200 dark:border-[#2a2e39] p-2.5 rounded-lg shadow-xl text-xs space-y-1 z-50 font-sans min-w-[195px] w-auto whitespace-nowrap pointer-events-none">
       <div className="font-bold border-b border-slate-200 dark:border-slate-700/80 pb-1 text-slate-800 dark:text-slate-100 flex justify-between items-center text-[11px] gap-3">
-        <span>📅 {dataPoint.formattedDate ? `${dataPoint.formattedDate} ` : ''}{label}</span>
+        {/* 모바일 일봉은 x축 라벨(label)이 곧 formattedDate라 둘 다 찍으면 "09.28 09.28"로 중복됐다 - 하나만. */}
+        <span>📅 {dataPoint.formattedDate || label}</span>
         <span className="text-[10px] text-slate-400 font-mono">{isUp ? `양봉 🔴 (+${intradayRate.toFixed(2)}%)` : `음봉 🔵 (${intradayRate.toFixed(2)}%)`}</span>
       </div>
 
