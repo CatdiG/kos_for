@@ -660,7 +660,7 @@ export default function MobileStockDetailChart({ trend, stockInfo, isLoading }: 
               3개 차트가 전부 같은 syncId를 공유해서 하나를 탭하면 세 팝업이 동시에 뜨고 동시에 사라진다.
               모바일은 이 syncId가 아예 없어서 차트마다 따로 놀았다(사용자 지적) - 3개 전부 동일한
               syncId를 추가해 데스크톱과 똑같이 통일한다. */}
-          <ComposedChart syncId="mobile-stock-detail-chart" data={displayTrend} margin={PRICE_CHART_CONFIG.margin}>
+          <ComposedChart accessibilityLayer={false} syncId="mobile-stock-detail-chart" data={displayTrend} margin={PRICE_CHART_CONFIG.margin}>
             <CartesianGrid strokeDasharray="3 3" stroke={gridColor} opacity={0.7} />
             <XAxis dataKey="formattedDate" hide={true} />
             <YAxis stroke={axisColor} tick={false} axisLine={false} tickLine={false} width={52} domain={priceDomain} ticks={priceTicks} allowDataOverflow={true} />
@@ -717,7 +717,7 @@ export default function MobileStockDetailChart({ trend, stockInfo, isLoading }: 
             <span className="text-[9px] text-slate-400 font-mono">0점 기준</span>
           </div>
           <ResponsiveContainer key={`supply-${chartWidth}-${outsideTapKey}`} width="100%" height={70}>
-            <ComposedChart syncId="mobile-stock-detail-chart" data={displayTrend} margin={{ top: 5, right: 15, left: -10, bottom: 0 }} barGap={0} barCategoryGap="18%">
+            <ComposedChart accessibilityLayer={false} syncId="mobile-stock-detail-chart" data={displayTrend} margin={{ top: 5, right: 15, left: -10, bottom: 0 }} barGap={0} barCategoryGap="18%">
               <CartesianGrid strokeDasharray="3 3" stroke={gridColor} opacity={0.7} />
               <XAxis dataKey="formattedDate" hide={true} />
               <YAxis stroke={axisColor} tickFormatter={formatYAmt} tick={{ fontSize: 8 }} width={52} domain={supplyDomain as any} />
@@ -738,10 +738,12 @@ export default function MobileStockDetailChart({ trend, stockInfo, isLoading }: 
             다른거 좀 줄여서. 차트 너무 커지지 않게"] 새 패널 대신 이 패널에 보조(오른쪽) Y축만 추가. */}
         <div className="mt-1">
           <ResponsiveContainer key={`vol-${chartWidth}-${outsideTapKey}`} width="100%" height={70}>
-            <ComposedChart syncId="mobile-stock-detail-chart" data={displayTrend} margin={{ top: 5, right: 15, left: -10, bottom: 0 }}>
+            <ComposedChart accessibilityLayer={false} syncId="mobile-stock-detail-chart" data={displayTrend} margin={{ top: 5, right: 15, left: -10, bottom: 0 }}>
               <XAxis dataKey="formattedDate" stroke={axisColor} tick={{ fontSize: 8 }} />
+              {/* 🚨 [사용자 요청] 거래대금 선·오른쪽 축 제거 - 종가×거래량 계산값이라 거래량과 모양이 거의 같아
+                  정보가 없고, 이 차트에만 붙은 오른쪽 축(36px) 때문에 위 캔들·순매수 차트와 날짜가 어긋났다.
+                  거래대금 숫자는 캔들 탭 팝업(CustomUnifiedMobileTooltip)에 그대로 나온다. */}
               <YAxis yAxisId="vol" stroke={axisColor} tickFormatter={formatYVol} tick={{ fontSize: 8 }} width={52} />
-              <YAxis yAxisId="amt" orientation="right" stroke="#8b5cf6" tickFormatter={(v: number) => `${Math.round(v)}억`} tick={{ fontSize: 8 }} width={36} domain={[0, 'auto']} />
               {/* 팝업 내용은 위 캔들 차트의 통합 팝업이 이미 보여주므로 여기선 세로 기준선만 유지한다. */}
               <Tooltip content={() => null} cursor={{ fill: isDark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.04)' }} />
               <Bar yAxisId="vol" dataKey="volume" name="거래량" radius={[2, 2, 0, 0]}>
@@ -749,7 +751,6 @@ export default function MobileStockDetailChart({ trend, stockInfo, isLoading }: 
                   <Cell key={`vol-${i}`} fill={d.closePrice >= (d.openPrice ?? d.closePrice) ? '#ef4444' : '#3b82f6'} fillOpacity={0.6} />
                 ))}
               </Bar>
-              <Line yAxisId="amt" type="monotone" dataKey="tradingValueEok" name="거래대금" stroke="#8b5cf6" strokeWidth={1.5} dot={false} isAnimationActive={false} />
             </ComposedChart>
           </ResponsiveContainer>
         </div>

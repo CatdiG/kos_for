@@ -283,7 +283,7 @@ export default function MobileIndexDetailChart({ market, onClose }: MobileIndexD
         <>
           <div className="relative">
             <ResponsiveContainer width="100%" height={PRICE_CHART_CONFIG.containerHeight}>
-              <ComposedChart data={displayTrend} margin={PRICE_CHART_CONFIG.margin}>
+              <ComposedChart accessibilityLayer={false} data={displayTrend} margin={PRICE_CHART_CONFIG.margin}>
                 <CartesianGrid strokeDasharray="3 3" stroke={gridColor} opacity={0.7} />
                 <XAxis dataKey="formattedDate" hide={true} />
                 <YAxis stroke={axisColor} tickFormatter={formatYPrice} tick={{ fontSize: 9 }} width={52} domain={priceDomain} ticks={priceTicks} allowDataOverflow={true} />
@@ -334,7 +334,7 @@ export default function MobileIndexDetailChart({ market, onClose }: MobileIndexD
           <div className="mt-1">
             <div className="text-[11px] font-bold text-slate-700 dark:text-slate-300 pb-0.5">일별 거래량</div>
             <ResponsiveContainer width="100%" height={70}>
-              <ComposedChart data={displayTrend} margin={{ top: 5, right: 15, left: -10, bottom: 0 }}>
+              <ComposedChart accessibilityLayer={false} data={displayTrend} margin={{ top: 5, right: 15, left: -10, bottom: 0 }}>
                 <XAxis dataKey="formattedDate" stroke={axisColor} tick={{ fontSize: 8 }} />
                 <YAxis stroke={axisColor} tickFormatter={formatYVol} tick={{ fontSize: 8 }} width={52} />
                 {/* 🚨 [버그 수정 - 사용자 지적: "코스피, 코스닥 차트 거래량 팝업 못생김. 다른 차트들처럼

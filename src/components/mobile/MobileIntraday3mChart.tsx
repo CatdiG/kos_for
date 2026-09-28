@@ -40,11 +40,12 @@ const PRICE_TOP_PADDING = 10;
 const PRICE_PLOT_HEIGHT = PRICE_CHART_HEIGHT - PRICE_TOP_PADDING;
 const MIN_CANDLE_PX = 8; // 캔들 1개당 최소 폭 - 사용자 요청으로 5→8 확대(어차피 가로 스크롤하니 더 크게 봐도 됨)
 // 가격 차트·거래량 차트의 실제 플롯 영역 좌우 여백(px). 두 차트 모두 margin.left(-10)+왼쪽 YAxis(52)=42,
-// margin.right(10)+오른쪽 YAxis(36)=46으로 똑같이 맞춰야 캔들과 거래량 막대가 같은 x에 놓인다
-// (예전엔 거래량 차트에만 오른쪽 거래대금 축 36px가 있어 두 차트 x좌표가 최대 36px 어긋났다).
+// margin.right(10)=10으로 똑같이 맞춰야 캔들과 거래량 막대가 같은 x에 놓인다.
+// 🚨 [사용자 요청] 거래대금 선/오른쪽 축 제거 - 거래대금은 종가×거래량으로 계산한 값이라 3분봉에선 거래량과
+// 모양이 사실상 같아 정보가 없고, 오른쪽 축 때문에 차트 간 x좌표만 어긋났다. 거래대금 숫자는 탭 팝업에 남긴다.
 const MIN_VIEW_TICKS = 10; // 세로축 최소 폭(호가 칸 수) - computeViewScale 주석 참고
 const PLOT_LEFT = 42;
-const PLOT_RIGHT = 46;
+const PLOT_RIGHT = 10;
 
 interface ViewScale {
   start: number;
@@ -53,7 +54,6 @@ interface ViewScale {
   priceTicks: number[];
   isFallback: boolean;
   volMax: number;
-  amtMax: number;
 }
 
 // 거래량/거래대금 축 상한을 보기 좋은 값(1·2·2.5·5·10 단위)으로 올림 - 스크롤할 때마다 축이 미세하게
@@ -135,7 +135,6 @@ function computeViewScale(candles: any[], start: number, end: number): ViewScale
   let lo = Infinity;
   let hi = -Infinity;
   let vol = 0;
-  let amt = 0;
   for (let i = start; i <= end; i++) {
     const c = candles[i];
     if (!c || !(c.closePrice > 0)) continue;
@@ -145,7 +144,6 @@ function computeViewScale(candles: any[], start: number, end: number): ViewScale
     if (l > 0) lo = Math.min(lo, l);
     hi = Math.max(hi, h);
     vol = Math.max(vol, c.volume || 0);
-    amt = Math.max(amt, c.tradingValueEok || 0);
   }
   // 최소 표시 폭 = 호가 MIN_VIEW_TICKS칸. 보이는 구간이 한두 호가 안에서만 움직이면(예: 시간외 단일가,
   // 상한가 고정) 축이 1~2호가 폭으로 좁혀져 호가 1칸짜리 봉이 화면 절반을 차지하는 막대처럼 보였다
@@ -159,7 +157,7 @@ function computeViewScale(candles: any[], start: number, end: number): ViewScale
     }
   }
   const axis = calculatePriceAxis(Number.isFinite(lo) ? lo : 0, Number.isFinite(hi) ? hi : 0);
-  return { start, end, ...axis, volMax: niceCeil(vol * 1.05), amtMax: niceCeil(amt * 1.05) };
+  return { start, end, ...axis, volMax: niceCeil(vol * 1.05) };
 }
 
 function isMarketOpenNowKst(): boolean {
@@ -186,6 +184,7 @@ export default function MobileIntraday3mChart({ symbol }: MobileIntraday3mChartP
   const isDark = theme === 'dark';
   const gridColor = isDark ? '#334155' : '#cbd5e1';
   const axisColor = isDark ? '#94a3b8' : '#475569';
+  const selectLineColor = isDark ? '#e2e8f0' : '#334155'; // 탭한 봉 세로선 - 배경 대비가 뚜렷한 색
 
   const [showMA5, setShowMA5] = useState(true);
   const [showMA20, setShowMA20] = useState(true);
@@ -288,7 +287,9 @@ export default function MobileIntraday3mChart({ symbol }: MobileIntraday3mChartP
   // 🎯 [기능 추가 - 데스크톱과 동일(수칙 1-6), 사용자 요청: "3분봉도 거래대금 차트 추가"] 종가×그 봉의
   // 거래량 근사(3분이라는 짧은 구간이라 오차가 더 작다).
   const candlesWithAmount = React.useMemo(() => {
-    return candles.map((c: any) => ({ ...c, tradingValueEok: Number(((c.closePrice * (c.volume || 0)) / 100000000).toFixed(2)) }));
+    // xKey: 과거 5일+오늘을 이어붙여 같은 "09:00"이 날짜마다 반복되므로(실측 554봉 중 time 고유값 235개),
+    // time만 x축 키로 쓰면 탭한 봉의 세로선이 같은 시각의 "첫 번째 날짜" 봉에 그려졌다 - 날짜+시각으로 고유화.
+    return candles.map((c: any) => ({ ...c, xKey: `${c.date ?? ''} ${c.time}`, tradingValueEok: Number(((c.closePrice * (c.volume || 0)) / 100000000).toFixed(2)) }));
   }, [candles]);
 
   // R1(1차 익절 저항) 돌파 시 지지선으로 전환 - RankingStockDetailChart.tsx 694~698번 줄과 동일 공식.
@@ -386,8 +387,7 @@ export default function MobileIntraday3mChart({ symbol }: MobileIntraday3mChartP
       const sameAxis =
         prev.priceDomain[0] === next.priceDomain[0] &&
         prev.priceDomain[1] === next.priceDomain[1] &&
-        prev.volMax === next.volMax &&
-        prev.amtMax === next.amtMax;
+        prev.volMax === next.volMax;
       if (sameAxis && (!force || (prev.start === next.start && prev.end === next.end))) return prev;
       return next;
     });
@@ -554,7 +554,7 @@ export default function MobileIntraday3mChart({ symbol }: MobileIntraday3mChartP
             style={{ left, top, width: POPUP_W }}
           >
             <div className="font-bold text-slate-500 dark:text-slate-400 pb-1 border-b border-slate-100 dark:border-slate-800">
-              {info.time}
+              {info.formattedDate ? `${info.formattedDate} ` : ''}{info.time}
             </div>
             <div className="flex justify-between"><span className="text-slate-400">시</span><b className="text-slate-700 dark:text-slate-200">{Math.round(openPrice).toLocaleString()}</b></div>
             <div className="flex justify-between"><span className="text-red-500">고</span><b className="text-red-500">{Math.round(highPrice).toLocaleString()}</b></div>
@@ -610,16 +610,13 @@ export default function MobileIntraday3mChart({ symbol }: MobileIntraday3mChartP
       <div style={{ width: chartWidth }}>
       <div className="relative">
       <ResponsiveContainer width="100%" height={PRICE_CHART_HEIGHT}>
-        <ComposedChart
-          data={candles}
+        <ComposedChart accessibilityLayer={false}
+          data={candlesWithAmount}
           margin={{ top: PRICE_TOP_PADDING, right: 10, left: -10, bottom: 0 }}
         >
           <CartesianGrid strokeDasharray="3 3" stroke={gridColor} opacity={0.7} />
-          <XAxis dataKey="time" hide={true} />
+          <XAxis dataKey="xKey" hide={true} />
           <YAxis stroke={axisColor} tick={false} axisLine={false} tickLine={false} width={52} domain={priceDomain} ticks={priceTicks} allowDataOverflow={true} />
-          {/* 거래량 차트의 오른쪽 거래대금 축(36px)과 플롯 폭을 똑같이 맞추기 위한 빈 축(PLOT_RIGHT 주석 참고) */}
-          <YAxis yAxisId="right-pad" orientation="right" width={36} tick={false} axisLine={false} tickLine={false} />
-          {selectedCandle && <ReferenceLine x={selectedCandle.time} stroke="#94a3b8" strokeWidth={1} strokeDasharray="3 3" />}
           <Bar dataKey="closePrice" name="캔들스틱" shape={(props: any) => <CandlestickBar {...props} minPrice={minPrice} maxPrice={maxPrice} topPadding={PRICE_TOP_PADDING} plotHeight={PRICE_PLOT_HEIGHT} />} isAnimationActive={false} />
           {showMA5 && <Line type="monotone" dataKey="ma5" stroke="#f97316" strokeDasharray="3 3" strokeWidth={1} dot={false} isAnimationActive={false} name="5선" />}
           {showMA20 && <Line type="monotone" dataKey="ma20" stroke="#eab308" strokeDasharray="3 3" strokeWidth={2} dot={false} isAnimationActive={false} name="20선" />}
@@ -659,6 +656,9 @@ export default function MobileIntraday3mChart({ symbol }: MobileIntraday3mChartP
               <ReferenceLine y={levels.fibonacci.fibo500} stroke="#a855f7" strokeWidth={1.5} />
             </>
           )}
+          {/* 🎯 [사용자 요청: "누르면 어느 봉을 누르고 있는지 선을 만들어줘"] 탭한 봉 세로선 - 다른 선들 위에
+              보이도록 맨 마지막에 그리고, 예전(얇은 회색 점선 #94a3b8, 1px)보다 진하게. x는 고유 키(xKey). */}
+          {selectedCandle && <ReferenceLine x={selectedCandle.xKey} stroke={selectLineColor} strokeWidth={1.5} strokeDasharray="4 3" />}
         </ComposedChart>
       </ResponsiveContainer>
 
@@ -685,26 +685,23 @@ export default function MobileIntraday3mChart({ symbol }: MobileIntraday3mChartP
 
       </div>
 
-      {/* 거래량·거래대금 - 캔들 차트와 동일한 chartWidth 컨테이너 안에 있어야 가로 스크롤 시 x축이
-          어긋나지 않는다. 🎯 [기능 추가 - 데스크톱과 동일(수칙 1-6), 사용자 요청: "3분봉도 거래대금
-          차트 추가"] 새 패널 대신 보조(오른쪽) Y축만 추가. */}
+      {/* 거래량 - 캔들 차트와 동일한 chartWidth 컨테이너 안에 있어야 가로 스크롤 시 x축이 어긋나지 않는다.
+          거래대금 선/오른쪽 축은 사용자 요청으로 제거(PLOT_RIGHT 주석 참고) - 금액은 탭 팝업에서 본다. */}
       <div className="mt-1">
         <ResponsiveContainer width="100%" height={70}>
-          <ComposedChart
+          <ComposedChart accessibilityLayer={false}
             data={candlesWithAmount}
             margin={{ top: 5, right: 10, left: -10, bottom: 0 }}
           >
-            <XAxis dataKey="time" stroke={axisColor} tick={{ fontSize: 8 }} interval="preserveStartEnd" />
+            <XAxis dataKey="xKey" stroke={axisColor} tick={{ fontSize: 8 }} interval="preserveStartEnd" tickFormatter={(k: string) => String(k).split(' ').pop() ?? ''} />
             {/* 보이는 구간 최대값 기준 축 - 예전엔 전체(15:30 동시호가 급증 포함) 기준이라 나머지 막대가 바닥에 붙었다 */}
             <YAxis yAxisId="vol" stroke={axisColor} tickFormatter={formatYVol} tick={{ fontSize: 8 }} width={52} domain={[0, effectiveView.volMax]} allowDataOverflow={true} />
-            <YAxis yAxisId="amt" orientation="right" stroke="#8b5cf6" tickFormatter={(v: number) => `${Math.round(v)}억`} tick={{ fontSize: 8 }} width={36} domain={[0, effectiveView.amtMax]} allowDataOverflow={true} />
-            {selectedCandle && <ReferenceLine x={selectedCandle.time} stroke="#94a3b8" strokeWidth={1} strokeDasharray="3 3" />}
             <Bar yAxisId="vol" dataKey="volume" name="거래량" radius={[2, 2, 0, 0]}>
               {candlesWithAmount.map((c: any, i: number) => (
                 <Cell key={`vol3m-${i}`} fill={c.closePrice >= (c.openPrice ?? c.closePrice) ? '#ef4444' : '#3b82f6'} fillOpacity={0.6} />
               ))}
             </Bar>
-            <Line yAxisId="amt" type="monotone" dataKey="tradingValueEok" name="거래대금" stroke="#8b5cf6" strokeWidth={1.5} dot={false} isAnimationActive={false} />
+            {selectedCandle && <ReferenceLine yAxisId="vol" x={selectedCandle.xKey} stroke={selectLineColor} strokeWidth={1.5} strokeDasharray="4 3" />}
           </ComposedChart>
         </ResponsiveContainer>
       </div>
