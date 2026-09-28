@@ -79,7 +79,7 @@ export default function MobileStockDetailChart({ trend, stockInfo, isLoading }: 
   const [showMA20, setShowMA20] = useState(true);
   const [showMA60, setShowMA60] = useState(false);
   const [showMA120, setShowMA120] = useState(false);
-  const [showVolumeProfile, setShowVolumeProfile] = useState(true);
+  const [showVolumeProfile, setShowVolumeProfile] = useState(false); // 사용자 요청: 기본 꺼짐, 버튼으로 켤 때만 표시
   // 🚨 [버그 수정 - 사용자 요청: "다른곳 누르면 팝업 안뜨게"] 가격/순매수/거래량 3분할 차트의 클릭식
   // 팝업(Tooltip trigger="click", 아래 참고)은 Recharts 내부 상태라 바깥에서 직접 "닫아라"라고 지시할
   // 공개 API가 없다 - 차트 3개를 감싼 dailyChartClusterRef 바깥을 탭하면 이 key를 1 증가시켜 3개

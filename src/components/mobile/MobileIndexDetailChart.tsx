@@ -66,7 +66,7 @@ export default function MobileIndexDetailChart({ market, onClose }: MobileIndexD
   const [showMA5, setShowMA5] = useState(true);
   const [showMA20, setShowMA20] = useState(true);
   const [showMA60, setShowMA60] = useState(false);
-  const [showVolumeProfile, setShowVolumeProfile] = useState(true);
+  const [showVolumeProfile, setShowVolumeProfile] = useState(false); // 사용자 요청: 기본 꺼짐, 버튼으로 켤 때만 표시
   const [showDisparate, setShowDisparate] = useState(false);
 
   // 🚨 [버그 수정 - 사용자 지적: "카드랑 차트 숫자가 달라. 하나로 통일해서 가장 최신것으로"] 데스크톱

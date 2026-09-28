@@ -22,6 +22,7 @@ import {
   ReferenceLine,
 } from 'recharts';
 import { IntradayChartResponse } from '@/lib/types';
+import { getKrxTickSize } from '@/lib/krxTickSize';
 import { useTheme } from '@/providers/ThemeProvider';
 import { PRICE_CHART_CONFIG, CandlestickBar } from '@/components/chart/CandlestickPrimitives';
 import MobileLoadingSpinner from './MobileLoadingSpinner';
@@ -38,6 +39,32 @@ const PRICE_CHART_HEIGHT = 208;
 const PRICE_TOP_PADDING = 10;
 const PRICE_PLOT_HEIGHT = PRICE_CHART_HEIGHT - PRICE_TOP_PADDING;
 const MIN_CANDLE_PX = 8; // 캔들 1개당 최소 폭 - 사용자 요청으로 5→8 확대(어차피 가로 스크롤하니 더 크게 봐도 됨)
+// 가격 차트·거래량 차트의 실제 플롯 영역 좌우 여백(px). 두 차트 모두 margin.left(-10)+왼쪽 YAxis(52)=42,
+// margin.right(10)+오른쪽 YAxis(36)=46으로 똑같이 맞춰야 캔들과 거래량 막대가 같은 x에 놓인다
+// (예전엔 거래량 차트에만 오른쪽 거래대금 축 36px가 있어 두 차트 x좌표가 최대 36px 어긋났다).
+const MIN_VIEW_TICKS = 10; // 세로축 최소 폭(호가 칸 수) - computeViewScale 주석 참고
+const PLOT_LEFT = 42;
+const PLOT_RIGHT = 46;
+
+interface ViewScale {
+  start: number;
+  end: number;
+  priceDomain: [number, number];
+  priceTicks: number[];
+  isFallback: boolean;
+  volMax: number;
+  amtMax: number;
+}
+
+// 거래량/거래대금 축 상한을 보기 좋은 값(1·2·2.5·5·10 단위)으로 올림 - 스크롤할 때마다 축이 미세하게
+// 흔들리지 않게(=불필요한 재렌더를 줄이게) 계단식으로만 바뀌도록 한다.
+function niceCeil(v: number): number {
+  if (!(v > 0)) return 1;
+  const mag = Math.pow(10, Math.floor(Math.log10(v)));
+  const n = v / mag;
+  const nice = n <= 1 ? 1 : n <= 2 ? 2 : n <= 2.5 ? 2.5 : n <= 5 ? 5 : 10;
+  return nice * mag;
+}
 
 interface MobileIntraday3mChartProps {
   symbol: string;
@@ -99,6 +126,42 @@ function calculatePriceAxis(minRaw: number, maxRaw: number, targetTicks = 6) {
   return { priceDomain: [startP, endP] as [number, number], priceTicks: ticks, isFallback: false };
 }
 
+// 🚨 [버그 수정 - 사용자 지적: "확대가 되면 거기에 맞춰서 봉이 예쁘게 보여야 하는데 그냥 크기만 확대됐다"]
+// 예전엔 세로축을 "전체 786개(과거 5일+오늘) 캔들 + 멀리 떨어진 피봇 S1·피보 50% 레벨"로 한 번만 잡아서,
+// 핀치로 가로만 넓어지고 캔들은 여전히 4만원 폭 축 위에 납작하게 눌려 있었다. HTS/MTS처럼 "지금 화면에
+// 보이는 캔들(start~end)의 고가·저가"만으로 가격축을, 같은 구간의 최대 거래량/거래대금으로 거래량축을
+// 다시 잡는다. 화면 밖 가격의 기준선(피봇 등)은 축에 넣지 않는다 - 값은 위 카드 그리드가 항상 보여준다.
+function computeViewScale(candles: any[], start: number, end: number): ViewScale {
+  let lo = Infinity;
+  let hi = -Infinity;
+  let vol = 0;
+  let amt = 0;
+  for (let i = start; i <= end; i++) {
+    const c = candles[i];
+    if (!c || !(c.closePrice > 0)) continue;
+    const o = c.openPrice || c.closePrice;
+    const h = c.highPrice || Math.max(o, c.closePrice);
+    const l = c.lowPrice || Math.min(o, c.closePrice);
+    if (l > 0) lo = Math.min(lo, l);
+    hi = Math.max(hi, h);
+    vol = Math.max(vol, c.volume || 0);
+    amt = Math.max(amt, c.tradingValueEok || 0);
+  }
+  // 최소 표시 폭 = 호가 MIN_VIEW_TICKS칸. 보이는 구간이 한두 호가 안에서만 움직이면(예: 시간외 단일가,
+  // 상한가 고정) 축이 1~2호가 폭으로 좁혀져 호가 1칸짜리 봉이 화면 절반을 차지하는 막대처럼 보였다
+  // (실측: 삼성전자 9/28 15:39~17:33 270,500~271,000원). 가운데를 유지한 채 이 폭까지만 벌린다.
+  if (Number.isFinite(lo) && Number.isFinite(hi)) {
+    const minSpan = getKrxTickSize(hi) * MIN_VIEW_TICKS;
+    if (hi - lo < minSpan) {
+      const mid = (hi + lo) / 2;
+      lo = mid - minSpan / 2;
+      hi = mid + minSpan / 2;
+    }
+  }
+  const axis = calculatePriceAxis(Number.isFinite(lo) ? lo : 0, Number.isFinite(hi) ? hi : 0);
+  return { start, end, ...axis, volMax: niceCeil(vol * 1.05), amtMax: niceCeil(amt * 1.05) };
+}
+
 function isMarketOpenNowKst(): boolean {
   const now = new Date();
   const utc = now.getTime() + now.getTimezoneOffset() * 60000;
@@ -130,7 +193,7 @@ export default function MobileIntraday3mChart({ symbol }: MobileIntraday3mChartP
   const [showVWAP, setShowVWAP] = useState(true);
   const [showPivot, setShowPivot] = useState(true);
   const [showFibo, setShowFibo] = useState(true);
-  const [showVolumeProfile, setShowVolumeProfile] = useState(true);
+  const [showVolumeProfile, setShowVolumeProfile] = useState(false); // 사용자 요청: 기본 꺼짐, 버튼으로 켤 때만 표시
 
   // 🚨 [사용자 요청 - 재변경] 처음엔 Recharts 기본 Tooltip이 모바일 터치에서 안 닫히고 차트를 계속
   // 가리는 문제(마우스 "벗어남" 이벤트가 터치엔 없음) 때문에 차트 밖 고정 바 방식으로 바꿨었는데,
@@ -237,44 +300,28 @@ export default function MobileIntraday3mChart({ symbol }: MobileIntraday3mChartP
 
   const activeSwingLow = React.useMemo(() => findActiveSwingLow(candles), [candles]);
 
-  const { minPrice, maxPrice, priceDomain, priceTicks, hasValidPriceRange } = React.useMemo(() => {
-    if (candles.length === 0) {
-      const axis = calculatePriceAxis(0, 100);
-      return { minPrice: 0, maxPrice: 100, hasValidPriceRange: false, ...axis };
-    }
-    const vals: number[] = [];
-    candles.forEach((c) => {
-      const o = c.openPrice || c.closePrice;
-      const h = c.highPrice || Math.max(o, c.closePrice);
-      const l = c.lowPrice || Math.min(o, c.closePrice);
-      vals.push(o, h, l, c.closePrice);
-      if (showVWAP) {
-        if (c.vwapUpper2) vals.push(c.vwapUpper2);
-        if (c.vwapLower2) vals.push(c.vwapLower2);
-      }
-    });
-    if (showPivot && levels?.pivot) {
-      if (levels.pivot.r1 > 0) vals.push(levels.pivot.r1);
-      if (levels.pivot.s1 > 0) vals.push(levels.pivot.s1);
-    }
-    if (showFibo && levels?.fibonacci) {
-      if (levels.fibonacci.fibo382 > 0) vals.push(levels.fibonacci.fibo382);
-      if (levels.fibonacci.fibo500 > 0) vals.push(levels.fibonacci.fibo500);
-    }
-    if (activeSwingLow) vals.push(activeSwingLow.price);
-    const axis = calculatePriceAxis(Math.min(...vals), Math.max(...vals));
-    return { minPrice: axis.priceDomain[0], maxPrice: axis.priceDomain[1], hasValidPriceRange: !axis.isFallback, ...axis };
-  }, [candles, showVWAP, showPivot, showFibo, levels, activeSwingLow]);
+  // 🎯 [버그 수정 - 확대/스크롤 시 세로축 자동 맞춤] 화면에 보이는 캔들 구간(view.start~end) 기준 축.
+  // view가 아직 측정 전(null)이면 전체 구간으로 잡는다 - 측정 로직은 아래 scrollRef 쪽 applyView 참고.
+  const [view, setView] = React.useState<ViewScale | null>(null);
+  const effectiveView = React.useMemo(
+    () => view ?? computeViewScale(candlesWithAmount, 0, Math.max(0, candlesWithAmount.length - 1)),
+    [view, candlesWithAmount],
+  );
+  const { priceDomain, priceTicks } = effectiveView;
+  const minPrice = priceDomain[0];
+  const maxPrice = priceDomain[1];
+  const hasValidPriceRange = !effectiveView.isFallback;
 
   // 3분봉 매물대(가격대별 누적 거래량) - 일간 차트(MobileStockDetailChart.tsx)와 동일한 방식(대표가에
   // 해당 봉 실거래량 배정)을 3분봉 단위로 그대로 적용한다(RankingStockDetailChart.tsx 779~816번 줄과
-  // 동일 공식, 가짜 데이터 없이 실 3분봉 OHLCV만 사용, 수칙 1-6).
+  // 동일 공식, 가짜 데이터 없이 실 3분봉 OHLCV만 사용, 수칙 1-6). 세로축이 "보이는 구간" 기준으로 바뀌었으므로
+  // 매물대도 같은 구간의 캔들만 집계한다(축 밖 가격대 거래량이 맨 위/아래 칸에 몰려 왜곡되는 것 방지).
   const volumeProfileBins = React.useMemo(() => {
     if (!showVolumeProfile || candles.length === 0 || !hasValidPriceRange || maxPrice <= minPrice) return [];
     const BIN_COUNT = 24;
     const binSize = (maxPrice - minPrice) / BIN_COUNT;
     const bins = Array.from({ length: BIN_COUNT }, (_, i) => ({ priceLow: minPrice + i * binSize, priceHigh: minPrice + (i + 1) * binSize, volume: 0 }));
-    candles.forEach((c) => {
+    candles.slice(effectiveView.start, effectiveView.end + 1).forEach((c) => {
       const cl = c.closePrice || 0;
       if (cl <= 0) return;
       const o = (c.openPrice && c.openPrice > 0) ? c.openPrice : cl;
@@ -283,6 +330,7 @@ export default function MobileIntraday3mChart({ symbol }: MobileIntraday3mChartP
       const vol = c.volume || 0;
       if (vol <= 0) return;
       const typicalPrice = (h + l + cl) / 3;
+      if (typicalPrice < minPrice || typicalPrice > maxPrice) return;
       const idx = Math.max(0, Math.min(BIN_COUNT - 1, Math.floor((typicalPrice - minPrice) / binSize)));
       bins[idx].volume += vol;
     });
@@ -290,7 +338,7 @@ export default function MobileIntraday3mChart({ symbol }: MobileIntraday3mChartP
     let pocIdx = 0;
     bins.forEach((b, i) => { if (b.volume > bins[pocIdx].volume) pocIdx = i; });
     return bins.map((b, i) => ({ ...b, ratio: b.volume / maxBinVolume, isPoc: i === pocIdx && b.volume > 0 }));
-  }, [showVolumeProfile, candles, minPrice, maxPrice, hasValidPriceRange]);
+  }, [showVolumeProfile, candles, minPrice, maxPrice, hasValidPriceRange, effectiveView.start, effectiveView.end]);
 
   const formatYPrice = (v: number) => v.toLocaleString(undefined, { maximumFractionDigits: 0 });
   const formatYVol = (v: number) => (v >= 100000000 ? `${Math.round(v / 100000000)}억` : v >= 10000 ? `${Math.round(v / 10000)}만` : v.toLocaleString());
@@ -306,6 +354,8 @@ export default function MobileIntraday3mChart({ symbol }: MobileIntraday3mChartP
     const el = scrollRef.current;
     const maxScroll = el.scrollWidth - el.clientWidth;
     el.scrollLeft = maxScroll * pinchScrollRatioRef.current;
+    // 핀치로 보이는 캔들 수가 바뀌었으니 세로축도 즉시 그 구간에 맞춘다(확대하면 봉이 세로로도 커지게).
+    applyViewRef.current(true);
   }, [candlePxWidth]);
 
   // 🚨 [사용자 피드백 반영] 라벨 세로 충돌을 "안 겹치는 것만 텍스트로 보여주는" 방식으로 1차 수정했었는데,
@@ -316,11 +366,68 @@ export default function MobileIntraday3mChart({ symbol }: MobileIntraday3mChartP
   // 데이터가 바뀌면(최초 로드/자동 갱신) 항상 가장 최근 캔들(오른쪽 끝)이 보이도록 스크롤 위치를 맞춘다 -
   // 트레이더에게 가장 중요한 건 방금 막 형성된 캔들이라 왼쪽(하루 시작)에서 시작하면 매번 다시 스크롤해야 함.
   const scrollRef = React.useRef<HTMLDivElement>(null);
+
+  // 현재 스크롤 위치/폭에서 화면에 보이는 캔들 인덱스 구간을 구해 축(view)을 갱신한다.
+  // chartWidth(렌더 시점 값) 대신 el.scrollWidth(실제 DOM 폭)를 써서 핀치 직후에도 낡은 폭으로 계산하지 않는다.
+  // force=false(스크롤 중)면 축 값(가격 눈금·거래량 상한)이 실제로 바뀔 때만 setState해서, 786개 캔들
+  // 차트를 스크롤 프레임마다 다시 그리지 않는다. 스크롤이 멈추면 force=true로 정확한 구간(매물대용)을 반영한다.
+  const applyView = (force: boolean) => {
+    const el = scrollRef.current;
+    const n = candlesWithAmount.length;
+    if (!el || n === 0) return;
+    const plotW = el.scrollWidth - PLOT_LEFT - PLOT_RIGHT;
+    const band = plotW / n;
+    if (!(band > 0)) return;
+    const start = Math.max(0, Math.min(n - 1, Math.floor((el.scrollLeft - PLOT_LEFT) / band)));
+    const end = Math.max(start, Math.min(n - 1, Math.ceil((el.scrollLeft + el.clientWidth - PLOT_LEFT) / band) - 1));
+    const next = computeViewScale(candlesWithAmount, start, end);
+    setView((prev) => {
+      if (!prev) return next;
+      const sameAxis =
+        prev.priceDomain[0] === next.priceDomain[0] &&
+        prev.priceDomain[1] === next.priceDomain[1] &&
+        prev.volMax === next.volMax &&
+        prev.amtMax === next.amtMax;
+      if (sameAxis && (!force || (prev.start === next.start && prev.end === next.end))) return prev;
+      return next;
+    });
+  };
+  const applyViewRef = React.useRef(applyView);
+  applyViewRef.current = applyView;
+
+  React.useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    let raf = 0;
+    let settle: ReturnType<typeof setTimeout> | undefined;
+    const onScroll = () => {
+      if (!raf) raf = requestAnimationFrame(() => { raf = 0; applyViewRef.current(false); });
+      if (settle) clearTimeout(settle);
+      settle = setTimeout(() => applyViewRef.current(true), 120);
+    };
+    const onResize = () => applyViewRef.current(true);
+    el.addEventListener('scroll', onScroll, { passive: true });
+    window.addEventListener('resize', onResize);
+    return () => {
+      el.removeEventListener('scroll', onScroll);
+      window.removeEventListener('resize', onResize);
+      if (raf) cancelAnimationFrame(raf);
+      if (settle) clearTimeout(settle);
+    };
+    // candles.length가 0→N으로 바뀌며 로딩 화면에서 차트로 전환될 때 scrollRef가 새로 붙으므로 다시 건다.
+  }, [candles.length > 0]);
+
   React.useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollLeft = scrollRef.current.scrollWidth;
     }
+    applyViewRef.current(true);
   }, [candles.length]);
+
+  // 자동 갱신(30초)으로 마지막 캔들 값만 바뀌어도(개수는 그대로) 보이는 구간 축을 다시 맞춘다.
+  React.useEffect(() => {
+    applyViewRef.current(true);
+  }, [candlesWithAmount]);
 
   if (isLoading) {
     return <MobileLoadingSpinner label="3분봉 데이터를 불러오는 중입니다..." />;
@@ -492,9 +599,10 @@ export default function MobileIntraday3mChart({ symbol }: MobileIntraday3mChartP
           </div>
         ))}
       </div>
+      <div className="relative flex-1 min-w-0">
       <div
         ref={scrollRef}
-        className="overflow-x-auto flex-1 min-w-0"
+        className="overflow-x-auto"
         onTouchStart={handlePinchStart}
         onTouchEnd={handlePinchEnd}
         onTouchCancel={handlePinchEnd}
@@ -509,6 +617,8 @@ export default function MobileIntraday3mChart({ symbol }: MobileIntraday3mChartP
           <CartesianGrid strokeDasharray="3 3" stroke={gridColor} opacity={0.7} />
           <XAxis dataKey="time" hide={true} />
           <YAxis stroke={axisColor} tick={false} axisLine={false} tickLine={false} width={52} domain={priceDomain} ticks={priceTicks} allowDataOverflow={true} />
+          {/* 거래량 차트의 오른쪽 거래대금 축(36px)과 플롯 폭을 똑같이 맞추기 위한 빈 축(PLOT_RIGHT 주석 참고) */}
+          <YAxis yAxisId="right-pad" orientation="right" width={36} tick={false} axisLine={false} tickLine={false} />
           {selectedCandle && <ReferenceLine x={selectedCandle.time} stroke="#94a3b8" strokeWidth={1} strokeDasharray="3 3" />}
           <Bar dataKey="closePrice" name="캔들스틱" shape={(props: any) => <CandlestickBar {...props} minPrice={minPrice} maxPrice={maxPrice} topPadding={PRICE_TOP_PADDING} plotHeight={PRICE_PLOT_HEIGHT} />} isAnimationActive={false} />
           {showMA5 && <Line type="monotone" dataKey="ma5" stroke="#f97316" strokeDasharray="3 3" strokeWidth={1} dot={false} isAnimationActive={false} name="5선" />}
@@ -559,11 +669,12 @@ export default function MobileIntraday3mChart({ symbol }: MobileIntraday3mChartP
           기대지 않고, 캔들 영역 위에 순수 HTML 오버레이를 얹어 탭 위치→캔들 인덱스를 직접 계산한다 -
           일반 DOM 클릭이라 확실하게 동작한다. */}
       <div
-        className="absolute left-[52px] right-[10px] top-0 bottom-0 cursor-pointer"
+        className="absolute top-0 bottom-0 cursor-pointer"
+        style={{ left: PLOT_LEFT, right: PLOT_RIGHT }}
         onClick={(e) => {
           const rect = e.currentTarget.getBoundingClientRect();
           const relX = e.clientX - rect.left;
-          const idx = Math.round((relX / rect.width) * (candles.length - 1));
+          const idx = Math.floor((relX / rect.width) * candles.length);
           const clamped = Math.max(0, Math.min(candles.length - 1, idx));
           if (candlesWithAmount[clamped]) {
             setSelectedCandle(candlesWithAmount[clamped]);
@@ -572,10 +683,40 @@ export default function MobileIntraday3mChart({ symbol }: MobileIntraday3mChartP
         }}
       />
 
-      {/* 매물대 반투명 오버레이 - 일간 차트(MobileStockDetailChart.tsx)와 동일 패턴 */}
+      </div>
+
+      {/* 거래량·거래대금 - 캔들 차트와 동일한 chartWidth 컨테이너 안에 있어야 가로 스크롤 시 x축이
+          어긋나지 않는다. 🎯 [기능 추가 - 데스크톱과 동일(수칙 1-6), 사용자 요청: "3분봉도 거래대금
+          차트 추가"] 새 패널 대신 보조(오른쪽) Y축만 추가. */}
+      <div className="mt-1">
+        <ResponsiveContainer width="100%" height={70}>
+          <ComposedChart
+            data={candlesWithAmount}
+            margin={{ top: 5, right: 10, left: -10, bottom: 0 }}
+          >
+            <XAxis dataKey="time" stroke={axisColor} tick={{ fontSize: 8 }} interval="preserveStartEnd" />
+            {/* 보이는 구간 최대값 기준 축 - 예전엔 전체(15:30 동시호가 급증 포함) 기준이라 나머지 막대가 바닥에 붙었다 */}
+            <YAxis yAxisId="vol" stroke={axisColor} tickFormatter={formatYVol} tick={{ fontSize: 8 }} width={52} domain={[0, effectiveView.volMax]} allowDataOverflow={true} />
+            <YAxis yAxisId="amt" orientation="right" stroke="#8b5cf6" tickFormatter={(v: number) => `${Math.round(v)}억`} tick={{ fontSize: 8 }} width={36} domain={[0, effectiveView.amtMax]} allowDataOverflow={true} />
+            {selectedCandle && <ReferenceLine x={selectedCandle.time} stroke="#94a3b8" strokeWidth={1} strokeDasharray="3 3" />}
+            <Bar yAxisId="vol" dataKey="volume" name="거래량" radius={[2, 2, 0, 0]}>
+              {candlesWithAmount.map((c: any, i: number) => (
+                <Cell key={`vol3m-${i}`} fill={c.closePrice >= (c.openPrice ?? c.closePrice) ? '#ef4444' : '#3b82f6'} fillOpacity={0.6} />
+              ))}
+            </Bar>
+            <Line yAxisId="amt" type="monotone" dataKey="tradingValueEok" name="거래대금" stroke="#8b5cf6" strokeWidth={1.5} dot={false} isAnimationActive={false} />
+          </ComposedChart>
+        </ResponsiveContainer>
+      </div>
+      </div>
+      </div>
+
+      {/* 매물대 반투명 오버레이 - 일간 차트(MobileStockDetailChart.tsx)와 동일 패턴. 예전엔 가로 스크롤되는
+          전체 차트의 맨 오른쪽 끝에 붙어 있어 스크롤을 끝까지 해야만 보였다 - 이제 스크롤 영역 바깥(보이는
+          화면 기준)에 고정해 항상 화면 오른쪽에 보이게 하고, 세로 좌표는 캔들과 같은 보이는 구간 축을 쓴다. */}
       {showVolumeProfile && volumeProfileBins.length > 0 && (
-        <div className="absolute left-[52px] right-[10px] top-2 bottom-0 pointer-events-none">
-          <svg width="100%" height="100%" style={{ overflow: 'visible' }}>
+        <div className="absolute left-0 right-0 top-0 pointer-events-none overflow-hidden" style={{ height: PRICE_CHART_HEIGHT }}>
+          <svg width="100%" height={PRICE_CHART_HEIGHT}>
             {volumeProfileBins.map((bin, i) => {
               const yHigh = PRICE_TOP_PADDING + (1 - (bin.priceHigh - minPrice) / (maxPrice - minPrice)) * PRICE_PLOT_HEIGHT;
               const yLow = PRICE_TOP_PADDING + (1 - (bin.priceLow - minPrice) / (maxPrice - minPrice)) * PRICE_PLOT_HEIGHT;
@@ -590,31 +731,6 @@ export default function MobileIntraday3mChart({ symbol }: MobileIntraday3mChartP
           </svg>
         </div>
       )}
-      </div>
-
-      {/* 거래량·거래대금 - 캔들 차트와 동일한 chartWidth 컨테이너 안에 있어야 가로 스크롤 시 x축이
-          어긋나지 않는다. 🎯 [기능 추가 - 데스크톱과 동일(수칙 1-6), 사용자 요청: "3분봉도 거래대금
-          차트 추가"] 새 패널 대신 보조(오른쪽) Y축만 추가. */}
-      <div className="mt-1">
-        <ResponsiveContainer width="100%" height={70}>
-          <ComposedChart
-            data={candlesWithAmount}
-            margin={{ top: 5, right: 10, left: -10, bottom: 0 }}
-          >
-            <XAxis dataKey="time" stroke={axisColor} tick={{ fontSize: 8 }} interval="preserveStartEnd" />
-            <YAxis yAxisId="vol" stroke={axisColor} tickFormatter={formatYVol} tick={{ fontSize: 8 }} width={52} />
-            <YAxis yAxisId="amt" orientation="right" stroke="#8b5cf6" tickFormatter={(v: number) => `${Math.round(v)}억`} tick={{ fontSize: 8 }} width={36} domain={[0, 'auto']} />
-            {selectedCandle && <ReferenceLine x={selectedCandle.time} stroke="#94a3b8" strokeWidth={1} strokeDasharray="3 3" />}
-            <Bar yAxisId="vol" dataKey="volume" name="거래량" radius={[2, 2, 0, 0]}>
-              {candlesWithAmount.map((c: any, i: number) => (
-                <Cell key={`vol3m-${i}`} fill={c.closePrice >= (c.openPrice ?? c.closePrice) ? '#ef4444' : '#3b82f6'} fillOpacity={0.6} />
-              ))}
-            </Bar>
-            <Line yAxisId="amt" type="monotone" dataKey="tradingValueEok" name="거래대금" stroke="#8b5cf6" strokeWidth={1.5} dot={false} isAnimationActive={false} />
-          </ComposedChart>
-        </ResponsiveContainer>
-      </div>
-      </div>
       </div>
       </div>
 

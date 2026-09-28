@@ -15,6 +15,7 @@ import {
   ReferenceLine,
 } from 'recharts';
 import { InvestorTrendResponse, TrendPeriod } from '@/lib/types';
+import { getKrxTickSize } from '@/lib/krxTickSize';
 import { findSplitSafeStartIndex, roundToKrxTick, computeRecentVolumeRatio, getStockName } from '@/lib/mockData';
 import { Calendar, Activity, RefreshCw, AlertCircle, X, Radio } from 'lucide-react';
 import { useTheme } from '@/providers/ThemeProvider';
@@ -397,19 +398,6 @@ export default function RankingStockDetailChart({
 
     return resList;
   }, [trend, period, symbol, show120dView]);
-
-/**
- * KRX 가격대별 호가단위(aspr_unit) 판별
- */
-function getKrxTickSize(price: number): number {
-  if (price < 2000) return 1;
-  if (price < 5000) return 5;
-  if (price < 20000) return 10;
-  if (price < 50000) return 50;
-  if (price < 200000) return 100;
-  if (price < 500000) return 500;
-  return 1000;
-}
 
 /**
  * 전 종목(동전주~초고가주) 타이트 호가단위(Tick) 기반 Y축 Domain 및 촘촘한 Ticks(눈금) 산출
