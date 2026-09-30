@@ -2653,13 +2653,6 @@
     "group": "ST"
   },
   {
-    "symbol": "006380",
-    "name": "카프로",
-    "market": "KOSPI",
-    "stdCode": "KR7006380000",
-    "group": "ST"
-  },
-  {
     "symbol": "006400",
     "name": "삼성SDI",
     "market": "KOSPI",
@@ -15085,6 +15078,13 @@
     "group": "ST"
   },
   {
+    "symbol": "0035S0",
+    "name": "빅웨이브로보틱스",
+    "market": "KOSDAQ",
+    "stdCode": "KR70035S0001",
+    "group": "ST"
+  },
+  {
     "symbol": "0037T0",
     "name": "KB제32호스팩",
     "market": "KOSDAQ",
@@ -23905,6 +23905,13 @@
     "group": "ST"
   },
   {
+    "symbol": "266690",
+    "name": "덕산넵코어스",
+    "market": "KOSDAQ",
+    "stdCode": "KR7266690007",
+    "group": "ST"
+  },
+  {
     "symbol": "267320",
     "name": "나인테크",
     "market": "KOSDAQ",
@@ -27332,6 +27339,13 @@
     "name": "티엑스알로보틱스",
     "market": "KOSDAQ",
     "stdCode": "KR7484810007",
+    "group": "ST"
+  },
+  {
+    "symbol": "486510",
+    "name": "글로벌테크놀로지",
+    "market": "KOSDAQ",
+    "stdCode": "KR7486510001",
     "group": "ST"
   },
   {
