@@ -15323,13 +15323,6 @@
     "group": "ST"
   },
   {
-    "symbol": "008290",
-    "name": "원풍물산",
-    "market": "KOSDAQ",
-    "stdCode": "KR7008290009",
-    "group": "ST"
-  },
-  {
     "symbol": "0082N0",
     "name": "카나프테라퓨틱스",
     "market": "KOSDAQ",
@@ -17633,13 +17626,6 @@
     "group": "ST"
   },
   {
-    "symbol": "046070",
-    "name": "코다코",
-    "market": "KOSDAQ",
-    "stdCode": "KR7046070009",
-    "group": "ST"
-  },
-  {
     "symbol": "046120",
     "name": "오르비텍",
     "market": "KOSDAQ",
@@ -19674,13 +19660,6 @@
     "name": "젬백스",
     "market": "KOSDAQ",
     "stdCode": "KR7082270000",
-    "group": "ST"
-  },
-  {
-    "symbol": "082660",
-    "name": "코스나인",
-    "market": "KOSDAQ",
-    "stdCode": "KR7082660002",
     "group": "ST"
   },
   {
@@ -26947,6 +26926,13 @@
     "name": "프로티나",
     "market": "KOSDAQ",
     "stdCode": "KR7468530001",
+    "group": "ST"
+  },
+  {
+    "symbol": "468670",
+    "name": "브릴스",
+    "market": "KOSDAQ",
+    "stdCode": "KR7468670005",
     "group": "ST"
   },
   {
