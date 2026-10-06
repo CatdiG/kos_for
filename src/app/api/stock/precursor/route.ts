@@ -1,7 +1,7 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest, NextResponse, after } from 'next/server';
 import { fetchLatestPrecursorSnapshots } from '@/lib/supabase';
 import { InvestorRankingResponse, RankingItem } from '@/lib/types';
-import { mergeCreditStatusToRanking } from '@/lib/kisApi';
+import { mergeCreditStatusToRanking, resolveAndCacheMissingCredits } from '@/lib/kisApi';
 import { buildSnapshotBatchLabel } from '@/lib/snapshotLabel';
 
 // 🎯 [기능 추가 - 사용자 요청: "전조 장마감" 탭] /api/stock/discovery와 동일 패턴 - 매일 14:20(KST) 예약(Vercel Hobby라 최대 59분 늦게 실행)
@@ -56,6 +56,13 @@ export async function GET(request: NextRequest) {
     // 안되는지 안뜨냐고"] discovery/route.ts와 동일 원인·동일 수정(수칙 1-6) - 이미 있는 공용 함수
     // mergeCreditStatusToRanking(kis_credits 테이블)을 그대로 재사용한다.
     const listWithCredit = await mergeCreditStatusToRanking(list);
+    // 🚨 [버그 수정 2026-10-06] discovery/route.ts와 동일(수칙 1-6) - "확인필요" 종목 after() 재조회 경로 추가.
+    const missingCredit = listWithCredit.filter((item) => item.isCreditAvailable === undefined).map((item) => item.symbol);
+    if (missingCredit.length > 0) {
+      after(async () => {
+        await resolveAndCacheMissingCredits(missingCredit).catch(() => null);
+      });
+    }
 
     // 기준 시각은 예약 시각이 아니라 스냅샷이 실제로 저장된 시각(created_at) - snapshotLabel.ts 참고(수칙 1-5)
     const lastBatchTime = buildSnapshotBatchLabel({ date, todayYmd: todayYmdKst(), rows, scheduleText: '14:20' });

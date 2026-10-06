@@ -7,8 +7,13 @@
 //  - 평일 08:00~20:10 KST만 수집(NXT 프리마켓~애프터마켓 20:00 마감값까지). 휴장일(CTCA0903R opnd_yn=N)엔 쉰다.
 //  - 매 회차 결과를 cron_run_logs(cron='oracle-program-collector')에 남긴다 - 살아있는지(heartbeat) 확인용.
 //
-// 실행: node scripts/program-collector.js [--once]
+//  - 🎯 [기능 추가 2026-10-06] 평일 07:50 KST에 KIS 종목정보 파일의 신용가능 필드로 전 종목 신용 상태를
+//    kis_credits에 일괄 저장한다(src/lib/creditMasterRefresh.ts, KIS API 호출 0건). 하루 1회 성공할 때까지
+//    10분 간격 재시도(15:30까지). 결과는 cron_run_logs(cron='oracle-credit-refresh').
+//
+// 실행: node scripts/program-collector.js [--once | --credit-once]
 //   --once: 한 회차만 돌고 종료(로컬 검증용). 없으면 무한 루프(systemd 서비스로 상시 실행).
+//   --credit-once: 신용 일괄 갱신만 한 번 실행하고 종료(검증용).
 // 환경변수: 작업 폴더의 .env(오라클) 또는 .env.local(로컬)에서 KIS_APPKEY, KIS_APPSECRET, NEXT_PUBLIC_SUPABASE_URL,
 //   SUPABASE_SERVICE_ROLE_KEY를 읽는다(ws-bridge와 같은 이름).
 const fs = require('fs');
@@ -33,22 +38,28 @@ const { isKrxOpenDay, kstNow } = require('./lib/kisHoliday');
 const { runTop50BatchCollector, getBatchRankingData } = require('../src/lib/batchCollector.ts');
 const { getKisAccessToken } = require('../src/lib/kisApi.ts');
 const { getSupabaseAdmin } = require('../src/lib/supabase.ts');
+const { refreshCreditsFromKisMaster } = require('../src/lib/creditMasterRefresh.ts');
 
 const CYCLE_MS = 150 * 1000; // 회차 시작 간격 2.5분(수집 자체가 약 2분이라 실제 갱신 주기는 2~3분)
 const MIN_GAP_MS = 15 * 1000; // 수집이 길어져도 회차 사이 최소 휴식
 const ACTIVE_FROM = 800; // KST 08:00
 const ACTIVE_UNTIL = 2010; // KST 20:10 (20:00 애프터마켓 마감값까지 한 번 더 잡는다)
 const ONCE = process.argv.includes('--once');
+const CREDIT_ONCE = process.argv.includes('--credit-once');
 const CRON_NAME = 'oracle-program-collector';
+const CREDIT_CRON_NAME = 'oracle-credit-refresh';
+const CREDIT_REFRESH_FROM = 750; // KST 07:50 - KIS 종목정보 파일 생성(07:35쯤) 이후
+const CREDIT_REFRESH_UNTIL = 1530; // 이 시각까지 성공 못 하면 그날은 포기(종목별 실시간 조회가 보조로 남아 있음)
+const CREDIT_RETRY_MS = 10 * 60 * 1000;
 
 const log = (...args) => console.log(`[${kstNow().text} KST]`, ...args);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function logRun(fields) {
+async function logRun(fields, cron = CRON_NAME) {
   const client = getSupabaseAdmin();
   if (!client) return;
   try {
-    const { error } = await client.from('cron_run_logs').insert({ cron: CRON_NAME, user_agent: 'oracle-program-collector', ...fields });
+    const { error } = await client.from('cron_run_logs').insert({ cron, user_agent: 'oracle-program-collector', ...fields });
     if (error) log('[cron_run_logs 기록 실패]', error.message);
   } catch (e) {
     log('[cron_run_logs 기록 예외]', e.message || e);
@@ -86,16 +97,53 @@ async function runOneCycle() {
   }
 }
 
+// 신용 일괄 갱신 1회 실행 + cron_run_logs 기록. 성공(status 'saved')이면 true.
+async function runCreditRefresh() {
+  const startedAt = new Date();
+  const t0 = Date.now();
+  try {
+    const r = await refreshCreditsFromKisMaster();
+    const elapsed = Date.now() - t0;
+    log(`[신용 일괄 갱신] ${r.status}: 파일 ${r.total}종목(가능 ${r.creditYes}/불가 ${r.creditNo}), 저장 ${r.savedRows}행, 파일시각 ${r.lastModified}, ${(elapsed / 1000).toFixed(1)}초`);
+    await logRun({
+      started_at: startedAt.toISOString(),
+      finished_at: new Date().toISOString(),
+      status: r.status === 'saved' ? 'ok' : r.status === 'save_failed' ? 'save_failed' : 'empty',
+      count: r.total,
+      saved: r.status === 'saved',
+      elapsed_ms: elapsed,
+      error: r.status === 'saved' ? null : `${r.status} (파일시각 ${r.lastModified}, 저장 ${r.savedRows}행)`,
+    }, CREDIT_CRON_NAME);
+    return r.status === 'saved';
+  } catch (e) {
+    log('[신용 일괄 갱신 예외]', e.message || e);
+    await logRun({ started_at: startedAt.toISOString(), finished_at: new Date().toISOString(), status: 'error', count: null, saved: false, elapsed_ms: Date.now() - t0, error: String(e.message || e).slice(0, 500) }, CREDIT_CRON_NAME);
+    return false;
+  }
+}
+
 async function main() {
-  log(`프로그램매매 수집기 시작 (KIS 호출 간격 ${process.env.KIS_QUEUE_MIN_DELAY_MS}ms, 회차 간격 ${CYCLE_MS / 1000}초, ${ONCE ? '1회만' : '상시'})`);
+  log(`프로그램매매 수집기 시작 (KIS 호출 간격 ${process.env.KIS_QUEUE_MIN_DELAY_MS}ms, 회차 간격 ${CYCLE_MS / 1000}초, ${ONCE ? '1회만' : CREDIT_ONCE ? '신용 갱신 1회만' : '상시'})`);
+  if (CREDIT_ONCE) {
+    await runCreditRefresh();
+    return;
+  }
   if (ONCE) {
     await runOneCycle();
     return;
   }
   let lastCheckedDay = null;
   let openToday = false;
+  let creditDoneDay = null;
+  let creditNextTryMs = 0;
   for (;;) {
     const now = kstNow();
+    // 신용 일괄 갱신: 평일 07:50~15:30, 그날 성공할 때까지 10분 간격(KIS 호출 없음 - 휴장일 확인 전에 돈다).
+    const creditWindow = now.dow >= 1 && now.dow <= 5 && now.hhmm >= CREDIT_REFRESH_FROM && now.hhmm < CREDIT_REFRESH_UNTIL;
+    if (creditWindow && creditDoneDay !== now.ymd && Date.now() >= creditNextTryMs) {
+      if (await runCreditRefresh()) creditDoneDay = now.ymd;
+      else creditNextTryMs = Date.now() + CREDIT_RETRY_MS;
+    }
     const inWindow = now.dow >= 1 && now.dow <= 5 && now.hhmm >= ACTIVE_FROM && now.hhmm < ACTIVE_UNTIL;
     if (!inWindow) {
       await sleep(60 * 1000);

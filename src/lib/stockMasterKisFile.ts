@@ -26,6 +26,11 @@ export const MAX_SHRINK_RATIO = 0.05;
 
 const KOSPI_TAIL_BYTES = 227;
 const KOSDAQ_TAIL_BYTES = 221;
+// 🎯 [기능 추가 - 사용자 요청: 신용가능 아침 일괄 갱신, 2026-10-06] 꼬리 영역의 "신용가능" 필드(Y/N) 위치.
+// 공식 레이아웃 문서가 아니라 실측으로 확인한 값이다: 같은 날 KIS 라이브 crdt_able_yn(FHKST01010100)과 비교해
+// 코스피 꼬리 77번째 바이트 114/114, 코스닥 72번째 바이트 93/93 일치(scratch/diagnose_master_credit_field.js).
+const KOSPI_CREDIT_TAIL_OFFSET = 77;
+const KOSDAQ_CREDIT_TAIL_OFFSET = 72;
 
 /** 단일 파일이 든 zip에서 첫 번째 파일 내용을 꺼낸다(중앙 디렉토리 기준 - 데이터 디스크립터 방식 zip도 처리). */
 export function unzipFirstFile(zip: Buffer): Buffer {
@@ -71,9 +76,12 @@ export async function downloadKisMasterFiles(timeoutMs = 15000): Promise<KisMast
   };
 }
 
-function parseMst(buf: Buffer, tailBytes: number, market: 'KOSPI' | 'KOSDAQ'): (MasterStockEntry & { group: string })[] {
+type ParsedMstRow = MasterStockEntry & { group: string; credit: boolean | null };
+
+function parseMst(buf: Buffer, tailBytes: number, market: 'KOSPI' | 'KOSDAQ'): ParsedMstRow[] {
   const dec = new TextDecoder('euc-kr');
-  const rows: (MasterStockEntry & { group: string })[] = [];
+  const creditOffset = market === 'KOSPI' ? KOSPI_CREDIT_TAIL_OFFSET : KOSDAQ_CREDIT_TAIL_OFFSET;
+  const rows: ParsedMstRow[] = [];
   let start = 0;
   for (let i = 0; i <= buf.length; i++) {
     if (i < buf.length && buf[i] !== 0x0a) continue;
@@ -84,7 +92,9 @@ function parseMst(buf: Buffer, tailBytes: number, market: 'KOSPI' | 'KOSDAQ'): (
     if (line.length <= tailBytes + 21) continue;
     const head = line.subarray(0, line.length - tailBytes);
     const tail = line.subarray(line.length - tailBytes);
+    const creditCh = String.fromCharCode(tail[creditOffset]);
     rows.push({
+      credit: creditCh === 'Y' ? true : creditCh === 'N' ? false : null,
       symbol: dec.decode(head.subarray(0, 9)).trim(),
       name: dec.decode(head.subarray(21)).trim(),
       market,
@@ -103,6 +113,18 @@ export function parseKisMasterFiles(kospi: Buffer, kosdaq: Buffer): MasterStockE
   return [...parseMst(kospi, KOSPI_TAIL_BYTES, 'KOSPI'), ...parseMst(kosdaq, KOSDAQ_TAIL_BYTES, 'KOSDAQ')]
     .filter((r) => KRX_SYMBOL_PATTERN.test(r.symbol) && ALLOWED_GROUPS.has(r.group))
     .map((r) => ({ symbol: r.symbol, name: r.name, market: r.market, stdCode: r.stdCode, group: r.group }));
+}
+
+/**
+ * 두 .mst 파일에서 종목별 신용가능 여부(Y/N)를 뽑는다. Y/N이 아닌 칸(형식이 바뀌었거나 빈 값)은 넣지 않는다 -
+ * 모르는 값을 true/false로 단정하지 않기 위함(수칙 1-3).
+ */
+export function parseKisMasterCredits(kospi: Buffer, kosdaq: Buffer): Map<string, boolean> {
+  const out = new Map<string, boolean>();
+  for (const r of [...parseMst(kospi, KOSPI_TAIL_BYTES, 'KOSPI'), ...parseMst(kosdaq, KOSDAQ_TAIL_BYTES, 'KOSDAQ')]) {
+    if (KRX_SYMBOL_PATTERN.test(r.symbol) && ALLOWED_GROUPS.has(r.group) && r.credit !== null) out.set(r.symbol, r.credit);
+  }
+  return out;
 }
 
 export interface StockMasterDiff {

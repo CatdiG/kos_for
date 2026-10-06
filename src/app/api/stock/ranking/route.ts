@@ -55,11 +55,15 @@ export async function GET(request: NextRequest) {
     } else if (type === 'program') {
       const reqPeriod = (period === 'consecutive2d' || period === 'consecutive3d') ? '1d' : (period as '1d' | '1w' | '1m');
       responseData = await getBatchRankingDataAsync('program', direction, reqPeriod, market, limit);
-      if (responseData && Array.isArray(responseData.list)) {
-        responseData.list = await mergeCreditStatusToRanking(responseData.list);
-      }
     } else {
       responseData = await fetchKisForeignInstitutionRanking('foreign', direction, '1d', market, limit);
+    }
+
+    // 🚨 [버그 수정 - 사용자 지적: "신용가능 되는 것도 안 된다 뜬다", 2026-10-06] 예전엔 program 분기만 kis_credits(DB)를
+    // 병합해서, 외국인·기관·교집합 순위는 서버 메모리 캐시만 봤다 - Vercel 인스턴스가 새로 뜨면 메모리가 비어 DB에 값이
+    // 있어도 "확인필요"로 나갔다(실측: 고려아연·LG화학 등 DB true인데 외국인/기관 탭 확인필요). 모든 분기에 공통 적용.
+    if (responseData && Array.isArray(responseData.list)) {
+      responseData.list = await mergeCreditStatusToRanking(responseData.list);
     }
 
     assertNoMockLeak(responseData);

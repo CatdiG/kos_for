@@ -1983,24 +1983,21 @@ async function executeKisDailyPriceFetch(
 
 /**
  * 3-상태 신용가능 여부 단일 공용 평가 함수 (Single Source of Truth)
- * - false: ETF/ETN 또는 확정된 신용불가 종목
+ * - false: 확정된 신용불가 종목
  * - true: 확정된 신용가능 종목
  * - undefined: 미캐시 / 조회 중 (모바일 종목상세 배지: MobileStockDetailChart.tsx가 '신용 확인필요'로 표시)
+ *
+ * 🚨 [버그 수정 - 사용자 지적: "신용가능 되는 것도 안 된다 뜬다", 2026-10-06] 예전엔 ETF를 무조건 false(신용불가)로,
+ * 5개 종목(293490·293500·066970·060310·011170)을 하드코딩 목록으로 false 확정했다(수칙 1-3 위반). 실측: KODEX 200
+ * (069500)·TIGER 미국S&P500(360750)은 KIS crdt_able_yn=Y(가능)인데 화면엔 "불가"로 나갔다. 이제 ETF든 아니든
+ * KIS 값(종목별 실시간 조회 또는 아침 KIS 종목정보 파일 일괄 갱신 - creditMasterRefresh.ts)만 쓴다.
+ * name 매개변수는 기존 호출부 호환용으로만 남겨 둔다.
  */
-export function getEvaluatedCreditStatus(symbol: string, name?: string): boolean | undefined {
-  // 종목코드만으로도 마스터 그룹코드(EF)로 판별 가능 - 이름 없이 호출돼도 ETF는 신용불가로 확정
-  if (isEtfSymbol(symbol, name || '')) {
-    return false;
-  }
+export function getEvaluatedCreditStatus(symbol: string, _name?: string): boolean | undefined {
   if (creditStatusCache.has(symbol)) {
     return creditStatusCache.get(symbol)!.isCredit;
   }
-  const knownNonCredit = ['293490', '293500', '066970', '060310', '011170'];
-  if (knownNonCredit.includes(symbol)) {
-    return false;
-  }
-  // 캐시에도 없고 하드코딩 확정 리스트에도 없는 종목은 실제 KIS 값을 모르는 것이므로
-  // 임의로 true/false를 단정하지 않고 미확인 상태(undefined)로 정직하게 반환한다.
+  // 캐시에 없는 종목은 실제 KIS 값을 모르는 것이므로 임의로 true/false를 단정하지 않고 undefined로 반환한다.
   return undefined;
 }
 
@@ -2010,12 +2007,7 @@ export function getEvaluatedCreditStatus(symbol: string, name?: string): boolean
 export async function mergeCreditStatusToRanking(items: RankingItem[]): Promise<RankingItem[]> {
   if (!items || items.length === 0) return items;
 
-  // 1. Instant ETF / ETN 0ms Filter: Mark all ETFs/ETNs as isCreditAvailable: false
-  items.forEach((item) => {
-    if (isEtfSymbol(item.symbol, item.name)) {
-      creditStatusCache.set(item.symbol, { isCredit: false, timestamp: Date.now() });
-    }
-  });
+  // (예전 1단계 "ETF/ETN은 무조건 신용불가" 강제 기록은 제거 - getEvaluatedCreditStatus 주석 참고, 2026-10-06)
 
   // 2. Identify symbols still missing from memory cache
   const missingSymbols: string[] = [];

@@ -1,7 +1,7 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest, NextResponse, after } from 'next/server';
 import { fetchLatestDiscoverySnapshots } from '@/lib/supabase';
 import { InvestorRankingResponse, RankingItem } from '@/lib/types';
-import { mergeCreditStatusToRanking } from '@/lib/kisApi';
+import { mergeCreditStatusToRanking, resolveAndCacheMissingCredits } from '@/lib/kisApi';
 import { buildSnapshotBatchLabel } from '@/lib/snapshotLabel';
 
 // 🎯 [기능 추가 - 사용자 요청: "발굴 장마감" 탭] 매일 14:15(KST) 예약 cron(compute-discovery-postmarket, Vercel Hobby라 최대 59분 늦게 실행)이
@@ -63,6 +63,14 @@ export async function GET(request: NextRequest) {
     // kis_credits 테이블을 병합하는데 여기(발굴 장마감)만 그 호출이 아예 빠져있어서 isCreditAvailable이
     // 항상 undefined였다 - 새 로직이 아니라 이미 있는 동일 공용 함수를 그대로 재사용한다(수칙 1-6).
     const listWithCredit = await mergeCreditStatusToRanking(list);
+    // 🚨 [버그 수정 2026-10-06] 여기엔 "확인필요" 종목을 다시 조회하는 경로가 없어서, DB 값이 24시간 넘은 종목은 다른
+    // 탭에 안 뜨는 한 계속 확인필요로 남았다(실측: 발굴 6칸·눌림후속 72칸) - surging/route.ts와 같은 after() 재조회.
+    const missingCredit = listWithCredit.filter((item) => item.isCreditAvailable === undefined).map((item) => item.symbol);
+    if (missingCredit.length > 0) {
+      after(async () => {
+        await resolveAndCacheMissingCredits(missingCredit).catch(() => null);
+      });
+    }
 
     // 🎯 [기능 추가 - 수칙 1-5: 대체 데이터 출처일 명시] date가 오늘이 아니면(아직 오늘자 계산 전이라
     // 직전 거래일 결과를 그대로 보여주는 중이면) "(N/N 기준)"으로 며칠자인지 명확히 밝힌다 - 어제
