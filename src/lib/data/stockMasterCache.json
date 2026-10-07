@@ -5950,6 +5950,13 @@
     "group": "EF"
   },
   {
+    "symbol": "0246X0",
+    "name": "SOL 글로벌DRAM반도체플러스",
+    "market": "KOSPI",
+    "stdCode": "KR70246X0009",
+    "group": "EF"
+  },
+  {
     "symbol": "024720",
     "name": "콜마홀딩스",
     "market": "KOSPI",
@@ -12852,13 +12859,6 @@
     "group": "EF"
   },
   {
-    "symbol": "454180",
-    "name": "KIWOOM 차이나내수소비TOP CSI",
-    "market": "KOSPI",
-    "stdCode": "KR7454180001",
-    "group": "EF"
-  },
-  {
     "symbol": "454320",
     "name": "HANARO CAPEX설비투자iSelect",
     "market": "KOSPI",
@@ -13283,13 +13283,6 @@
     "name": "KODEX 미국S&P500커뮤니케이션",
     "market": "KOSPI",
     "stdCode": "KR7463690008",
-    "group": "EF"
-  },
-  {
-    "symbol": "464240",
-    "name": "KIWOOM 26-09회사채(AA-이상)액티브",
-    "market": "KOSPI",
-    "stdCode": "KR7464240001",
     "group": "EF"
   },
   {
@@ -14270,20 +14263,6 @@
     "name": "TIGER 반도체TOP10레버리지",
     "market": "KOSPI",
     "stdCode": "KR7488080003",
-    "group": "EF"
-  },
-  {
-    "symbol": "488200",
-    "name": "KIWOOM K-2차전지북미공급망",
-    "market": "KOSPI",
-    "stdCode": "KR7488200007",
-    "group": "EF"
-  },
-  {
-    "symbol": "488210",
-    "name": "KIWOOM K-반도체북미공급망",
-    "market": "KOSPI",
-    "stdCode": "KR7488210006",
     "group": "EF"
   },
   {
