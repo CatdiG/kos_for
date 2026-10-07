@@ -391,7 +391,23 @@ function sendSubscribe(ws, symbol, trType) {
   }));
 }
 
+// 🚨 [버그 수정 - 사용자 지적: "애프터마켓에서 sk하이닉스는 관심종목인데도 왜 3분봉이 3시 30분에
+// 멈춰있지?"] 실측(journalctl): 2026-09-30 04:01:56Z 연결 종료 → 재연결 시도 중 04:01:59Z
+// "[웹소켓 에러] non-101"만 찍히고 close 이벤트가 오지 않아, close에서만 걸던 재연결 예약이 영영
+// 안 걸렸다 - 프로세스는 active(running)인 채 10/07까지 1주일간 틱 0건(수칙 1-2, 제 실수 인정:
+// "error 뒤엔 반드시 close가 온다"고 가정한 코드였다). 같은 이유로 connect() 도중 예외(Supabase
+// 조회 실패 등)도 로그만 찍고 재연결을 안 걸던 경로였다. 고친 내용:
+//  1) error/close/connect 예외 어디서든 scheduleReconnect()를 부르고, 예약은 타이머 1개로만 걸리게
+//     해서(reconnectTimer) error+close가 둘 다 와도 이중 연결이 생기지 않게 한다.
+//  2) connectGen(연결 세대 번호)으로, 버려진 옛 연결의 늦게 온 이벤트가 새 연결을 건드리지 못하게 한다.
+//  3) 워치독: 이벤트가 아예 안 오는 "조용한 고장"은 1)로도 못 잡으므로, 체결이 계속 있어야 하는
+//     시간대에 틱이 일정 시간 0건이면 강제로 재연결한다(아래 startTickWatchdog 참고).
+let reconnectTimer = null;
+let connectGen = 0;
+let lastTickAt = Date.now(); // 마지막 H0UNCNT0 체결 수신 시각 (워치독 판정용)
+
 async function connect() {
+  const gen = ++connectGen;
   try {
     approvalKey = await fetchApprovalKey();
     log('approval_key 발급 완료');
@@ -400,20 +416,24 @@ async function connect() {
     scheduleReconnect();
     return;
   }
+  if (gen !== connectGen) return; // 대기 중에 워치독이 새 연결을 시작했으면 이 시도는 버린다
 
   const initialSymbols = (await fetchWatchlistFromSupabase()) || [];
+  if (gen !== connectGen) return;
   if (initialSymbols.length === 0) {
     log('[관심종목 없음] ws_watchlist가 비어있거나 조회 실패 - 30초 후 다시 확인');
-    setTimeout(() => connect().catch((e) => log('[재연결 실패]', e.message)), 30000);
+    scheduleReconnect(30000);
     return;
   }
   log(`[초기화] 감시 종목 ${initialSymbols.length}개:`, initialSymbols.join(', '));
   await hydrateCandleStateFromSupabase(initialSymbols);
+  if (gen !== connectGen) return;
 
   const ws = new WebSocket('ws://ops.koreainvestment.com:21000');
   liveWs = ws;
 
   ws.addEventListener('open', () => {
+    if (gen !== connectGen) return;
     log('웹소켓 연결 성공, 종목 구독 시작...');
     reconnectDelayMs = 2000; // 연결 성공하면 백오프 초기화
     subscribedSymbols = new Set(initialSymbols);
@@ -423,8 +443,14 @@ async function connect() {
   });
 
   ws.addEventListener('message', (event) => {
+    if (gen !== connectGen) return;
     try {
-      handleMessage(event.data.toString(), ws);
+      const raw = event.data.toString();
+      if (raw.startsWith('0|H0UNCNT0')) {
+        lastTickAt = Date.now();
+        watchdogStaleMs = WATCHDOG_BASE_STALE_MS; // 체결이 다시 들어오면 워치독 간격 원복
+      }
+      handleMessage(raw, ws);
     } catch (e) {
       log('[메시지 처리 에러]', e.message);
     }
@@ -432,21 +458,66 @@ async function connect() {
 
   ws.addEventListener('error', (event) => {
     log('[웹소켓 에러]', event.message || event);
+    if (gen !== connectGen) return;
+    // 연결 수립 단계 실패는 close 없이 error만 오는 경우가 실측됐다 - 열린 연결이 아니면 여기서도 재연결
+    if (ws.readyState !== WebSocket.OPEN) {
+      if (liveWs === ws) liveWs = null;
+      scheduleReconnect();
+    }
   });
 
   ws.addEventListener('close', (event) => {
+    if (gen !== connectGen) return;
     if (liveWs === ws) liveWs = null;
-    log(`웹소켓 연결 종료 (code=${event.code}) - ${reconnectDelayMs / 1000}초 후 재연결`);
+    log(`웹소켓 연결 종료 (code=${event.code})`);
     scheduleReconnect();
   });
 }
 
-function scheduleReconnect() {
-  setTimeout(() => {
-    connect().catch((e) => log('[재연결 실패]', e.message));
-  }, reconnectDelayMs);
+function scheduleReconnect(delayMs = reconnectDelayMs) {
+  if (reconnectTimer) return; // 이미 예약됨 - error와 close가 둘 다 와도 한 번만 재연결
+  log(`[재연결 예약] ${delayMs / 1000}초 후`);
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    connect().catch((e) => {
+      log('[재연결 실패]', e.message);
+      scheduleReconnect();
+    });
+  }, delayMs);
   reconnectDelayMs = Math.min(reconnectDelayMs * 2, MAX_RECONNECT_DELAY_MS);
 }
+
+// ── 틱 워치독 ───────────────────────────────────────────────────────────────
+// 체결이 끊김 없이 있어야 하는 시간대(평일 KST 09:05~15:15 정규장, 16:05~19:50 애프터마켓 - 개장
+// 직후/동시호가/휴장 30분 경계는 일부러 뺐다)에 관심종목 전체 틱이 WATCHDOG_BASE_STALE_MS 동안 0건이면
+// 연결이 죽은 것으로 보고 강제 재연결한다. 휴장일엔 틱이 원래 없으므로, 재연결해도 틱이 안 오면 간격을
+// 2배씩 늘려(최대 60분) 쓸데없는 재연결 반복을 줄인다. 틱이 오는 즉시 원래 간격으로 돌아간다.
+const WATCHDOG_BASE_STALE_MS = 5 * 60 * 1000;
+const WATCHDOG_MAX_STALE_MS = 60 * 60 * 1000;
+let watchdogStaleMs = WATCHDOG_BASE_STALE_MS;
+
+function isTickExpectedNowKst() {
+  const kst = new Date(Date.now() + 9 * 60 * 60 * 1000);
+  const day = kst.getUTCDay();
+  if (day === 0 || day === 6) return false;
+  const t = kst.getUTCHours() * 100 + kst.getUTCMinutes();
+  return (t >= 905 && t < 1515) || (t >= 1605 && t < 1950);
+}
+
+setInterval(() => {
+  if (!isTickExpectedNowKst()) return;
+  if (reconnectTimer) return; // 이미 재연결 대기 중
+  const silentMs = Date.now() - lastTickAt;
+  if (silentMs < watchdogStaleMs) return;
+  log(`[워치독] 체결 ${Math.round(silentMs / 1000)}초간 0건 - 연결 강제 재시작 (다음 판정 기준 ${Math.min(watchdogStaleMs * 2, WATCHDOG_MAX_STALE_MS) / 60000}분)`);
+  watchdogStaleMs = Math.min(watchdogStaleMs * 2, WATCHDOG_MAX_STALE_MS);
+  lastTickAt = Date.now(); // 재연결 직후 바로 다시 판정되지 않게 기준점 재설정
+  const oldWs = liveWs;
+  connectGen++; // 옛 연결의 늦은 이벤트 무시
+  liveWs = null;
+  try { oldWs?.close(); } catch { /* 이미 닫힌 연결 - 무시 */ }
+  scheduleReconnect(2000);
+}, 30000);
 
 // 관심종목 목록을 30초마다 폴링해서 추가/삭제된 종목만 구독/해제한다(연결 재시작 없이 즉시 반영).
 setInterval(async () => {
@@ -488,4 +559,7 @@ process.on('SIGTERM', async () => {
   process.exit(0);
 });
 
-connect();
+connect().catch((e) => {
+  log('[최초 연결 실패]', e.message);
+  scheduleReconnect();
+});
